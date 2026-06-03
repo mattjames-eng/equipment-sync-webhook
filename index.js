@@ -1,5 +1,5 @@
-// Flex Sync Webhook - Full Project Sync - FIXED VERSION
-// Syncs ALL project data from Flex to monday.com
+// Flex Sync Webhook - Full Project Sync with AUTO UUID LOOKUP
+// PMs can now just enter the quote number (26-0112) and it auto-finds the UUID!
 
 export default async function handler(req, res) {
   // CORS headers
@@ -82,15 +82,66 @@ export default async function handler(req, res) {
     }
 
     const item = mondayData.data.items[0];
-    const flexProjectNumber = item.column_values.find(col => col.id === 'text_mm3x2yr6')?.text;
+    const flexQuoteNumber = item.column_values.find(col => col.id === 'text_mm3x2yr6')?.text;
 
-    if (!flexProjectNumber) {
+    if (!flexQuoteNumber) {
       console.error('No Flex Project # found on item');
       await updateMondayStatus(itemId, boardId, MONDAY_API_KEY, 'Sync Error', 'No Flex Project # found');
       return res.status(400).json({ error: 'No Flex Project # found on item' });
     }
 
-    console.log(`Found Flex Project #: ${flexProjectNumber}`);
+    console.log(`Found Flex Quote #: ${flexQuoteNumber}`);
+
+    // ===== STEP 1.5: AUTO-LOOKUP UUID FROM QUOTE NUMBER =====
+    let flexElementId = flexQuoteNumber;
+
+    // If it looks like a quote number (contains hyphen like "26-0112"), search for the UUID
+    if (flexQuoteNumber.includes('-') && flexQuoteNumber.length < 20) {
+      console.log(`Looking up internal UUID for quote: ${flexQuoteNumber}`);
+      
+      const searchUrl = `${FLEX_BASE_URL}/api/inventory-tree/search?q=${encodeURIComponent(flexQuoteNumber)}`;
+      console.log(`Searching Flex: ${searchUrl}`);
+
+      const searchResponse = await fetch(searchUrl, {
+        method: 'GET',
+        headers: {
+          'X-Auth-Token': FLEX_API_KEY,
+          'Content-Type': 'application/json'
+        }
+      });
+
+      if (!searchResponse.ok) {
+        console.error(`Search API error: ${searchResponse.status} ${searchResponse.statusText}`);
+        await updateMondayStatus(itemId, boardId, MONDAY_API_KEY, 'Sync Error', `Failed to search Flex: ${searchResponse.status}`);
+        return res.status(500).json({ error: 'Search lookup failed' });
+      }
+
+      const searchData = await searchResponse.json();
+      console.log('Search results:', JSON.stringify(searchData, null, 2));
+
+      // Flex returns an array of results or an object with results
+      const results = Array.isArray(searchData) ? searchData : (searchData.elements || searchData.results || searchData.data || []);
+
+      if (!results || results.length === 0) {
+        console.error('Quote number not found in Flex');
+        await updateMondayStatus(itemId, boardId, MONDAY_API_KEY, 'Sync Error', `Quote ${flexQuoteNumber} not found in Flex`);
+        return res.status(404).json({ error: 'Quote not found' });
+      }
+
+      // Extract the internal UUID from the first search result
+      // Try different possible field names
+      flexElementId = results[0].id || results[0].elementId || results[0].uuid || results[0].element_id;
+
+      if (!flexElementId) {
+        console.error('Could not extract UUID from search results:', results[0]);
+        await updateMondayStatus(itemId, boardId, MONDAY_API_KEY, 'Sync Error', 'Could not find element ID in search results');
+        return res.status(500).json({ error: 'UUID extraction failed' });
+      }
+
+      console.log(`✅ Successfully mapped ${flexQuoteNumber} to UUID: ${flexElementId}`);
+    } else {
+      console.log(`Using provided UUID directly: ${flexElementId}`);
+    }
 
     // Step 2: Fetch FULL project data from Flex API using Header Data endpoint
     // Build the codeList query parameters for all fields we want
@@ -112,7 +163,7 @@ export default async function handler(req, res) {
     ];
 
     const codeListParams = fieldsToFetch.map(field => `codeList=${field}`).join('&');
-    const flexHeaderUrl = `${FLEX_BASE_URL}/api/element/${flexProjectNumber}/header-data?${codeListParams}`;
+    const flexHeaderUrl = `${FLEX_BASE_URL}/api/element/${flexElementId}/header-data?${codeListParams}`;
 
     console.log(`Fetching from Flex: ${flexHeaderUrl}`);
 
@@ -134,7 +185,7 @@ export default async function handler(req, res) {
     console.log('Flex header data received:', JSON.stringify(flexHeaderData, null, 2));
 
     // Step 3: Fetch equipment list count
-    const flexEquipmentUrl = `${FLEX_BASE_URL}/api/line-item/${flexProjectNumber}/row-data/`;
+    const flexEquipmentUrl = `${FLEX_BASE_URL}/api/line-item/${flexElementId}/row-data/`;
     
     let equipmentCount = 0;
     try {
@@ -171,7 +222,8 @@ export default async function handler(req, res) {
     return res.status(200).json({
       success: true,
       itemId,
-      flexProjectNumber,
+      flexQuoteNumber,
+      flexElementId,
       syncedFields: Object.keys(columnValues),
       equipmentCount,
       message: 'Full project sync completed successfully'
