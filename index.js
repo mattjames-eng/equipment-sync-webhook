@@ -1,23 +1,240 @@
-const axios = require('axios');
-const FLEX_BASE_URL = 'https://anticstudios.flexrentalsolutions.com/f5';
-const FLEX_API_KEY = process.env.FLEX_API_KEY;
-const MONDAY_API_KEY = process.env.MONDAY_API_KEY;
-const MONDAY_API_URL = 'https://api.monday.com/v2';
-const PROJECTS_BOARD_ID = '18415679761';
-const COLUMNS = {PROJECT_NUMBER: 'text_mm3x2yr6',FLEX_EQUIPMENT_LIST_ID: 'text_mm3y7xwa',PULLSHEET_SYNC_STATUS: 'color_mm3y3bxj',EQUIPMENT_COUNT: 'numeric_mm3zsgna',LAST_EQUIPMENT_SYNC: 'date_mm3z1vqz',EQUIPMENT_SYNC_ERROR: 'text_mm3zvvqk'};
-const STATUS_LABELS = {NOT_SYNCED: 10, SYNCING: 0, SYNCED: 1, ERROR: 2};
-module.exports = async (req, res) => {console.log('Equipment Sync webhook triggered');try {const payload = req.body;const itemId = payload.itemId || payload.pulseId || payload.event?.pulseId;if (!itemId) return res.status(400).json({ error: 'Missing itemId' });console.log(`Processing sync for item ${itemId}`);await syncEquipmentFromFlex(itemId);return res.status(200).json({ success: true, message: 'Equipment sync completed', itemId });} catch (error) {console.error('Equipment sync failed:', error);try {const itemId = req.body?.itemId || req.body?.pulseId || req.body?.event?.pulseId;if (itemId) await updateMondayStatus(itemId, 'error', error.message);} catch (e) {}return res.status(500).json({ success: false, error: error.message });}};
-async function syncEquipmentFromFlex(itemId) {console.log('Step 1: Get project details');const projectData = await getMondayItem(itemId);if (!projectData.projectNumber) throw new Error('Project Number not found');console.log('Step 2: Update status to Syncing');await updateMondayStatus(itemId, 'syncing');console.log('Step 3: Search Flex');const flexProject = await searchFlexProject(projectData.projectNumber);if (!flexProject) throw new Error(`Project ${projectData.projectNumber} not found in Flex`);console.log('Step 4: Get project details from Flex');const projectDetails = await getFlexProjectDetails(flexProject.id);console.log('Step 5: Find equipment list');const equipmentList = findEquipmentList(projectDetails.children);if (!equipmentList) throw new Error('No equipment list found');console.log('Step 6: Get line items');const lineItems = await getFlexLineItems(equipmentList.nodeId);console.log('Step 7: Filter equipment');const equipmentItems = filterEquipmentItems(lineItems);console.log(`Filtered to ${equipmentItems.length} items`);console.log('Step 8: Delete existing subitems');await deleteExistingSubitems(itemId);console.log('Step 9: Create subitems');const createdItems = await createEquipmentSubitems(itemId, equipmentItems);console.log('Step 10: Update summary');await updateProjectSummary(itemId, {equipmentListId: equipmentList.nodeId,itemCount: createdItems.length,totalQuantity: equipmentItems.reduce((sum, item) => sum + (item.quantity || 0), 0)});console.log('Step 11: Update status to Synced');await updateMondayStatus(itemId, 'synced');console.log('Step 12: Add notification');await addMondayUpdate(itemId, `✅ Equipment synced! ${createdItems.length} items, ${equipmentItems.reduce((sum, item) => sum + (item.quantity || 0), 0)} total quantity`);}
-async function getMondayItem(itemId) {const query = `query { items(ids: [${itemId}]) { id name column_values { id text } } }`;const response = await mondayGraphQL(query);const item = response.data.items[0];if (!item) throw new Error(`Item ${itemId} not found`);const projectNumberColumn = item.column_values.find(col => col.id === COLUMNS.PROJECT_NUMBER);return { id: item.id, name: item.name, projectNumber: projectNumberColumn?.text || item.name };}
-async function updateMondayStatus(itemId, status, errorMessage = null) {const statusIndex = STATUS_LABELS[status.toUpperCase()];const mutation = `mutation { change_simple_column_value(item_id: ${itemId}, board_id: ${PROJECTS_BOARD_ID}, column_id: "${COLUMNS.PULLSHEET_SYNC_STATUS}", value: "${statusIndex}") { id } }`;await mondayGraphQL(mutation);if (errorMessage) {const errorMutation = `mutation { change_column_value(item_id: ${itemId}, board_id: ${PROJECTS_BOARD_ID}, column_id: "${COLUMNS.EQUIPMENT_SYNC_ERROR}", value: "${errorMessage.replace(/"/g, '\\"').substring(0, 500)}") { id } }`;await mondayGraphQL(errorMutation);}}
-async function searchFlexProject(projectNumber) {const response = await flexAPI('GET', '/api/element/search', { searchText: projectNumber, rootElementsOnly: true, page: 0, size: 10 });return response.content && response.content.length > 0 ? response.content[0] : null;}
-async function getFlexProjectDetails(projectId) {return await flexAPI('GET', `/api/element/${projectId}/key-info`, { shallow: false });}
-async function getFlexLineItems(equipmentListId) {const codeList = ['quantity', 'modelId', 'modelName', 'barcode', 'description', 'category', 'unitCost', 'totalCost'];const response = await flexAPI('GET', `/api/line-item/${equipmentListId}/row-data/`, { codeList: JSON.stringify(codeList) });return response || [];}
-function findEquipmentList(children) {if (!children || children.length === 0) return null;return children.find(child => child.name?.toLowerCase().includes('equipment') || child.displayName?.toLowerCase().includes('equipment') || child.definitionName?.toLowerCase().includes('equipment'));}
-function filterEquipmentItems(lineItems) {return lineItems.filter(item => item.leaf === true && item.subtotal === false && item.dataMap?.modelName).map(item => ({id: item.id, name: item.dataMap.modelName, quantity: parseFloat(item.dataMap.quantity) || 0,barcode: item.dataMap.barcode || '', description: item.dataMap.description || '',category: item.dataMap.category || '', unitCost: parseFloat(item.dataMap.unitCost) || 0,totalCost: parseFloat(item.dataMap.totalCost) || 0}));}
-async function deleteExistingSubitems(parentItemId) {const query = `query { items(ids: [${parentItemId}]) { subitems { id } } }`;const response = await mondayGraphQL(query);const subitems = response.data.items[0]?.subitems || [];if (subitems.length === 0) return;console.log(`Deleting ${subitems.length} existing subitems`);for (const subitem of subitems) {const mutation = `mutation { delete_item(item_id: ${subitem.id}) { id } }`;await mondayGraphQL(mutation);}}
-async function createEquipmentSubitems(parentItemId, equipmentItems) {const createdItems = [];for (const equipment of equipmentItems) {try {const columnValues = { long_text_mm3xzm3c: `Qty: ${equipment.quantity}\nBarcode: ${equipment.barcode}\nCategory: ${equipment.category}\nUnit Cost: ${equipment.unitCost}\nTotal: ${equipment.totalCost}` };const mutation = `mutation { create_subitem(parent_item_id: ${parentItemId}, item_name: "${equipment.name.replace(/"/g, '\\"')}", column_values: ${JSON.stringify(JSON.stringify(columnValues))}) { id name } }`;const response = await mondayGraphQL(mutation);createdItems.push(response.data.create_subitem);} catch (error) {console.error(`Failed to create subitem for ${equipment.name}:`, error.message);}}return createdItems;}
-async function updateProjectSummary(itemId, summary) {await mondayGraphQL(`mutation { change_column_value(item_id: ${itemId}, board_id: ${PROJECTS_BOARD_ID}, column_id: "${COLUMNS.FLEX_EQUIPMENT_LIST_ID}", value: "${summary.equipmentListId}") { id } }`);await mondayGraphQL(`mutation { change_column_value(item_id: ${itemId}, board_id: ${PROJECTS_BOARD_ID}, column_id: "${COLUMNS.EQUIPMENT_COUNT}", value: "${summary.itemCount}") { id } }`);await mondayGraphQL(`mutation { change_column_value(item_id: ${itemId}, board_id: ${PROJECTS_BOARD_ID}, column_id: "${COLUMNS.LAST_EQUIPMENT_SYNC}", value: "${new Date().toISOString().split('T')[0]}") { id } }`);}
-async function addMondayUpdate(itemId, text) {const mutation = `mutation { create_update(item_id: ${itemId}, body: "${text.replace(/"/g, '\\"')}") { id } }`;await mondayGraphQL(mutation);}
-async function flexAPI(method, endpoint, params = {}) {const url = `${FLEX_BASE_URL}${endpoint}`;const config = { method, url, headers: { 'X-Auth-Token': FLEX_API_KEY, 'Content-Type': 'application/json' } };if (method === 'GET' && Object.keys(params).length > 0) config.params = params;else if (method !== 'GET') config.data = params;try {const response = await axios(config);return response.data;} catch (error) {console.error(`Flex API error (${method} ${endpoint}):`, error.response?.data || error.message);throw new Error(`Flex API error: ${error.response?.data?.exceptionMessage || error.message}`);}}
-async function mondayGraphQL(query) {try {const response = await axios({ method: 'POST', url: MONDAY_API_URL, headers: { 'Authorization': MONDAY_API_KEY, 'Content-Type': 'application/json' }, data: { query } });if (response.data.errors) throw new Error(response.data.errors[0].message);return response.data;} catch (error) {console.error('monday.com GraphQL error:', error.response?.data || error.message);throw new Error(`monday.com API error: ${error.message}`);}}
+// Equipment Pullsheet Sync Webhook - Fixed with monday.com Challenge Verification
+// Deploy this to Vercel to replace the existing webhook
+
+export default async function handler(req, res) {
+  // CORS headers
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+  // Handle OPTIONS preflight
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+
+  // Only accept POST requests
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method not allowed' });
+  }
+
+  try {
+    const body = req.body;
+
+    // ===== MONDAY.COM CHALLENGE VERIFICATION =====
+    // When monday.com sets up a webhook, it sends a challenge that must be echoed back
+    if (body.challenge) {
+      console.log('Received monday.com challenge:', body.challenge);
+      return res.status(200).json({ challenge: body.challenge });
+    }
+
+    // ===== NORMAL WEBHOOK PROCESSING =====
+    console.log('Received webhook payload:', JSON.stringify(body, null, 2));
+
+    // Extract itemId and boardId from the payload
+    const itemId = body.itemId || body.event?.pulseId;
+    const boardId = body.boardId || '18415679761';
+
+    if (!itemId) {
+      console.error('No itemId found in payload');
+      return res.status(400).json({ error: 'Missing itemId' });
+    }
+
+    console.log(`Processing sync for item ${itemId} on board ${boardId}`);
+
+    // Get environment variables
+    const FLEX_API_KEY = process.env.FLEX_API_KEY;
+    const MONDAY_API_KEY = process.env.MONDAY_API_KEY;
+    const FLEX_BASE_URL = process.env.FLEX_BASE_URL || 'https://your-flex-instance.com/f5';
+
+    if (!FLEX_API_KEY || !MONDAY_API_KEY) {
+      console.error('Missing API keys in environment variables');
+      return res.status(500).json({ error: 'Server configuration error' });
+    }
+
+    // Step 1: Get the Flex Project # from monday.com item
+    const mondayQuery = `
+      query {
+        items(ids: [${itemId}]) {
+          id
+          name
+          column_values(ids: ["text_mm3x2yr6"]) {
+            id
+            text
+          }
+        }
+      }
+    `;
+
+    const mondayResponse = await fetch('https://api.monday.com/v2', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': MONDAY_API_KEY,
+        'API-Version': '2024-10'
+      },
+      body: JSON.stringify({ query: mondayQuery })
+    });
+
+    const mondayData = await mondayResponse.json();
+    
+    if (mondayData.errors) {
+      console.error('Monday.com API error:', mondayData.errors);
+      throw new Error('Failed to fetch item from monday.com');
+    }
+
+    const item = mondayData.data.items[0];
+    const flexProjectNumber = item.column_values.find(col => col.id === 'text_mm3x2yr6')?.text;
+
+    if (!flexProjectNumber) {
+      console.error('No Flex Project # found on item');
+      // Update status to error
+      await updateMondayStatus(itemId, boardId, MONDAY_API_KEY, 'Sync Error', 'No Flex Project # found');
+      return res.status(400).json({ error: 'No Flex Project # found on item' });
+    }
+
+    console.log(`Found Flex Project #: ${flexProjectNumber}`);
+
+    // Step 2: Fetch equipment list from Flex API
+    const flexResponse = await fetch(`${FLEX_BASE_URL}/api/projects/${flexProjectNumber}/equipment`, {
+      method: 'GET',
+      headers: {
+        'X-Auth-Token': FLEX_API_KEY,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    if (!flexResponse.ok) {
+      console.error(`Flex API error: ${flexResponse.status} ${flexResponse.statusText}`);
+      await updateMondayStatus(itemId, boardId, MONDAY_API_KEY, 'Sync Error', `Flex API error: ${flexResponse.status}`);
+      return res.status(500).json({ error: 'Failed to fetch from Flex API' });
+    }
+
+    const flexData = await flexResponse.json();
+    const equipmentList = flexData.equipment || flexData.items || [];
+
+    console.log(`Fetched ${equipmentList.length} equipment items from Flex`);
+
+    // Step 3: Update monday.com with equipment count and sync timestamp
+    await updateMondayColumns(itemId, boardId, MONDAY_API_KEY, equipmentList.length);
+
+    // Step 4: Update status to Synced
+    await updateMondayStatus(itemId, boardId, MONDAY_API_KEY, 'Synced', null);
+
+    return res.status(200).json({
+      success: true,
+      itemId,
+      flexProjectNumber,
+      equipmentCount: equipmentList.length,
+      message: 'Equipment sync completed successfully'
+    });
+
+  } catch (error) {
+    console.error('Webhook error:', error);
+    
+    // Try to update monday.com status to error
+    try {
+      const itemId = req.body.itemId || req.body.event?.pulseId;
+      if (itemId) {
+        await updateMondayStatus(
+          itemId,
+          '18415679761',
+          process.env.MONDAY_API_KEY,
+          'Sync Error',
+          error.message
+        );
+      }
+    } catch (updateError) {
+      console.error('Failed to update error status:', updateError);
+    }
+
+    return res.status(500).json({
+      error: 'Internal server error',
+      message: error.message
+    });
+  }
+}
+
+// Helper function to update monday.com columns
+async function updateMondayColumns(itemId, boardId, apiKey, equipmentCount) {
+  const mutation = `
+    mutation {
+      change_multiple_column_values(
+        item_id: ${itemId},
+        board_id: ${boardId},
+        column_values: ${JSON.stringify(JSON.stringify({
+          numeric_mm3zsgna: equipmentCount,
+          date_mm3z1vqz: { date: new Date().toISOString().split('T')[0] }
+        }))}
+      ) {
+        id
+      }
+    }
+  `;
+
+  const response = await fetch('https://api.monday.com/v2', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': apiKey,
+      'API-Version': '2024-10'
+    },
+    body: JSON.stringify({ query: mutation })
+  });
+
+  const data = await response.json();
+  if (data.errors) {
+    console.error('Error updating columns:', data.errors);
+    throw new Error('Failed to update monday.com columns');
+  }
+  
+  return data;
+}
+
+// Helper function to update sync status
+async function updateMondayStatus(itemId, boardId, apiKey, status, errorMessage) {
+  const statusMap = {
+    'Not Synced': 10,
+    'Syncing': 0,
+    'Synced': 1,
+    'Sync Error': 2
+  };
+
+  const columnValues = {
+    color_mm3y3bxj: { label: status }
+  };
+
+  // If there's an error message, update the error column
+  if (errorMessage) {
+    columnValues.text_mm3zvvqk = errorMessage;
+  }
+
+  const mutation = `
+    mutation {
+      change_multiple_column_values(
+        item_id: ${itemId},
+        board_id: ${boardId},
+        column_values: ${JSON.stringify(JSON.stringify(columnValues))}
+      ) {
+        id
+      }
+    }
+  `;
+
+  const response = await fetch('https://api.monday.com/v2', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': apiKey,
+      'API-Version': '2024-10'
+    },
+    body: JSON.stringify({ query: mutation })
+  });
+
+  const data = await response.json();
+  if (data.errors) {
+    console.error('Error updating status:', data.errors);
+    throw new Error('Failed to update monday.com status');
+  }
+  
+  return data;
+}
