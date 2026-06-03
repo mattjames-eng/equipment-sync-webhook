@@ -1,5 +1,5 @@
-// Equipment Pullsheet Sync Webhook - Fixed with monday.com Challenge Verification
-// Deploy this to Vercel to replace the existing webhook
+// Flex Sync Webhook - Full Project Sync
+// Syncs ALL project data from Flex to monday.com
 
 export default async function handler(req, res) {
   // CORS headers
@@ -21,7 +21,6 @@ export default async function handler(req, res) {
     const body = req.body;
 
     // ===== MONDAY.COM CHALLENGE VERIFICATION =====
-    // When monday.com sets up a webhook, it sends a challenge that must be echoed back
     if (body.challenge) {
       console.log('Received monday.com challenge:', body.challenge);
       return res.status(200).json({ challenge: body.challenge });
@@ -39,7 +38,7 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: 'Missing itemId' });
     }
 
-    console.log(`Processing sync for item ${itemId} on board ${boardId}`);
+    console.log(`Processing full sync for item ${itemId} on board ${boardId}`);
 
     // Get environment variables
     const FLEX_API_KEY = process.env.FLEX_API_KEY;
@@ -87,15 +86,37 @@ export default async function handler(req, res) {
 
     if (!flexProjectNumber) {
       console.error('No Flex Project # found on item');
-      // Update status to error
       await updateMondayStatus(itemId, boardId, MONDAY_API_KEY, 'Sync Error', 'No Flex Project # found');
       return res.status(400).json({ error: 'No Flex Project # found on item' });
     }
 
     console.log(`Found Flex Project #: ${flexProjectNumber}`);
 
-    // Step 2: Fetch equipment list from Flex API
-    const flexResponse = await fetch(`${FLEX_BASE_URL}/api/projects/${flexProjectNumber}/equipment`, {
+    // Step 2: Fetch FULL project data from Flex API using Header Data endpoint
+    // Build the codeList query parameters for all fields we want
+    const fieldsToFetch = [
+      'name',
+      'eventDate',
+      'plannedStartDate',
+      'plannedEndDate',
+      'totalPrice',
+      'budgetedRevenue',
+      'actualCost',
+      'actualRevenue',
+      'clientCompany',
+      'clientId',
+      'venueCompany',
+      'venueId',
+      'statusId',
+      'statusColor'
+    ];
+
+    const codeListParams = fieldsToFetch.map(field => `codeList=${field}`).join('&');
+    const flexHeaderUrl = `${FLEX_BASE_URL}/api/element/${flexProjectNumber}/header-data?${codeListParams}`;
+
+    console.log(`Fetching from Flex: ${flexHeaderUrl}`);
+
+    const flexHeaderResponse = await fetch(flexHeaderUrl, {
       method: 'GET',
       headers: {
         'X-Auth-Token': FLEX_API_KEY,
@@ -103,29 +124,57 @@ export default async function handler(req, res) {
       }
     });
 
-    if (!flexResponse.ok) {
-      console.error(`Flex API error: ${flexResponse.status} ${flexResponse.statusText}`);
-      await updateMondayStatus(itemId, boardId, MONDAY_API_KEY, 'Sync Error', `Flex API error: ${flexResponse.status}`);
+    if (!flexHeaderResponse.ok) {
+      console.error(`Flex API error: ${flexHeaderResponse.status} ${flexHeaderResponse.statusText}`);
+      await updateMondayStatus(itemId, boardId, MONDAY_API_KEY, 'Sync Error', `Flex API error: ${flexHeaderResponse.status}`);
       return res.status(500).json({ error: 'Failed to fetch from Flex API' });
     }
 
-    const flexData = await flexResponse.json();
-    const equipmentList = flexData.equipment || flexData.items || [];
+    const flexHeaderData = await flexHeaderResponse.json();
+    console.log('Flex header data received:', JSON.stringify(flexHeaderData, null, 2));
 
-    console.log(`Fetched ${equipmentList.length} equipment items from Flex`);
+    // Step 3: Fetch equipment list count
+    const flexEquipmentUrl = `${FLEX_BASE_URL}/api/line-item/${flexProjectNumber}/row-data/`;
+    
+    let equipmentCount = 0;
+    try {
+      const flexEquipmentResponse = await fetch(flexEquipmentUrl, {
+        method: 'GET',
+        headers: {
+          'X-Auth-Token': FLEX_API_KEY,
+          'Content-Type': 'application/json'
+        }
+      });
 
-    // Step 3: Update monday.com with equipment count and sync timestamp
-    await updateMondayColumns(itemId, boardId, MONDAY_API_KEY, equipmentList.length);
+      if (flexEquipmentResponse.ok) {
+        const flexEquipmentData = await flexEquipmentResponse.json();
+        equipmentCount = Array.isArray(flexEquipmentData) ? flexEquipmentData.length : 0;
+        console.log(`Fetched ${equipmentCount} equipment items from Flex`);
+      } else {
+        console.warn('Equipment fetch failed, continuing with 0 count');
+      }
+    } catch (equipError) {
+      console.warn('Equipment fetch error:', equipError.message);
+    }
 
-    // Step 4: Update status to Synced
+    // Step 4: Transform Flex data to monday.com format
+    const columnValues = buildColumnValues(flexHeaderData, equipmentCount);
+
+    console.log('Updating monday.com with values:', JSON.stringify(columnValues, null, 2));
+
+    // Step 5: Update ALL monday.com columns at once
+    await updateMondayColumns(itemId, boardId, MONDAY_API_KEY, columnValues);
+
+    // Step 6: Update status to Synced
     await updateMondayStatus(itemId, boardId, MONDAY_API_KEY, 'Synced', null);
 
     return res.status(200).json({
       success: true,
       itemId,
       flexProjectNumber,
-      equipmentCount: equipmentList.length,
-      message: 'Equipment sync completed successfully'
+      syncedFields: Object.keys(columnValues),
+      equipmentCount,
+      message: 'Full project sync completed successfully'
     });
 
   } catch (error) {
@@ -154,17 +203,68 @@ export default async function handler(req, res) {
   }
 }
 
+// Helper function to transform Flex header data to monday.com column values
+function buildColumnValues(flexHeaderData, equipmentCount) {
+  const columnValues = {};
+
+  // Helper to safely extract payload value from Flex response
+  const getValue = (fieldName) => {
+    return flexHeaderData[fieldName]?.data?.payloadValue || null;
+  };
+
+  // Event Date (date_mm3xca9r)
+  const eventDate = getValue('eventDate');
+  if (eventDate) {
+    // Flex returns ISO format, monday.com needs YYYY-MM-DD
+    const dateOnly = eventDate.split('T')[0];
+    columnValues.date_mm3xca9r = { date: dateOnly };
+  }
+
+  // Estimated Budget (numeric_mm3xzncg)
+  const totalPrice = getValue('totalPrice') || getValue('budgetedRevenue');
+  if (totalPrice) {
+    columnValues.numeric_mm3xzncg = parseFloat(totalPrice);
+  }
+
+  // Actual Spend (numeric_mm3xrd3e)
+  const actualCost = getValue('actualCost');
+  if (actualCost) {
+    columnValues.numeric_mm3xrd3e = parseFloat(actualCost);
+  }
+
+  // Equipment Count (numeric_mm3zsgna)
+  columnValues.numeric_mm3zsgna = equipmentCount;
+
+  // Last Equipment Sync (date_mm3z1vqz)
+  columnValues.date_mm3z1vqz = { date: new Date().toISOString().split('T')[0] };
+
+  // Client (text field for now - we can enhance this later to link to Contacts board)
+  const clientCompany = getValue('clientCompany');
+  if (clientCompany) {
+    // Store in Budget Notes for now since we don't have a dedicated client text field
+    // You can add a new text column for this if needed
+    columnValues.long_text_mm3x7d7 = `Client: ${clientCompany}\n`;
+  }
+
+  // Venue (text field for now - same as client)
+  const venueCompany = getValue('venueCompany');
+  if (venueCompany && clientCompany) {
+    columnValues.long_text_mm3x7d7 += `Venue: ${venueCompany}`;
+  } else if (venueCompany) {
+    columnValues.long_text_mm3x7d7 = `Venue: ${venueCompany}`;
+  }
+
+  return columnValues;
+}
+
 // Helper function to update monday.com columns
-async function updateMondayColumns(itemId, boardId, apiKey, equipmentCount) {
+async function updateMondayColumns(itemId, boardId, apiKey, columnValues) {
   const mutation = `
     mutation {
       change_multiple_column_values(
         item_id: ${itemId},
         board_id: ${boardId},
-        column_values: ${JSON.stringify(JSON.stringify({
-          numeric_mm3zsgna: equipmentCount,
-          date_mm3z1vqz: { date: new Date().toISOString().split('T')[0] }
-        }))}
+        column_values: ${JSON.stringify(JSON.stringify(columnValues))}
       ) {
         id
       }
@@ -192,13 +292,6 @@ async function updateMondayColumns(itemId, boardId, apiKey, equipmentCount) {
 
 // Helper function to update sync status
 async function updateMondayStatus(itemId, boardId, apiKey, status, errorMessage) {
-  const statusMap = {
-    'Not Synced': 10,
-    'Syncing': 0,
-    'Synced': 1,
-    'Sync Error': 2
-  };
-
   const columnValues = {
     color_mm3y3bxj: { label: status }
   };
