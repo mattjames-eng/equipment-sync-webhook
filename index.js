@@ -193,11 +193,13 @@ export default async function handler(req, res) {
     const flexHeaderData = await flexHeaderResponse.json();
     console.log('Flex header data received:', JSON.stringify(flexHeaderData, null, 2));
 
-    // Step 3: Fetch equipment list count (using financial document endpoint for quotes!)
-    const flexEquipmentUrl = `${FLEX_BASE_URL}/api/financial-document-line-item/${flexElementId}/row-data/`;
+    // Step 3: Fetch equipment list count (using financial document endpoint with codeList!)
+    const flexEquipmentUrl = `${FLEX_BASE_URL}/api/financial-document-line-item/${flexElementId}/row-data/?codeList=quantity`;
     
     let equipmentCount = 0;
     try {
+      console.log(`Fetching equipment from: ${flexEquipmentUrl}`);
+      
       const flexEquipmentResponse = await fetch(flexEquipmentUrl, {
         method: 'GET',
         headers: {
@@ -209,12 +211,14 @@ export default async function handler(req, res) {
       if (flexEquipmentResponse.ok) {
         const flexEquipmentData = await flexEquipmentResponse.json();
         equipmentCount = Array.isArray(flexEquipmentData) ? flexEquipmentData.length : 0;
-        console.log(`Fetched ${equipmentCount} equipment items from Flex`);
+        console.log(`✅ Fetched ${equipmentCount} equipment items from Flex`);
       } else {
-        console.warn('Equipment fetch failed, continuing with 0 count');
+        console.warn(`⚠️ Equipment fetch failed with status ${flexEquipmentResponse.status}: ${flexEquipmentResponse.statusText}`);
+        const errorText = await flexEquipmentResponse.text();
+        console.warn(`Response body: ${errorText}`);
       }
     } catch (equipError) {
-      console.warn('Equipment fetch error:', equipError.message);
+      console.warn('❌ Equipment fetch error:', equipError.message);
     }
 
     // Step 4: Transform Flex data to monday.com format
