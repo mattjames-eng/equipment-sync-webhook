@@ -99,8 +99,8 @@ export default async function handler(req, res) {
     if (flexQuoteNumber.includes('-') && flexQuoteNumber.length < 20) {
       console.log(`Looking up internal UUID for quote: ${flexQuoteNumber}`);
       
-      // Use the element search endpoint for financial documents/quotes
-      const searchUrl = `${FLEX_BASE_URL}/api/element?searchString=${encodeURIComponent(flexQuoteNumber)}`;
+      // Use the global search endpoint that searches all elements (quotes, invoices, etc.)
+      const searchUrl = `${FLEX_BASE_URL}/api/search?searchText=${encodeURIComponent(flexQuoteNumber)}&searchTypes=all&maxResults=25&includeDeleted=false&includeClosed=true`;
       console.log(`Searching Flex: ${searchUrl}`);
 
       const searchResponse = await fetch(searchUrl, {
@@ -120,8 +120,15 @@ export default async function handler(req, res) {
       const searchData = await searchResponse.json();
       console.log('Search results:', JSON.stringify(searchData, null, 2));
 
-      // Flex returns an array of results or an object with results
-      const results = Array.isArray(searchData) ? searchData : (searchData.elements || searchData.results || searchData.data || []);
+      // Flex search returns results in different possible structures
+      let results = [];
+      if (Array.isArray(searchData)) {
+        results = searchData;
+      } else if (searchData.results) {
+        results = searchData.results;
+      } else if (searchData.data) {
+        results = Array.isArray(searchData.data) ? searchData.data : [searchData.data];
+      }
 
       if (!results || results.length === 0) {
         console.error('Quote number not found in Flex');
@@ -131,10 +138,11 @@ export default async function handler(req, res) {
 
       // Extract the internal UUID from the first search result
       // Try different possible field names
-      flexElementId = results[0].id || results[0].elementId || results[0].uuid || results[0].element_id;
+      const firstResult = results[0];
+      flexElementId = firstResult.id || firstResult.elementId || firstResult.uuid || firstResult.element_id || firstResult.elementUuid;
 
       if (!flexElementId) {
-        console.error('Could not extract UUID from search results:', results[0]);
+        console.error('Could not extract UUID from search results:', firstResult);
         await updateMondayStatus(itemId, boardId, MONDAY_API_KEY, 'Sync Error', 'Could not find element ID in search results');
         return res.status(500).json({ error: 'UUID extraction failed' });
       }
