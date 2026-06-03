@@ -193,8 +193,8 @@ export default async function handler(req, res) {
     const flexHeaderData = await flexHeaderResponse.json();
     console.log('Flex header data received:', JSON.stringify(flexHeaderData, null, 2));
 
-    // Step 3: Fetch equipment list count
-    const flexEquipmentUrl = `${FLEX_BASE_URL}/api/line-item/${flexElementId}/row-data/`;
+    // Step 3: Fetch equipment list count (using financial document endpoint for quotes!)
+    const flexEquipmentUrl = `${FLEX_BASE_URL}/api/financial-document-line-item/${flexElementId}/row-data/`;
     
     let equipmentCount = 0;
     try {
@@ -225,7 +225,7 @@ export default async function handler(req, res) {
     // Step 5: Update ALL monday.com columns at once
     await updateMondayColumns(itemId, boardId, MONDAY_API_KEY, columnValues);
 
-    // Step 6: Update status to Synced
+    // Step 6: Update status to Synced (with no error message!)
     await updateMondayStatus(itemId, boardId, MONDAY_API_KEY, 'Synced', null);
 
     return res.status(200).json({
@@ -367,9 +367,11 @@ async function updateMondayStatus(itemId, boardId, apiKey, status, errorMessage)
     color_mm3y3bxj: { label: status }
   };
 
-  // If there's an error message, update the error column
+  // If there's an error, write it. If not, clear the column!
   if (errorMessage) {
     columnValues.text_mm3zvvqk = errorMessage;
+  } else {
+    columnValues.text_mm3zvvqk = "";
   }
 
   const mutation = `
