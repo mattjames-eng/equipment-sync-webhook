@@ -99,7 +99,8 @@ export default async function handler(req, res) {
     if (flexQuoteNumber.includes('-') && flexQuoteNumber.length < 20) {
       console.log(`Looking up internal UUID for quote: ${flexQuoteNumber}`);
       
-      const searchUrl = `${FLEX_BASE_URL}/api/inventory-tree/search?q=${encodeURIComponent(flexQuoteNumber)}`;
+      // Use the element search endpoint for financial documents/quotes
+      const searchUrl = `${FLEX_BASE_URL}/api/element?searchString=${encodeURIComponent(flexQuoteNumber)}`;
       console.log(`Searching Flex: ${searchUrl}`);
 
       const searchResponse = await fetch(searchUrl, {
