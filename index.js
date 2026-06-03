@@ -1,4 +1,4 @@
-// Flex Sync Webhook - Full Project Sync
+// Flex Sync Webhook - Full Project Sync - FIXED VERSION
 // Syncs ALL project data from Flex to monday.com
 
 export default async function handler(req, res) {
@@ -207,28 +207,38 @@ export default async function handler(req, res) {
 function buildColumnValues(flexHeaderData, equipmentCount) {
   const columnValues = {};
 
-  // Helper to safely extract payload value from Flex response
+  // Helper to safely extract data value from Flex response
+  // Flex returns data directly in the "data" field, not nested in "payloadValue"
   const getValue = (fieldName) => {
-    return flexHeaderData[fieldName]?.data?.payloadValue || null;
+    const field = flexHeaderData[fieldName];
+    if (!field || !field.data) return null;
+    
+    // If data is an object with a "name" property, return the name
+    if (typeof field.data === 'object' && field.data.name) {
+      return field.data.name;
+    }
+    
+    // Otherwise return data directly
+    return field.data;
   };
 
   // Event Date (date_mm3xca9r)
   const eventDate = getValue('eventDate');
   if (eventDate) {
-    // Flex returns ISO format, monday.com needs YYYY-MM-DD
+    // Flex returns ISO format like "2026-07-27T05:00:00", monday.com needs YYYY-MM-DD
     const dateOnly = eventDate.split('T')[0];
     columnValues.date_mm3xca9r = { date: dateOnly };
   }
 
   // Estimated Budget (numeric_mm3xzncg)
   const totalPrice = getValue('totalPrice') || getValue('budgetedRevenue');
-  if (totalPrice) {
+  if (totalPrice && totalPrice > 0) {
     columnValues.numeric_mm3xzncg = parseFloat(totalPrice);
   }
 
   // Actual Spend (numeric_mm3xrd3e)
   const actualCost = getValue('actualCost');
-  if (actualCost) {
+  if (actualCost && actualCost > 0) {
     columnValues.numeric_mm3xrd3e = parseFloat(actualCost);
   }
 
@@ -238,20 +248,20 @@ function buildColumnValues(flexHeaderData, equipmentCount) {
   // Last Equipment Sync (date_mm3z1vqz)
   columnValues.date_mm3z1vqz = { date: new Date().toISOString().split('T')[0] };
 
-  // Client (text field for now - we can enhance this later to link to Contacts board)
+  // Client & Venue in Budget Notes (long_text_mm3x7d7)
   const clientCompany = getValue('clientCompany');
-  if (clientCompany) {
-    // Store in Budget Notes for now since we don't have a dedicated client text field
-    // You can add a new text column for this if needed
-    columnValues.long_text_mm3x7d7 = `Client: ${clientCompany}\n`;
-  }
-
-  // Venue (text field for now - same as client)
   const venueCompany = getValue('venueCompany');
-  if (venueCompany && clientCompany) {
-    columnValues.long_text_mm3x7d7 += `Venue: ${venueCompany}`;
-  } else if (venueCompany) {
-    columnValues.long_text_mm3x7d7 = `Venue: ${venueCompany}`;
+  
+  let notesText = '';
+  if (clientCompany) {
+    notesText += `Client: ${clientCompany}\n`;
+  }
+  if (venueCompany) {
+    notesText += `Venue: ${venueCompany}`;
+  }
+  
+  if (notesText) {
+    columnValues.long_text_mm3x7d7 = notesText;
   }
 
   return columnValues;
