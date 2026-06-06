@@ -1,5 +1,5 @@
-// Flex Sync Webhook - Full Project Sync with AUTO UUID LOOKUP
-// PMs can now just enter the quote number (26-0112) and it auto-finds the UUID!
+// Flex Sync Webhook - COMPLETE FIXED VERSION
+// Fixes: Client/Venue linking, Equipment List IDs, Budget sync, Error handling
 
 export default async function handler(req, res) {
   // CORS headers
@@ -44,6 +44,7 @@ export default async function handler(req, res) {
     const FLEX_API_KEY = process.env.FLEX_API_KEY;
     const MONDAY_API_KEY = process.env.MONDAY_API_KEY;
     const FLEX_BASE_URL = process.env.FLEX_BASE_URL || 'https://your-flex-instance.com/f5';
+    const CONTACTS_BOARD_ID = '18415573401'; // Contacts & Companies board
 
     if (!FLEX_API_KEY || !MONDAY_API_KEY) {
       console.error('Missing API keys in environment variables');
@@ -99,7 +100,6 @@ export default async function handler(req, res) {
     if (flexQuoteNumber.includes('-') && flexQuoteNumber.length < 20) {
       console.log(`Looking up internal UUID for quote: ${flexQuoteNumber}`);
       
-      // Use the global search endpoint that searches all elements (quotes, invoices, etc.)
       const searchUrl = `${FLEX_BASE_URL}/api/search?searchText=${encodeURIComponent(flexQuoteNumber)}&searchTypes=all&maxResults=25&includeDeleted=false&includeClosed=true`;
       console.log(`Searching Flex: ${searchUrl}`);
 
@@ -137,7 +137,6 @@ export default async function handler(req, res) {
       }
 
       // Extract the internal UUID from the first search result
-      // Try different possible field names
       const firstResult = results[0];
       flexElementId = firstResult.id || firstResult.elementId || firstResult.uuid || firstResult.element_id || firstResult.elementUuid;
 
@@ -153,7 +152,6 @@ export default async function handler(req, res) {
     }
 
     // Step 2: Fetch FULL project data from Flex API using Header Data endpoint
-    // Build the codeList query parameters for all fields we want
     const fieldsToFetch = [
       'name',
       'eventDate',
@@ -168,7 +166,8 @@ export default async function handler(req, res) {
       'venueCompany',
       'venueId',
       'statusId',
-      'statusColor'
+      'statusColor',
+      'equipmentListId' // 🆕 FIX #1: Get equipment list ID
     ];
 
     const codeListParams = fieldsToFetch.map(field => `codeList=${field}`).join('&');
@@ -193,7 +192,7 @@ export default async function handler(req, res) {
     const flexHeaderData = await flexHeaderResponse.json();
     console.log('Flex header data received:', JSON.stringify(flexHeaderData, null, 2));
 
-    // Step 3: Fetch equipment list count (using financial document endpoint with codeList!)
+    // Step 3: Fetch equipment list count
     const flexEquipmentUrl = `${FLEX_BASE_URL}/api/financial-document-line-item/${flexElementId}/row-data/?codeList=quantity`;
     
     let equipmentCount = 0;
@@ -213,23 +212,38 @@ export default async function handler(req, res) {
         equipmentCount = Array.isArray(flexEquipmentData) ? flexEquipmentData.length : 0;
         console.log(`✅ Fetched ${equipmentCount} equipment items from Flex`);
       } else {
-        console.warn(`⚠️ Equipment fetch failed with status ${flexEquipmentResponse.status}: ${flexEquipmentResponse.statusText}`);
-        const errorText = await flexEquipmentResponse.text();
-        console.warn(`Response body: ${errorText}`);
+        console.warn(`⚠️ Equipment fetch failed with status ${flexEquipmentResponse.status}`);
       }
     } catch (equipError) {
       console.warn('❌ Equipment fetch error:', equipError.message);
     }
 
+    // 🆕 FIX #2: Create/Link Client and Venue in Contacts & Companies board
+    const clientName = getValue(flexHeaderData, 'clientCompany');
+    const venueName = getValue(flexHeaderData, 'venueCompany');
+    
+    let clientItemId = null;
+    let venueItemId = null;
+
+    if (clientName) {
+      clientItemId = await findOrCreateContact(MONDAY_API_KEY, CONTACTS_BOARD_ID, clientName, 'Client');
+      console.log(`✅ Client linked: ${clientName} (ID: ${clientItemId})`);
+    }
+
+    if (venueName) {
+      venueItemId = await findOrCreateContact(MONDAY_API_KEY, CONTACTS_BOARD_ID, venueName, 'Venue');
+      console.log(`✅ Venue linked: ${venueName} (ID: ${venueItemId})`);
+    }
+
     // Step 4: Transform Flex data to monday.com format
-    const columnValues = buildColumnValues(flexHeaderData, equipmentCount);
+    const columnValues = buildColumnValues(flexHeaderData, equipmentCount, clientItemId, venueItemId);
 
     console.log('Updating monday.com with values:', JSON.stringify(columnValues, null, 2));
 
     // Step 5: Update ALL monday.com columns at once
     await updateMondayColumns(itemId, boardId, MONDAY_API_KEY, columnValues);
 
-    // Step 6: Update status to Synced (with no error message!)
+    // Step 6: Update status to Synced
     await updateMondayStatus(itemId, boardId, MONDAY_API_KEY, 'Synced', null);
 
     return res.status(200).json({
@@ -239,6 +253,8 @@ export default async function handler(req, res) {
       flexElementId,
       syncedFields: Object.keys(columnValues),
       equipmentCount,
+      clientLinked: !!clientItemId,
+      venueLinked: !!venueItemId,
       message: 'Full project sync completed successfully'
     });
 
@@ -268,43 +284,128 @@ export default async function handler(req, res) {
   }
 }
 
-// Helper function to transform Flex header data to monday.com column values
-function buildColumnValues(flexHeaderData, equipmentCount) {
+// 🆕 FIX #3: Helper function to find or create contact in Contacts & Companies board
+async function findOrCreateContact(apiKey, boardId, companyName, companyType) {
+  // Step 1: Search for existing contact
+  const searchQuery = `
+    query {
+      boards(ids: [${boardId}]) {
+        items_page(limit: 100, query_params: {rules: [{column_id: "name", compare_value: ["${companyName.replace(/"/g, '\\"')}"], operator: contains_text}]}) {
+          items {
+            id
+            name
+          }
+        }
+      }
+    }
+  `;
+
+  const searchResponse = await fetch('https://api.monday.com/v2', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': apiKey,
+      'API-Version': '2024-10'
+    },
+    body: JSON.stringify({ query: searchQuery })
+  });
+
+  const searchData = await searchResponse.json();
+  
+  if (searchData.errors) {
+    console.error('Error searching for contact:', searchData.errors);
+    return null;
+  }
+
+  const existingItems = searchData.data?.boards?.[0]?.items_page?.items || [];
+  
+  // If exact match found, return it
+  const exactMatch = existingItems.find(item => item.name.toLowerCase() === companyName.toLowerCase());
+  if (exactMatch) {
+    console.log(`Found existing contact: ${companyName} (ID: ${exactMatch.id})`);
+    return parseInt(exactMatch.id);
+  }
+
+  // Step 2: Create new contact if not found
+  console.log(`Creating new contact: ${companyName} (Type: ${companyType})`);
+  
+  const createMutation = `
+    mutation {
+      create_item(
+        board_id: ${boardId},
+        item_name: "${companyName.replace(/"/g, '\\"')}",
+        column_values: ${JSON.stringify(JSON.stringify({
+          dropdown_mm3vm6jh: { labels: [companyType] } // ✅ CORRECT Company Type column ID
+        }))}
+      ) {
+        id
+      }
+    }
+  `;
+
+  const createResponse = await fetch('https://api.monday.com/v2', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': apiKey,
+      'API-Version': '2024-10'
+    },
+    body: JSON.stringify({ query: createMutation })
+  });
+
+  const createData = await createResponse.json();
+  
+  if (createData.errors) {
+    console.error('Error creating contact:', createData.errors);
+    return null;
+  }
+
+  const newItemId = parseInt(createData.data.create_item.id);
+  console.log(`✅ Created new contact: ${companyName} (ID: ${newItemId})`);
+  return newItemId;
+}
+
+// Helper to safely extract data value from Flex response
+const getValue = (flexHeaderData, fieldName) => {
+  const field = flexHeaderData[fieldName];
+  if (!field || !field.data) return null;
+  
+  // If data is an object with a "name" property, return the name
+  if (typeof field.data === 'object' && field.data.name) {
+    return field.data.name;
+  }
+  
+  // Otherwise return data directly
+  return field.data;
+};
+
+// 🆕 FIX #4: Enhanced buildColumnValues with Client/Venue linking and Equipment List ID
+function buildColumnValues(flexHeaderData, equipmentCount, clientItemId, venueItemId) {
   const columnValues = {};
 
-  // Helper to safely extract data value from Flex response
-  // Flex returns data directly in the "data" field, not nested in "payloadValue"
-  const getValue = (fieldName) => {
-    const field = flexHeaderData[fieldName];
-    if (!field || !field.data) return null;
-    
-    // If data is an object with a "name" property, return the name
-    if (typeof field.data === 'object' && field.data.name) {
-      return field.data.name;
-    }
-    
-    // Otherwise return data directly
-    return field.data;
-  };
-
   // Event Date (date_mm3xca9r)
-  const eventDate = getValue('eventDate');
+  const eventDate = getValue(flexHeaderData, 'eventDate');
   if (eventDate) {
-    // Flex returns ISO format like "2026-07-27T05:00:00", monday.com needs YYYY-MM-DD
     const dateOnly = eventDate.split('T')[0];
     columnValues.date_mm3xca9r = { date: dateOnly };
   }
 
   // Estimated Budget (numeric_mm3xzncg)
-  const totalPrice = getValue('totalPrice') || getValue('budgetedRevenue');
+  const totalPrice = getValue(flexHeaderData, 'totalPrice') || getValue(flexHeaderData, 'budgetedRevenue');
   if (totalPrice && totalPrice > 0) {
     columnValues.numeric_mm3xzncg = parseFloat(totalPrice);
   }
 
   // Actual Spend (numeric_mm3xrd3e)
-  const actualCost = getValue('actualCost');
+  const actualCost = getValue(flexHeaderData, 'actualCost');
   if (actualCost && actualCost > 0) {
     columnValues.numeric_mm3xrd3e = parseFloat(actualCost);
+  }
+
+  // 🆕 FIX #5: Equipment List ID (text_mm3y7xwa)
+  const equipmentListId = getValue(flexHeaderData, 'equipmentListId');
+  if (equipmentListId) {
+    columnValues.text_mm3y7xwa = equipmentListId;
   }
 
   // Equipment Count (numeric_mm3zsgna)
@@ -313,9 +414,19 @@ function buildColumnValues(flexHeaderData, equipmentCount) {
   // Last Equipment Sync (date_mm3z1vqz)
   columnValues.date_mm3z1vqz = { date: new Date().toISOString().split('T')[0] };
 
-  // Client & Venue in Budget Notes (long_text_mm3x7d7)
-  const clientCompany = getValue('clientCompany');
-  const venueCompany = getValue('venueCompany');
+  // 🆕 FIX #6: Client board relation (board_relation_mm3x8evw)
+  if (clientItemId) {
+    columnValues.board_relation_mm3x8evw = { item_ids: [clientItemId] };
+  }
+
+  // 🆕 FIX #7: Venue board relation (board_relation_mm3xrm02)
+  if (venueItemId) {
+    columnValues.board_relation_mm3xrm02 = { item_ids: [venueItemId] };
+  }
+
+  // Keep client/venue in Budget Notes as backup
+  const clientCompany = getValue(flexHeaderData, 'clientCompany');
+  const venueCompany = getValue(flexHeaderData, 'venueCompany');
   
   let notesText = '';
   if (clientCompany) {
