@@ -16,8 +16,6 @@
  * Updated: Added CORS headers and support for both elementId and itemId parameters
  */
 
-const fetch = require('node-fetch');
-
 // Environment variables (set in Vercel)
 const FLEX_API_KEY = process.env.FLEX_API_KEY_QUOTES || process.env.FLEX_API_KEY || 'QjT1EKjjVkZoQmmUsIpRK3ggq94bqW34qNCt';
 const FLEX_BASE_URL = process.env.FLEX_BASE_URL || 'https://anticstudios.flexrentalsolutions.com';
