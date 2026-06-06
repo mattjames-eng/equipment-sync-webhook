@@ -12,6 +12,7 @@
  * 
  * Author: Matt James, Antic Studios
  * Date: June 6, 2026
+ * Updated: Added support for both elementId and itemId parameters
  */
 
 const fetch = require('node-fetch');
@@ -44,19 +45,25 @@ export default async function handler(req, res) {
   }
 
   try {
-    console.log('📥 Received Flex quote webhook');
+    console.log('📥 Received Flex quote request');
+    console.log('Request body:', JSON.stringify(req.body, null, 2));
     
-    // Extract Flex element ID from webhook payload
-    const { elementId, eventType } = req.body;
+    // Accept both elementId and itemId parameter names
+    const quoteId = req.body.elementId || req.body.itemId;
+    const eventType = req.body.eventType;
     
-    if (!elementId) {
-      return res.status(400).json({ error: 'Missing elementId in payload' });
+    if (!quoteId) {
+      console.log('❌ Missing quote ID in request');
+      return res.status(400).json({ 
+        error: 'Missing quote ID',
+        message: 'Please provide either elementId or itemId parameter with the Flex quote number'
+      });
     }
 
-    console.log(`🔍 Processing Flex quote: ${elementId}`);
+    console.log(`🔍 Processing Flex quote: ${quoteId}`);
 
     // Step 1: Fetch full quote details from Flex
-    const quoteData = await fetchFlexQuoteData(elementId);
+    const quoteData = await fetchFlexQuoteData(quoteId);
     console.log(`✅ Fetched quote data: ${quoteData.name}`);
 
     // Step 2: Check for duplicate project
@@ -121,8 +128,10 @@ export default async function handler(req, res) {
 /**
  * Fetch quote data from Flex API
  */
-async function fetchFlexQuoteData(elementId) {
-  const url = `${FLEX_BASE_URL}/api/element/${elementId}/header-data`;
+async function fetchFlexQuoteData(quoteId) {
+  const url = `${FLEX_BASE_URL}/api/element/${quoteId}/header-data`;
+  
+  console.log(`Fetching from Flex: ${url}`);
   
   const response = await fetch(url, {
     method: 'GET',
@@ -133,13 +142,15 @@ async function fetchFlexQuoteData(elementId) {
   });
 
   if (!response.ok) {
+    const errorText = await response.text();
+    console.error(`Flex API error: ${response.status} - ${errorText}`);
     throw new Error(`Flex API error: ${response.status} ${response.statusText}`);
   }
 
   const data = await response.json();
   
   return {
-    elementNumber: data.elementNumber || elementId,
+    elementNumber: data.elementNumber || quoteId,
     name: data.name || 'Untitled Project',
     customer: {
       name: data.customer?.name || 'Unknown Client'
