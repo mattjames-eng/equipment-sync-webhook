@@ -9,10 +9,11 @@
  * - Duplicate prevention
  * - PM assignment based on budget
  * - Notifications
+ * - CORS for Vibe app access
  * 
  * Author: Matt James, Antic Studios
  * Date: June 6, 2026
- * Updated: Added support for both elementId and itemId parameters
+ * Updated: Added CORS headers and support for both elementId and itemId parameters
  */
 
 const fetch = require('node-fetch');
@@ -39,6 +40,16 @@ const PM_ASSIGNMENTS = {
  * Main handler function
  */
 export default async function handler(req, res) {
+  // Add CORS headers to allow requests from Vibe app
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  
+  // Handle preflight OPTIONS request
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+
   // Only accept POST requests
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
