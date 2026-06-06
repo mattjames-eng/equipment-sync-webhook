@@ -1,5 +1,5 @@
-// Flex Sync Webhook - COMPLETE FIXED VERSION
-// Fixes: Client/Venue linking, Equipment List IDs, Budget sync, Error handling
+// Flex Sync Webhook - COMPLETE FIXED VERSION v2
+// Fixes: Client/Venue linking, Equipment List IDs, Budget sync, Error handling, DUPLICATE DETECTION
 
 export default async function handler(req, res) {
   // CORS headers
@@ -167,7 +167,7 @@ export default async function handler(req, res) {
       'venueId',
       'statusId',
       'statusColor',
-      'equipmentListId' // 🆕 FIX #1: Get equipment list ID
+      'equipmentListId'
     ];
 
     const codeListParams = fieldsToFetch.map(field => `codeList=${field}`).join('&');
@@ -218,7 +218,7 @@ export default async function handler(req, res) {
       console.warn('❌ Equipment fetch error:', equipError.message);
     }
 
-    // 🆕 FIX #2: Create/Link Client and Venue in Contacts & Companies board
+    // Step 4: Create/Link Client and Venue in Contacts & Companies board
     const clientName = getValue(flexHeaderData, 'clientCompany');
     const venueName = getValue(flexHeaderData, 'venueCompany');
     
@@ -235,15 +235,15 @@ export default async function handler(req, res) {
       console.log(`✅ Venue linked: ${venueName} (ID: ${venueItemId})`);
     }
 
-    // Step 4: Transform Flex data to monday.com format
+    // Step 5: Transform Flex data to monday.com format
     const columnValues = buildColumnValues(flexHeaderData, equipmentCount, clientItemId, venueItemId);
 
     console.log('Updating monday.com with values:', JSON.stringify(columnValues, null, 2));
 
-    // Step 5: Update ALL monday.com columns at once
+    // Step 6: Update ALL monday.com columns at once
     await updateMondayColumns(itemId, boardId, MONDAY_API_KEY, columnValues);
 
-    // Step 6: Update status to Synced
+    // Step 7: Update status to Synced
     await updateMondayStatus(itemId, boardId, MONDAY_API_KEY, 'Synced', null);
 
     return res.status(200).json({
@@ -284,16 +284,23 @@ export default async function handler(req, res) {
   }
 }
 
-// 🆕 FIX #3: Helper function to find or create contact in Contacts & Companies board
+// 🆕 IMPROVED: Better duplicate detection with fuzzy matching
 async function findOrCreateContact(apiKey, boardId, companyName, companyType) {
-  // Step 1: Search for existing contact
+  // Clean up the company name for better matching
+  const cleanName = companyName.trim();
+  
+  // Step 1: Search for existing contacts - fetch ALL to check properly
   const searchQuery = `
     query {
       boards(ids: [${boardId}]) {
-        items_page(limit: 100, query_params: {rules: [{column_id: "name", compare_value: ["${companyName.replace(/"/g, '\\"')}"], operator: contains_text}]}) {
+        items_page(limit: 500) {
           items {
             id
             name
+            column_values(ids: ["dropdown_mm3vm6jh"]) {
+              id
+              text
+            }
           }
         }
       }
@@ -319,23 +326,51 @@ async function findOrCreateContact(apiKey, boardId, companyName, companyType) {
 
   const existingItems = searchData.data?.boards?.[0]?.items_page?.items || [];
   
-  // If exact match found, return it
-  const exactMatch = existingItems.find(item => item.name.toLowerCase() === companyName.toLowerCase());
+  // Step 2: Check for exact match (case-insensitive)
+  const exactMatch = existingItems.find(item => 
+    item.name.toLowerCase().trim() === cleanName.toLowerCase()
+  );
+  
   if (exactMatch) {
-    console.log(`Found existing contact: ${companyName} (ID: ${exactMatch.id})`);
+    console.log(`✅ Found existing contact (exact match): ${cleanName} (ID: ${exactMatch.id})`);
     return parseInt(exactMatch.id);
   }
 
-  // Step 2: Create new contact if not found
-  console.log(`Creating new contact: ${companyName} (Type: ${companyType})`);
+  // Step 3: Check for fuzzy match (very similar names - removes punctuation/spaces)
+  const fuzzyMatch = existingItems.find(item => {
+    const itemNameClean = item.name.toLowerCase().trim().replace(/[^a-z0-9]/g, '');
+    const searchNameClean = cleanName.toLowerCase().trim().replace(/[^a-z0-9]/g, '');
+    return itemNameClean === searchNameClean;
+  });
+
+  if (fuzzyMatch) {
+    console.log(`✅ Found existing contact (fuzzy match): ${cleanName} → ${fuzzyMatch.name} (ID: ${fuzzyMatch.id})`);
+    return parseInt(fuzzyMatch.id);
+  }
+
+  // Step 4: Check if a contact with this name AND type already exists
+  const typeMatch = existingItems.find(item => {
+    const nameMatches = item.name.toLowerCase().trim() === cleanName.toLowerCase();
+    const typeColumn = item.column_values.find(col => col.id === 'dropdown_mm3vm6jh');
+    const typeMatches = typeColumn && typeColumn.text === companyType;
+    return nameMatches && typeMatches;
+  });
+
+  if (typeMatch) {
+    console.log(`✅ Found existing contact with matching type: ${cleanName} (ID: ${typeMatch.id})`);
+    return parseInt(typeMatch.id);
+  }
+
+  // Step 5: Create new contact only if no match found
+  console.log(`🆕 Creating new contact: ${cleanName} (Type: ${companyType})`);
   
   const createMutation = `
     mutation {
       create_item(
         board_id: ${boardId},
-        item_name: "${companyName.replace(/"/g, '\\"')}",
+        item_name: "${cleanName.replace(/"/g, '\\"')}",
         column_values: ${JSON.stringify(JSON.stringify({
-          dropdown_mm3vm6jh: { labels: [companyType] } // ✅ CORRECT Company Type column ID
+          dropdown_mm3vm6jh: { labels: [companyType] }
         }))}
       ) {
         id
@@ -361,7 +396,7 @@ async function findOrCreateContact(apiKey, boardId, companyName, companyType) {
   }
 
   const newItemId = parseInt(createData.data.create_item.id);
-  console.log(`✅ Created new contact: ${companyName} (ID: ${newItemId})`);
+  console.log(`✅ Created new contact: ${cleanName} (ID: ${newItemId})`);
   return newItemId;
 }
 
@@ -379,7 +414,7 @@ const getValue = (flexHeaderData, fieldName) => {
   return field.data;
 };
 
-// 🆕 FIX #4: Enhanced buildColumnValues with Client/Venue linking and Equipment List ID
+// Enhanced buildColumnValues with Client/Venue linking and Equipment List ID
 function buildColumnValues(flexHeaderData, equipmentCount, clientItemId, venueItemId) {
   const columnValues = {};
 
@@ -402,7 +437,7 @@ function buildColumnValues(flexHeaderData, equipmentCount, clientItemId, venueIt
     columnValues.numeric_mm3xrd3e = parseFloat(actualCost);
   }
 
-  // 🆕 FIX #5: Equipment List ID (text_mm3y7xwa)
+  // Equipment List ID (text_mm3y7xwa)
   const equipmentListId = getValue(flexHeaderData, 'equipmentListId');
   if (equipmentListId) {
     columnValues.text_mm3y7xwa = equipmentListId;
@@ -414,12 +449,12 @@ function buildColumnValues(flexHeaderData, equipmentCount, clientItemId, venueIt
   // Last Equipment Sync (date_mm3z1vqz)
   columnValues.date_mm3z1vqz = { date: new Date().toISOString().split('T')[0] };
 
-  // 🆕 FIX #6: Client board relation (board_relation_mm3x8evw)
+  // Client board relation (board_relation_mm3x8evw)
   if (clientItemId) {
     columnValues.board_relation_mm3x8evw = { item_ids: [clientItemId] };
   }
 
-  // 🆕 FIX #7: Venue board relation (board_relation_mm3xrm02)
+  // Venue board relation (board_relation_mm3xrm02)
   if (venueItemId) {
     columnValues.board_relation_mm3xrm02 = { item_ids: [venueItemId] };
   }
