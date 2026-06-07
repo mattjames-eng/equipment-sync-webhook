@@ -122,6 +122,7 @@ async function fetchFlexQuoteData(quoteId) {
     if (!dataResponse.ok) throw new Error(`Flex Data API failed: ${dataResponse.status}`);
 
     const data = await dataResponse.json();
+    console.log("🚨 RAW FLEX PAYLOAD REVEALED:", JSON.stringify(data));
 
     const deepExtractName = (obj) => {
         if (!obj) return null;
