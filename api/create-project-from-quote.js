@@ -1,8 +1,10 @@
 /**
  * Flex Quote → monday.com Project Creator
- * * This endpoint receives Flex quote data and automatically creates
+ * 
+ * This endpoint receives Flex quote data and automatically creates
  * a project in monday.com with all fields populated.
- * * Handles:
+ * 
+ * Handles:
  * - Client/venue lookup and creation
  * - Duplicate prevention
  * - PM assignment based on budget
@@ -10,7 +12,9 @@
  * - CORS for Vibe app access
  * - Two-step Flex API lookup using correct /api/search endpoint
  * - Strict nested metadata cleaning for complex Flex objects (Dates & Names)
- * * Author: Matt James, Antic Studios
+ * - Vibe app form submissions with "Flex Quote Number" field
+ * 
+ * Author: Matt James, Antic Studios
  */
 
 // Environment variables (set in Vercel)
@@ -48,19 +52,35 @@ export default async function handler(req, res) {
     }
 
     try {
-        console.log('📥 Received Flex quote request');
+        console.log('📥 Received request');
+        console.log('📦 Request body:', JSON.stringify(req.body, null, 2));
         
-        // Accept both elementId and itemId parameter names
-        const quoteId = req.body.elementId || req.body.itemId;
-
+        // Helper to extract clean values from Vibe form fields
+        const extractValue = (field) => {
+            if (!field) return null;
+            if (typeof field === 'string') return field;
+            if (typeof field === 'object' && field.data !== undefined) return field.data;
+            return String(field);
+        };
+        
+        // Detect if this is from Vibe app (has "Flex Quote Number" field) or Flex webhook (has elementId)
+        const vibeQuoteNumber = extractValue(req.body['Flex Quote Number']);
+        const flexWebhookId = req.body.elementId || req.body.itemId;
+        
+        const quoteId = vibeQuoteNumber || flexWebhookId;
+        
         if (!quoteId) {
             console.log('❌ Missing quote ID in request');
-            return res.status(400).json({ error: 'Missing quote ID', message: 'Please provide either elementId or itemId parameter' });
+            return res.status(400).json({ 
+                error: 'Missing quote ID', 
+                message: 'Please provide either "Flex Quote Number" field or elementId/itemId parameter' 
+            });
         }
+        
+        const source = vibeQuoteNumber ? 'Vibe App' : 'Flex Webhook';
+        console.log(`🔍 Processing quote ${quoteId} from ${source}`);
 
-        console.log(`🔍 Processing Flex quote: ${quoteId}`);
-
-        // Step 1: Fetch full quote details from Flex (NEW TWO-STEP PROCESS)
+        // Step 1: Fetch full quote details from Flex
         const quoteData = await fetchFlexQuoteData(quoteId);
         console.log(`✅ Fetched quote data: ${quoteData.name}`);
 
