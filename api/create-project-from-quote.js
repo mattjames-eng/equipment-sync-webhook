@@ -138,8 +138,7 @@ export default async function handler(req, res) {
  * Fetch quote data from Flex API
  */
 async function fetchFlexQuoteData(quoteId) {
-  const url = `${FLEX_BASE_URL}/api/element/${quoteId}/header-data`;
-  
+const url = `${FLEX_BASE_URL}/api/element/${quoteId}/header-data?codeList=elementNumber,name,customer,venue,eventDate,loadInDate,strikeDate,totalEstimate,notes,equipmentList,status,salesRep`;  
   console.log(`Fetching from Flex: ${url}`);
   
   const response = await fetch(url, {
