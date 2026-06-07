@@ -9,6 +9,7 @@
  * - Notifications
  * - CORS for Vibe app access
  * - Two-step Flex API lookup using correct /api/search endpoint
+ * - Strict nested metadata cleaning for complex Flex objects (Dates & Names)
  * * Author: Matt James, Antic Studios
  */
 
@@ -167,12 +168,29 @@ async function fetchFlexQuoteData(quoteId) {
     const data = await dataResponse.json();
     console.log(`✅ Step 2 Success! Raw data structural parse verified.`);
 
-    // Robust function to cleanly extract a string value out of a varying property types
+    // Helper to safely pull clean string names out of nested structural properties
     const extractString = (val) => {
         if (!val) return 'Unknown';
         if (typeof val === 'string') return val;
-        if (typeof val === 'object') return val.name || val.text || val.value || JSON.stringify(val);
+        if (typeof val === 'object') {
+            return val.name || val.text || val.value || val.displayString || JSON.stringify(val);
+        }
         return String(val);
+    };
+
+    // Helper to extract clean YYYY-MM-DD date values from nested layout structures
+    const extractCleanDate = (dateVal) => {
+        if (!dateVal) return null;
+        let rawString = '';
+        if (typeof dateVal === 'string') {
+            rawString = dateVal;
+        } else if (typeof dateVal === 'object') {
+            rawString = dateVal.data || dateVal.value || dateVal.date || JSON.stringify(dateVal);
+        }
+        
+        // Use regex pattern extraction to pull out YYYY-MM-DD cleanly
+        const match = rawString.match(/(\d{4}-\d{2}-\d{2})/);
+        return match ? match[1] : null;
     };
 
     return {
@@ -180,9 +198,9 @@ async function fetchFlexQuoteData(quoteId) {
         name: extractString(data.name || 'Untitled Project'),
         customer: { name: extractString(data.customer?.name || data.customer || 'Unknown Client') },
         venue: { name: extractString(data.venue?.name || data.venue || 'Unknown Venue') },
-        eventDate: data.eventDate || null,
-        loadInDate: data.loadInDate || null,
-        strikeDate: data.strikeDate || null,
+        eventDate: extractCleanDate(data.eventDate),
+        loadInDate: extractCleanDate(data.loadInDate),
+        strikeDate: extractCleanDate(data.strikeDate),
         totalEstimate: data.totalEstimate || 0,
         notes: extractString(data.notes || ''),
         equipmentList: { count: data.equipmentList?.count || 0 },
@@ -235,8 +253,8 @@ async function findOrCreateContact(name, type) {
             column_values: "{\\"dropdown_mm3vqxqh\\":\\"${type}\\",\\"color_mm3vqxqh\\":{\\"label\\":\\"Active\\"}}"
         ) { id }
     }`;
-    const createResponse = await mondayApiCall(createMutation);
-    return createResponse.data.create_item.id;
+    const createMutationResponse = await mondayApiCall(createMutation);
+    return createMutationResponse.data.create_item.id;
 }
 
 async function createMondayProject(quoteData, clientId, venueId) {
@@ -318,7 +336,7 @@ async function sendNotification(projectId, quoteData, pmUserId) {
             payload: ${JSON.stringify(JSON.stringify({
                 client: quoteData.customer.name,
                 venue: quoteData.venue.name,
-                eventDate: quoteData.eventDate,
+                eventDate: quoteData.eventDate || 'N/A',
                 budget: `${quoteData.totalEstimate.toLocaleString()}`
             }))}
         ) { text }
