@@ -4,7 +4,7 @@
  * a project in monday.com with all fields populated.
  * * Handles:
  * - Client/venue lookup and creation (Strict duplicate prevention)
- * - Duplicate prevention for primary projects
+ * - Multi-step Board Relation connection binding (API standard compliance)
  * - PM assignment based on budget
  * - Notifications
  * - CORS for Vibe app access
@@ -136,9 +136,12 @@ export default async function handler(req, res) {
         // Step 4: Find or create venue
         const venueId = await findOrCreateContact(quoteData.venue.name, 'Venue');
 
-        // Step 5: Create project in monday.com
-        const project = await createMondayProject(quoteData, clientId, venueId);
-        console.log(`✅ Base layout generation complete. Project record assigned ID: ${project.id}`);
+        // Step 5: Create project in monday.com (Standard fields first)
+        const project = await createMondayProject(quoteData);
+        console.log(`✅ Base project record assigned ID: ${project.id}`);
+
+        // Step 5b: Bind Cross-Board Relations via dedicated secondary mutation step
+        await bindProjectRelations(project.id, clientId, venueId);
 
         // Step 6: Assign PM based on budget
         const assignedPM = await assignPM(project.id, quoteData.totalEstimate);
@@ -310,7 +313,7 @@ async function findOrCreateContact(name, type) {
     return createMutationResponse.data.create_item.id;
 }
 
-async function createMondayProject(quoteData, clientId, venueId) {
+async function createMondayProject(quoteData) {
     const columnValues = {
         text_mm3x2yr6: quoteData.elementNumber,
         date_mm3xca9r: quoteData.eventDate ? { date: quoteData.eventDate } : null,
@@ -322,10 +325,6 @@ async function createMondayProject(quoteData, clientId, venueId) {
         date_mm3z1vqz: { date: new Date().toISOString().split('T')[0] },
         color_mm3y3bxj: { label: "Synced" }
     };
-
-    // Modern API format: Connect boards column mapping requires item_ids passed inside an explicit inner object string array
-    if (clientId) columnValues.board_relation_mm3x8evw = { item_ids: [parseInt(clientId, 10)] };
-    if (venueId) columnValues.board_relation_mm3xrm02 = { item_ids: [parseInt(venueId, 10)] };
 
     Object.keys(columnValues).forEach(key => {
         if (columnValues[key] === null) delete columnValues[key];
@@ -341,6 +340,28 @@ async function createMondayProject(quoteData, clientId, venueId) {
     }`;
     const response = await mondayApiCall(mutation);
     return response.data.create_item;
+}
+
+/**
+ * Dedicated secondary step to update connect-board relations cleanly
+ */
+async function bindProjectRelations(projectId, clientId, venueId) {
+    const connectionValues = {};
+    
+    if (clientId) connectionValues.board_relation_mm3x8evw = { item_ids: [parseInt(clientId, 10)] };
+    if (venueId) connectionValues.board_relation_mm3xrm02 = { item_ids: [parseInt(venueId, 10)] };
+
+    if (Object.keys(connectionValues).length === 0) return;
+
+    console.log(`🔗 Executing secondary mutation step to link Client/Venue records to project item...`);
+    const mutation = `mutation {
+        change_multiple_column_values(
+            board_id: ${PROJECTS_BOARD_ID},
+            item_id: ${projectId},
+            column_values: ${JSON.stringify(JSON.stringify(connectionValues))}
+        ) { id }
+    }`;
+    await mondayApiCall(mutation);
 }
 
 async function updateExistingProject(projectId, quoteData) {
