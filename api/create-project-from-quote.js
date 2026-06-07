@@ -3,7 +3,8 @@
  * * This endpoint receives Flex quote data and automatically creates
  * a project in monday.com with all fields populated.
  * * Handles:
- * - Root element parsing for clientId and venueId fields (FIX)
+ * - Fixed 405 by restoring /header-data endpoint path (FIX)
+ * - Precise clientId and venueId header data param filtering
  * - Multi-tier Contact lookup resolution via /api/contact/{id}/identity
  * - Intentional 1.5s delay to ensure robust item indexing
  * - Independent standalone connection binding execution
@@ -119,8 +120,8 @@ async function fetchFlexQuoteData(quoteId) {
 
     const internalId = searchResults[0].id || searchResults[0].elementId;
 
-    // BOUND FIXED PATH: Query the core element entity root to read system variables directly
-    const dataUrl = `${FLEX_BASE_URL}/api/element/${internalId}`;
+    // FIXED PATH: Restored /header-data endpoint with blueprint-validated codeList parameters
+    const dataUrl = `${FLEX_BASE_URL}/api/element/${internalId}/header-data?codeList=elementNumber,name,clientId,venueId,eventDate,totalEstimate,notes,equipmentList`;
     const dataResponse = await fetch(dataUrl, { headers: { 'X-Auth-Token': FLEX_API_KEY, 'Accept': 'application/json' }});
     if (!dataResponse.ok) throw new Error(`Flex Data API failed: ${dataResponse.status}`);
 
@@ -218,14 +219,14 @@ async function findOrCreateContact(name, type) {
 
 async function updateExistingProject(projectId, quoteData) {
     const columnValues = { numeric_mm3xzncg: quoteData.totalEstimate, numeric_mm3zsgna: quoteData.equipmentList.count, long_text_mm3xfve1: quoteData.notes, date_mm3z1vqz: { date: new Date().toISOString().split('T')[0] } };
-    const mutation = `mutation { change_multiple_column_values(board_id: ${PROJECTS_BOARD_ID}, item_id: ${projectId}, column_values: ${JSON.stringify(JSON.stringify(columnValues))}) { id } }`;
+    const mutation = `mutation { create_item(board_id: ${PROJECTS_BOARD_ID}, item_name: "${safeProjectName}", column_values: ${JSON.stringify(JSON.stringify(columnValues))}) { id name url } }`;
     await mondayApiCall(mutation);
 }
 
 async function createMondayProject(quoteData) {
     const columnValues = {
         text_mm3x2yr6: quoteData.elementNumber,
-        date_mm3ca9r: quoteData.eventDate ? { date: quoteData.eventDate } : null,
+        date_mm3xca9r: quoteData.eventDate ? { date: quoteData.eventDate } : null,
         numeric_mm3xzncg: quoteData.totalEstimate,
         numeric_mm3zsgna: quoteData.equipmentList.count,
         long_text_mm3xfve1: quoteData.notes,
@@ -259,7 +260,7 @@ async function bindProjectRelations(projectId, clientId, venueId) {
 }
 
 async function mondayApiCall(query) {
-    const response = await fetch(MONDAY_API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_KEY }, body: JSON.stringify({ query }) });
+    const response = await fetch(MONDAY_URL || MONDAY_API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_KEY }, body: JSON.stringify({ query }) });
     if (!response.ok) throw new Error(`monday.com API error: ${response.status}`);
     const data = await response.json();
     if (data.errors) throw new Error(`monday.com GraphQL error: ${JSON.stringify(data.errors)}`);
