@@ -1,28 +1,3 @@
-Ah, good catch! I see exactly what you are looking at on your screen. In the main table on your Projects Board, the row for "Test Event 2 - stage 1" is still displaying that raw JSON string in the Notes column:
-
-JSON
-{"fieldType":"notes","fieldRestrictions":{"readOnly":false,"readOnlyReason":null,"timeAssociated":false,"required":false}}
-🎯 Why That's Happening
-Take a close look at that JSON block. The reason it printed that is because the actual text of the note is completely blank or missing inside that specific Flex quote!
-
-Because the quote had no actual words written in the notes section, our extractString function didn't find a .data or .text property to grab. It hit its ultimate safety net fallback—JSON.stringify(val)—and dumped the raw layout schema into monday.com so the script wouldn't crash.
-
-🛠️ The Bulletproof Fix
-We need to update our extractString utility to look at that structure and say: "If there is no actual note content present, just return an empty string or a clean placeholder like 'No Notes' instead of printing the technical blueprint!"
-
-Here is the fully refined, production-ready code.
-
-Head back to your GitHub repository file view.
-
-Click the ✎ (pencil icon) to edit.
-
-Select everything (Ctrl + A or Cmd + A) and hit Delete so it's clean.
-
-Copy the entire code block below and paste it into the file.
-
-Click Commit changes... at the top right.
-
-JavaScript
 /**
  * Flex Quote → monday.com Project Creator
  * * This endpoint receives Flex quote data and automatically creates
@@ -241,22 +216,16 @@ async function fetchFlexQuoteData(quoteId) {
     const data = await dataResponse.json();
     console.log(`✅ Step 2 Success! Raw data received`);
 
-    // Helper to safely pull clean string values out of complex nested structural properties
-    const extractString = (val, isNotesField = false) => {
-        if (!val) return '';
+    // Fully fortified string extractor with optional chaining safeguards
+    const extractString = (val, fallback = '') => {
+        if (!val) return fallback;
         if (typeof val === 'string') return val;
         if (typeof val === 'object') {
-            const extracted = val.data || val.value || val.text || val.name || val.displayString;
-            if (extracted !== undefined && extracted !== null) {
-                return typeof extracted === 'object' ? extractString(extracted, isNotesField) : String(extracted);
-            }
-            
-            // Fixed layout object check: If it's a structural wrapper without an internal text/data string value,
-            // treat it as empty or undefined rather than stringifying the system definitions.
+            // Check structural wrappers safely
             if (val.fieldType || val.fieldRestrictions) {
-                return isNotesField ? 'No Notes' : '';
+                return val.data || val.value || val.text || val.name || val.displayString || fallback;
             }
-            return JSON.stringify(val);
+            return val.name || val.text || val.value || val.data || val.displayString || JSON.stringify(val);
         }
         return String(val);
     };
@@ -276,18 +245,18 @@ async function fetchFlexQuoteData(quoteId) {
     };
 
     return {
-        elementNumber: extractString(data.elementNumber || quoteId),
-        name: extractString(data.name || 'Untitled Project'),
-        customer: { name: extractString(data.customer?.name || data.customer || 'Unknown Client') },
-        venue: { name: extractString(data.venue?.name || data.venue || 'Unknown Venue') },
-        eventDate: extractCleanDate(data.eventDate),
-        loadInDate: extractCleanDate(data.loadInDate),
-        strikeDate: extractCleanDate(data.strikeDate),
-        totalEstimate: data.totalEstimate || 0,
-        notes: extractString(data.notes || '', true), // Explicitly flag this as the notes parser
-        equipmentList: { count: data.equipmentList?.count || 0 },
-        status: extractString(data.status || 'Quote'),
-        salesRep: { name: extractString(data.salesRep?.name || data.salesRep || 'Unknown') }
+        elementNumber: extractString(data?.elementNumber, String(quoteId)),
+        name: extractString(data?.name, 'Untitled Project'),
+        customer: { name: extractString(data?.customer?.name || data?.customer, 'Unknown Client') },
+        venue: { name: extractString(data?.venue?.name || data?.venue, 'Unknown Venue') },
+        eventDate: extractCleanDate(data?.eventDate),
+        loadInDate: extractCleanDate(data?.loadInDate),
+        strikeDate: extractCleanDate(data?.strikeDate),
+        totalEstimate: data?.totalEstimate || 0,
+        notes: extractString(data?.notes, 'No Notes'), // Clean fallback string instead of structural layout dump
+        equipmentList: { count: data?.equipmentList?.count || 0 },
+        status: extractString(data?.status, 'Quote'),
+        salesRep: { name: extractString(data?.salesRep?.name || data?.salesRep, 'Unknown') }
     };
 }
 
