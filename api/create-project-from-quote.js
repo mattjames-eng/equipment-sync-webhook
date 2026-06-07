@@ -115,7 +115,6 @@ export default async function handler(req, res) {
         }
         
         console.log(`🎯 TARGET INTEGRATION DELIVERY: [${quoteData.name}]`);
-        console.log(`👥 CLIENT EXTRACTED: [${quoteData.customer.name}] | 📍 VENUE EXTRACTED: [${quoteData.venue.name}]`);
 
         // Step 2: Check for duplicate project
         const existingProject = await checkForDuplicateProject(quoteData.elementNumber);
@@ -139,7 +138,7 @@ export default async function handler(req, res) {
 
         // Step 5: Create project in monday.com
         const project = await createMondayProject(quoteData, clientId, venueId);
-        console.log(`Base layout generation complete. Project record assigned ID: ${project.id}`);
+        console.log(`✅ Base layout generation complete. Project record assigned ID: ${project.id}`);
 
         // Step 6: Assign PM based on budget
         const assignedPM = await assignPM(project.id, quoteData.totalEstimate);
@@ -169,7 +168,6 @@ export default async function handler(req, res) {
  */
 async function fetchFlexQuoteData(quoteId) {
     const searchUrl = `${FLEX_BASE_URL}/api/search?searchText=${encodeURIComponent(quoteId)}&searchTypes=all&includeClosed=true`;
-    console.log(`🔍 Step 1: Searching for internal Flex ID using quote number: ${quoteId}`);
     
     const searchResponse = await fetch(searchUrl, {
         method: 'GET',
@@ -181,24 +179,20 @@ async function fetchFlexQuoteData(quoteId) {
     });
 
     if (!searchResponse.ok) {
-        const errorText = await searchResponse.text();
-        console.error(`❌ Flex Search API error: ${searchResponse.status} - ${errorText}`);
         throw new Error(`Flex Search API failed: ${searchResponse.status}`);
     }
 
     const searchData = await searchResponse.json();
-    
     const searchResults = searchData.data || searchData.content || searchData.elements || searchData;
+    
     if (!searchResults || searchResults.length === 0) {
-        throw new Error(`Quote ${quoteId} could not be found in Flex. Please verify the quote number.`);
+        throw new Error(`Quote ${quoteId} could not be found in Flex.`);
     }
 
     const internalId = searchResults[0].id || searchResults[0].elementId;
-    console.log(`✅ Step 1 Success! Found internal ID: ${internalId}`);
 
     const codeList = "elementNumber,name,customer,venue,eventDate,loadInDate,strikeDate,totalEstimate,notes,equipmentList,status,salesRep";
     const dataUrl = `${FLEX_BASE_URL}/api/element/${internalId}/header-data?codeList=${codeList}`;
-    console.log(`📥 Step 2: Fetching header data using internal ID...`);
 
     const dataResponse = await fetch(dataUrl, {
         method: 'GET',
@@ -210,20 +204,15 @@ async function fetchFlexQuoteData(quoteId) {
     });
 
     if (!dataResponse.ok) {
-        const errorText = await dataResponse.text();
-        console.error(`❌ Flex Data API error: ${dataResponse.status} - ${errorText}`);
         throw new Error(`Flex Data API failed: ${dataResponse.status}`);
     }
 
     const data = await dataResponse.json();
-    console.log(`✅ Step 2 Success! Raw data structural layers parsed`);
 
-    // Extended layout checker to extract deep structural properties safely
     const extractString = (val, fallback = '') => {
         if (!val) return fallback;
         if (typeof val === 'string') return val;
         if (typeof val === 'object') {
-            // Check if there is an explicit inner data layout object nesting the properties
             if (val.data !== undefined && val.data !== null) {
                 if (typeof val.data === 'object') {
                     return val.data.name || val.data.text || val.data.value || val.data.displayString || fallback;
@@ -243,7 +232,6 @@ async function fetchFlexQuoteData(quoteId) {
         } else if (typeof dateVal === 'object') {
             rawString = dateVal.data || dateVal.value || dateVal.date || JSON.stringify(dateVal);
         }
-        
         const match = rawString.match(/(\d{4}-\d{2}-\d{2})/);
         return match ? match[1] : null;
     };
@@ -302,15 +290,14 @@ async function findOrCreateContact(name, type) {
     
     const searchResponse = await mondayApiCall(searchQuery);
     const existingItems = searchResponse.data.boards[0]?.items_page?.items || [];
-    
     const match = existingItems.find(item => item.name.trim().toLowerCase() === safeName.toLowerCase());
     
     if (match) {
-        console.log(`🎯 Match found in database! Linking to existing contact ID: ${match.id}`);
+        console.log(`🎯 Match found! ID: ${match.id}`);
         return match.id;
     }
 
-    console.log(`✨ No match found. Generating new entry in Database for ${type}: "${safeName}"`);
+    console.log(`✨ Generating new contact entry for ${type}: "${safeName}"`);
     const escapedSafeName = safeName.replace(/"/g, '\\"');
     const createMutation = `mutation {
         create_item(
@@ -336,8 +323,9 @@ async function createMondayProject(quoteData, clientId, venueId) {
         color_mm3y3bxj: { label: "Synced" }
     };
 
-    if (clientId) columnValues.board_relation_mm3x8evw = { item_ids: [parseInt(clientId)] };
-    if (venueId) columnValues.board_relation_mm3xrm02 = { item_ids: [parseInt(venueId)] };
+    // Modern API format: Connect boards column mapping requires item_ids passed inside an explicit inner object string array
+    if (clientId) columnValues.board_relation_mm3x8evw = { item_ids: [parseInt(clientId, 10)] };
+    if (venueId) columnValues.board_relation_mm3xrm02 = { item_ids: [parseInt(venueId, 10)] };
 
     Object.keys(columnValues).forEach(key => {
         if (columnValues[key] === null) delete columnValues[key];
@@ -394,7 +382,6 @@ async function assignPM(projectId, budget) {
 async function sendNotification(projectId, quoteData, pmUserId) {
     const userId = pmUserId || PM_ASSIGNMENTS.default;
     const safeProjectName = String(quoteData.name).replace(/"/g, '\\"');
-    
     const mutation = `mutation {
         create_notification(
             user_id: ${userId},
