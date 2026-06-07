@@ -7,7 +7,7 @@
  * - Multi-step Board Relation connection binding
  * - Manual PM assignment default (Lands unassigned)
  * - Recursive "Deep-Dive" text extraction for complex Flex payloads
- * - Dual-layer API extraction (Search Object + Header Object) 
+ * - LAYER 3: Dedicated Contact API routing 
  * * Author: Matt James, Antic Studios
  */
 
@@ -115,20 +115,10 @@ async function fetchFlexQuoteData(quoteId) {
     const internalId = searchResults[0].id || searchResults[0].elementId;
     const searchObj = searchResults[0];
 
-    // Log the raw search payload so we can see what Flex includes by default
-    console.log("🚨 RAW SEARCH PAYLOAD REVEALED:", JSON.stringify(searchObj));
-
-    // LAYER 2: Hit the Header-Data API (with an expanded CodeList to avoid the 400 error)
-    const codeList = "elementNumber,name,customer,client,account,contact,venue,location,eventDate,totalEstimate,notes,equipmentList";
-    const dataUrl = `${FLEX_BASE_URL}/api/element/${internalId}/header-data?codeList=${codeList}`;
-
+    // LAYER 2: Hit the Header-Data API
+    const dataUrl = `${FLEX_BASE_URL}/api/element/${internalId}`;
     const dataResponse = await fetch(dataUrl, { headers: { 'X-Auth-Token': FLEX_API_KEY, 'Accept': 'application/json' }});
-    if (!dataResponse.ok) throw new Error(`Flex Data API failed: ${dataResponse.status}`);
-
-    const data = await dataResponse.json();
-    
-    // Log the raw header payload
-    console.log("🚨 RAW HEADER PAYLOAD REVEALED:", JSON.stringify(data));
+    const data = dataResponse.ok ? await dataResponse.json() : {};
 
     const deepExtractName = (obj) => {
         if (!obj) return null;
@@ -153,12 +143,41 @@ async function fetchFlexQuoteData(quoteId) {
         return match ? match[1] : null;
     };
 
+    // LAYER 3: Hit the Dedicated Contacts API
+    let fetchedClient = null;
+    let fetchedVenue = null;
+    try {
+        const contactUrl = `${FLEX_BASE_URL}/api/element/${internalId}/contact`;
+        const contactResponse = await fetch(contactUrl, { headers: { 'X-Auth-Token': FLEX_API_KEY, 'Accept': 'application/json' }});
+        
+        if (contactResponse.ok) {
+            const contactData = await contactResponse.json();
+            console.log("🚨 RAW CONTACTS API PAYLOAD:", JSON.stringify(contactData));
+            
+            const contactList = Array.isArray(contactData) ? contactData : (contactData.data || contactData.content || [contactData]);
+            
+            contactList.forEach(c => {
+                const typeStr = JSON.stringify(c).toLowerCase();
+                const name = deepExtractName(c.contact || c.company || c.name || c);
+                
+                // Route the extracted name to the right bucket based on Flex's internal tagging
+                if (typeStr.includes('client') || typeStr.includes('customer')) {
+                    fetchedClient = name;
+                } else if (typeStr.includes('venue') || typeStr.includes('location') || typeStr.includes('site')) {
+                    fetchedVenue = name;
+                }
+            });
+        }
+    } catch (e) {
+        console.log("⚠️ Could not fetch from /contact endpoint", e.message);
+    }
+
     return {
         elementNumber: deepExtractName(data?.elementNumber) || String(quoteId),
         name: deepExtractName(data?.name) || deepExtractName(searchObj?.name) || 'Untitled Project',
-        // Fallback checks the primary payload first, then checks the search payload
-        customer: { name: deepExtractName(data?.customer) || deepExtractName(data?.client) || deepExtractName(data?.account) || deepExtractName(searchObj?.customer) || deepExtractName(searchObj?.client) || 'Unknown Client' },
-        venue: { name: deepExtractName(data?.venue) || deepExtractName(data?.location) || deepExtractName(searchObj?.venue) || deepExtractName(searchObj?.location) || 'Unknown Venue' },
+        // Fallback chain: Contact API -> Header API -> Search API -> Default
+        customer: { name: fetchedClient || deepExtractName(data?.customer) || deepExtractName(searchObj?.customer) || 'Unknown Client' },
+        venue: { name: fetchedVenue || deepExtractName(data?.venue) || deepExtractName(searchObj?.venue) || 'Unknown Venue' },
         eventDate: extractCleanDate(data?.eventDate) || extractCleanDate(searchObj?.eventDate),
         totalEstimate: data?.totalEstimate || searchObj?.totalEstimate || 0,
         notes: deepExtractName(data?.notes) || 'No Notes',
