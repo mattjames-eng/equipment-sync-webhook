@@ -3,7 +3,7 @@
  * * This endpoint receives Flex quote data and automatically creates
  * a project in monday.com with all fields populated.
  * * Handles:
- * - Precise object key resolution for data.clientId and data.venueId (FIX)
+ * - Root element parsing for clientId and venueId fields (FIX)
  * - Multi-tier Contact lookup resolution via /api/contact/{id}/identity
  * - Intentional 1.5s delay to ensure robust item indexing
  * - Independent standalone connection binding execution
@@ -119,7 +119,8 @@ async function fetchFlexQuoteData(quoteId) {
 
     const internalId = searchResults[0].id || searchResults[0].elementId;
 
-    const dataUrl = `${FLEX_BASE_URL}/api/element/${internalId}/header-data?codeList=elementNumber,name,clientId,venueId,eventDate,totalEstimate,notes,equipmentList`;
+    // BOUND FIXED PATH: Query the core element entity root to read system variables directly
+    const dataUrl = `${FLEX_BASE_URL}/api/element/${internalId}`;
     const dataResponse = await fetch(dataUrl, { headers: { 'X-Auth-Token': FLEX_API_KEY, 'Accept': 'application/json' }});
     if (!dataResponse.ok) throw new Error(`Flex Data API failed: ${dataResponse.status}`);
 
@@ -145,10 +146,8 @@ async function fetchFlexQuoteData(quoteId) {
     // Auxiliary resolution functions to query entity records
     const fetchContactNameById = async (rawIdInput) => {
         if (!rawIdInput) return null;
-        // FIXED: Explicitly isolate the true string inside the payload element object layer 
-        // to block data evaluate collisions like [object Object] or literal key strings
         const cleanIdString = (rawIdInput && typeof rawIdInput === 'object') ? deepExtractName(rawIdInput?.data || rawIdInput) : String(rawIdInput).trim();
-        if (!cleanIdString || cleanIdString === "" || cleanIdString === "null" || cleanIdString.includes('Id') || cleanIdString.includes('object')) return null;
+        if (!cleanIdString || cleanIdString === "" || cleanIdString === "null" || cleanIdString.includes('object')) return null;
         
         try {
             const res = await fetch(`${FLEX_BASE_URL}/api/contact/${cleanIdString}/identity`, { headers: { 'X-Auth-Token': FLEX_API_KEY, 'Accept': 'application/json' }});
@@ -226,7 +225,7 @@ async function updateExistingProject(projectId, quoteData) {
 async function createMondayProject(quoteData) {
     const columnValues = {
         text_mm3x2yr6: quoteData.elementNumber,
-        date_mm3xca9r: quoteData.eventDate ? { date: quoteData.eventDate } : null,
+        date_mm3ca9r: quoteData.eventDate ? { date: quoteData.eventDate } : null,
         numeric_mm3xzncg: quoteData.totalEstimate,
         numeric_mm3zsgna: quoteData.equipmentList.count,
         long_text_mm3xfve1: quoteData.notes,
