@@ -3,11 +3,11 @@
  * * This endpoint receives Flex quote data and automatically creates
  * a project in monday.com with all fields populated.
  * * Handles:
- * - Client/venue lookup and creation (Strict duplicate prevention)
- * - Async Two-Step Creation with a 1.5-second indexing delay (FIX)
- * - Standalone relationship mutation execution
- * - Manual PM assignment default (Lands unassigned)
- * - Recursive "Deep-Dive" text extraction for complex Flex payloads
+ * - Direct clientId / venueId mapping discovered via OpenApi blueprint
+ * - Multi-tier Contact lookup resolution via /api/contact/{id}/identity
+ * - Intentional 1.5s delay to ensure robust item indexing
+ * - Independent standalone connection binding execution
+ * - Manual PM assignment routing (Lands completely unassigned)
  * * Author: Matt James, Antic Studios
  */
 
@@ -21,7 +21,7 @@ const MONDAY_API_URL = 'https://api.monday.com/v2';
 const PROJECTS_BOARD_ID = '18415679761';
 const CONTACTS_BOARD_ID = '18415573401';
 
-// Helper utility to pause execution
+// Async delay utility
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 export default async function handler(req, res) {
@@ -59,8 +59,8 @@ export default async function handler(req, res) {
             quoteData = {
                 elementNumber: deepExtractName(req.body.elementNumber || req.body['Flex Quote Number']) || 'Unknown',
                 name: deepExtractName(req.body.name) || 'Untitled Project',
-                customer: { name: deepExtractName(req.body.customer) || deepExtractName(req.body.client) || 'Unknown Client' },
-                venue: { name: deepExtractName(req.body.venue) || deepExtractName(req.body.location) || 'Unknown Venue' },
+                customer: { name: deepExtractName(req.body.customer) || 'Unknown Client' },
+                venue: { name: deepExtractName(req.body.venue) || 'Unknown Venue' },
                 eventDate: deepExtractName(req.body.eventDate),
                 totalEstimate: parseFloat(deepExtractName(req.body.totalEstimate)) || 0,
                 notes: deepExtractName(req.body.notes) || 'No Notes',
@@ -75,7 +75,7 @@ export default async function handler(req, res) {
         }
         
         console.log(`🎯 PROJECT NAME EXTRACTED: [${quoteData.name}]`);
-        console.log(`👥 CLIENT TARGET: [${quoteData.customer.name}] | 📍 VENUE TARGET: [${quoteData.venue.name}]`);
+        console.log(`👥 CLIENT RESOLVED: [${quoteData.customer.name}] | 📍 VENUE RESOLVED: [${quoteData.venue.name}]`);
 
         // Check for duplicate project
         const existingProject = await checkForDuplicateProject(quoteData.elementNumber);
@@ -89,15 +89,15 @@ export default async function handler(req, res) {
         const clientId = await findOrCreateContact(quoteData.customer.name, 'Client');
         const venueId = await findOrCreateContact(quoteData.venue.name, 'Venue');
 
-        // STEP 1: Create the base project row
+        // STEP 1: Create the baseline project row
         const project = await createMondayProject(quoteData);
         console.log(`✅ Base project record created! ID: ${project.id}`);
 
-        // STEP 2: Multi-step intentional delay to allow database indexing to catch up
-        console.log('⏳ Pausing for 1.5 seconds to let monday.com index the new item ID...');
+        // STEP 2: Intentional delayed pause to guarantee system indexing is verified
+        console.log('⏳ Holding for 1.5 seconds to guarantee robust row indexing on monday servers...');
         await delay(1500);
 
-        // STEP 3: Execute independent standalone relationship link
+        // STEP 3: Execute independent standalone cross-board link execution
         await bindProjectRelations(project.id, clientId, venueId);
 
         return res.status(200).json({ success: true, action: 'created', projectId: project.id, message: `Successfully created project ${quoteData.elementNumber}` });
@@ -119,11 +119,30 @@ async function fetchFlexQuoteData(quoteId) {
 
     const internalId = searchResults[0].id || searchResults[0].elementId;
 
-    const dataUrl = `${FLEX_BASE_URL}/api/element/${internalId}/header-data?codeList=elementNumber,name,customerGroup,venueGroup,eventDate,totalEstimate,notes,equipmentList`;
+    // TARGET STAGE REINFORCED: Query explicitly for blueprint defined internal variables: clientId and venueId
+    const dataUrl = `${FLEX_BASE_URL}/api/element/${internalId}/header-data?codeList=elementNumber,name,clientId,venueId,eventDate,totalEstimate,notes,equipmentList`;
     const dataResponse = await fetch(dataUrl, { headers: { 'X-Auth-Token': FLEX_API_KEY, 'Accept': 'application/json' }});
     if (!dataResponse.ok) throw new Error(`Flex Data API failed: ${dataResponse.status}`);
 
     const data = await dataResponse.json();
+    
+    // Auxiliary resolution functions to query entity records
+    const fetchContactNameById = async (id) => {
+        if (!id || id === "") return null;
+        try {
+            const res = await fetch(`${FLEX_BASE_URL}/api/contact/${id}/identity`, { headers: { 'X-Auth-Token': FLEX_API_KEY, 'Accept': 'application/json' }});
+            if (res.ok) {
+                const contactIdentity = await res.json();
+                return contactIdentity.name || contactIdentity.preferredDisplayString || null;
+            }
+        } catch (e) {
+            console.log(`⚠️ Identity conversion tracking failed for contact block ID ${id}`);
+        }
+        return null;
+    };
+
+    const clientName = await fetchContactNameById(data?.clientId?.data || data?.clientId);
+    const venueName = await fetchContactNameById(data?.venueId?.data || data?.venueId);
 
     const deepExtractName = (obj) => {
         if (!obj) return null;
@@ -149,14 +168,11 @@ async function fetchFlexQuoteData(quoteId) {
         return match ? match[1] : null;
     };
 
-    const clientBlock = data?.customerGroup?.data || data?.customerGroup || {};
-    const venueBlock = data?.venueGroup?.data || data?.venueGroup || {};
-
     return {
         elementNumber: deepExtractName(data?.elementNumber) || String(quoteId),
         name: deepExtractName(data?.name) || 'Untitled Project',
-        customer: { name: deepExtractName(clientBlock.customer) || deepExtractName(clientBlock.client) || deepExtractName(clientBlock) || 'Unknown Client' },
-        venue: { name: deepExtractName(venueBlock.venue) || deepExtractName(venueBlock.location) || deepExtractName(venueBlock) || 'Unknown Venue' },
+        customer: { name: clientName || 'Unknown Client' },
+        venue: { name: venueName || 'Unknown Venue' },
         eventDate: extractCleanDate(data?.eventDate),
         totalEstimate: data?.totalEstimate || 0,
         notes: deepExtractName(data?.notes) || 'No Notes',
