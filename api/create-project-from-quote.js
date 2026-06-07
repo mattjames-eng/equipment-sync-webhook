@@ -3,7 +3,7 @@
  * * This endpoint receives Flex quote data and automatically creates
  * a project in monday.com with all fields populated.
  * * Handles:
- * - Robust object-to-string UUID translation for contact endpoints (FIX)
+ * - Precise object key resolution for data.clientId and data.venueId (FIX)
  * - Multi-tier Contact lookup resolution via /api/contact/{id}/identity
  * - Intentional 1.5s delay to ensure robust item indexing
  * - Independent standalone connection binding execution
@@ -144,9 +144,11 @@ async function fetchFlexQuoteData(quoteId) {
 
     // Auxiliary resolution functions to query entity records
     const fetchContactNameById = async (rawIdInput) => {
-        // FIXED: Extract the raw string UUID out of the inner object wrapper before mapping to the URL
-        const cleanIdString = typeof rawIdInput === 'object' ? deepExtractName(rawIdInput) : String(rawIdInput).trim();
-        if (!cleanIdString || cleanIdString === "" || cleanIdString.includes('object')) return null;
+        if (!rawIdInput) return null;
+        // FIXED: Explicitly isolate the true string inside the payload element object layer 
+        // to block data evaluate collisions like [object Object] or literal key strings
+        const cleanIdString = (rawIdInput && typeof rawIdInput === 'object') ? deepExtractName(rawIdInput?.data || rawIdInput) : String(rawIdInput).trim();
+        if (!cleanIdString || cleanIdString === "" || cleanIdString === "null" || cleanIdString.includes('Id') || cleanIdString.includes('object')) return null;
         
         try {
             const res = await fetch(`${FLEX_BASE_URL}/api/contact/${cleanIdString}/identity`, { headers: { 'X-Auth-Token': FLEX_API_KEY, 'Accept': 'application/json' }});
