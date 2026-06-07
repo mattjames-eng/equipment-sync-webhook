@@ -221,10 +221,10 @@ async function findOrCreateContact(name, type) {
     
     if (existingItems.length > 0) return existingItems[0].id;
 
+    // REMOVED GROUP ID HERE
     const createMutation = `mutation {
         create_item(
             board_id: ${CONTACTS_BOARD_ID},
-            group_id: "topics",
             item_name: "${name.replace(/"/g, '\\"')}",
             column_values: "{\\"dropdown_mm3vqxqh\\":\\"${type}\\",\\"color_mm3vqxqh\\":{\\"label\\":\\"Active\\"}}"
         ) { id }
@@ -252,10 +252,10 @@ async function createMondayProject(quoteData, clientId, venueId) {
         if (columnValues[key] === null) delete columnValues[key];
     });
 
+    // REMOVED GROUP ID HERE
     const mutation = `mutation {
         create_item(
             board_id: ${PROJECTS_BOARD_ID},
-            group_id: "group_mm3x407x",
             item_name: "${quoteData.name.replace(/"/g, '\\"')}",
             column_values: ${JSON.stringify(JSON.stringify(columnValues))}
         ) { id name url }
