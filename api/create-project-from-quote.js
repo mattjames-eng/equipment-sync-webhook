@@ -327,18 +327,14 @@ async function assignPM(projectId, budget) {
 async function sendNotification(projectId, quoteData, pmUserId) {
     const userId = pmUserId || PM_ASSIGNMENTS.default;
     const safeProjectName = String(quoteData.name).replace(/"/g, '\\"');
+    
+    // REMOVED UNSUPPORTED PAYLOAD ARGUMENT HERE
     const mutation = `mutation {
         create_notification(
             user_id: ${userId},
             target_id: ${projectId},
             target_type: Project,
-            text: "New project created from Flex: ${safeProjectName} (${quoteData.elementNumber})",
-            payload: ${JSON.stringify(JSON.stringify({
-                client: quoteData.customer.name,
-                venue: quoteData.venue.name,
-                eventDate: quoteData.eventDate || 'N/A',
-                budget: `${quoteData.totalEstimate.toLocaleString()}`
-            }))}
+            text: "New project created from Flex: ${safeProjectName} (${quoteData.elementNumber})"
         ) { text }
     }`;
     await mondayApiCall(mutation);
