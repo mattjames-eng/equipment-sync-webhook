@@ -225,14 +225,19 @@ async function fetchFlexQuoteData(quoteId) {
     }
 
     const data = await dataResponse.json();
-    console.log(`✅ Step 2 Success! Raw data structural parse verified.`);
+    console.log(`✅ Step 2 Success! Raw data received`);
+    console.log(`🔍 RAW NAME FIELD:`, JSON.stringify(data.name));
 
     // Helper to safely pull clean string names out of nested structural properties
     const extractString = (val) => {
         if (!val) return 'Unknown';
         if (typeof val === 'string') return val;
         if (typeof val === 'object') {
-            return val.name || val.text || val.value || val.displayString || JSON.stringify(val);
+            // Try multiple properties
+            const extracted = val.data || val.name || val.text || val.value || val.displayString;
+            if (extracted && typeof extracted === 'string') return extracted;
+            // If still an object, stringify it
+            return JSON.stringify(val);
         }
         return String(val);
     };
@@ -252,9 +257,12 @@ async function fetchFlexQuoteData(quoteId) {
         return match ? match[1] : null;
     };
 
+    const extractedName = extractString(data.name || 'Untitled Project');
+    console.log(`🎯 EXTRACTED NAME:`, extractedName, `(Type: ${typeof extractedName})`);
+
     return {
         elementNumber: extractString(data.elementNumber || quoteId),
-        name: extractString(data.name || 'Untitled Project'),
+        name: extractedName,
         customer: { name: extractString(data.customer?.name || data.customer || 'Unknown Client') },
         venue: { name: extractString(data.venue?.name || data.venue || 'Unknown Venue') },
         eventDate: extractCleanDate(data.eventDate),
