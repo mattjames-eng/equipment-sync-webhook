@@ -7,7 +7,7 @@
  * - Multi-step Board Relation connection binding
  * - Manual PM assignment default (Lands unassigned)
  * - Recursive "Deep-Dive" text extraction for complex Flex payloads
- * - Broad-spectrum payload scanning for custom contact fields
+ * - Native customerGroup & venueGroup Object Mapping
  * * Author: Matt James, Antic Studios
  */
 
@@ -46,10 +46,6 @@ export default async function handler(req, res) {
                 
                 for (const key in obj) {
                     if (typeof obj[key] === 'string' && obj[key].trim().length > 0) return obj[key].trim();
-                    if (typeof obj[key] === 'object') {
-                        const deep = deepExtractName(obj[key]);
-                        if (deep) return deep;
-                    }
                 }
             }
             return null;
@@ -96,7 +92,7 @@ export default async function handler(req, res) {
         const project = await createMondayProject(quoteData);
         console.log(`✅ Base project record created! ID: ${project.id}`);
 
-        // Bind Cross-Board Relations
+        // Bind Cross-Board Relations (Which automatically triggers the mirror columns)
         await bindProjectRelations(project.id, clientId, venueId);
 
         return res.status(200).json({ success: true, action: 'created', projectId: project.id, message: `Successfully created project ${quoteData.elementNumber}` });
@@ -117,12 +113,9 @@ async function fetchFlexQuoteData(quoteId) {
     if (!searchResults || searchResults.length === 0) throw new Error(`Quote ${quoteId} could not be found in Flex.`);
 
     const internalId = searchResults[0].id || searchResults[0].elementId;
-    const searchObj = searchResults[0];
 
-    // Query expanded header fields
-    const codeList = "elementNumber,name,customer,client,account,contact,venue,location,eventDate,totalEstimate,notes,equipmentList";
-    const dataUrl = `${FLEX_BASE_URL}/api/element/${internalId}/header-data?codeList=${codeList}`;
-
+    // Call the core element properties endpoint
+    const dataUrl = `${FLEX_BASE_URL}/api/element/${internalId}/header-data?codeList=elementNumber,name,customerGroup,venueGroup,eventDate,totalEstimate,notes,equipmentList`;
     const dataResponse = await fetch(dataUrl, { headers: { 'X-Auth-Token': FLEX_API_KEY, 'Accept': 'application/json' }});
     if (!dataResponse.ok) throw new Error(`Flex Data API failed: ${dataResponse.status}`);
 
@@ -138,13 +131,8 @@ async function fetchFlexQuoteData(quoteId) {
             if (obj.value) return String(obj.value).trim();
             if (obj.text) return String(obj.text).trim();
             if (obj.data && typeof obj.data === 'string') return obj.data.trim();
-            if (obj.data && typeof obj.data === 'object') return deepExtractName(obj.data);
             for (const key in obj) {
                 if (typeof obj[key] === 'string' && obj[key].trim().length > 0) return obj[key].trim();
-                if (typeof obj[key] === 'object') {
-                    const deep = deepExtractName(obj[key]);
-                    if (deep) return deep;
-                }
             }
         }
         return null;
@@ -157,30 +145,17 @@ async function fetchFlexQuoteData(quoteId) {
         return match ? match[1] : null;
     };
 
-    // Global Broad-Spectrum Scanner to capture values from unmapped custom fields
-    let customClient = null;
-    let customVenue = null;
-
-    if (data && typeof data === 'object') {
-        for (const key in data) {
-            const extractedValue = deepExtractName(data[key]);
-            if (extractedValue) {
-                if (extractedValue.toLowerCase().includes('kannibalen')) {
-                    customClient = extractedValue;
-                } else if (extractedValue.toLowerCase().includes('armory')) {
-                    customVenue = extractedValue;
-                }
-            }
-        }
-    }
+    // Extract values directly out of Flex's internal structural components
+    const clientBlock = data?.customerGroup?.data || data?.customerGroup || {};
+    const venueBlock = data?.venueGroup?.data || data?.venueGroup || {};
 
     return {
         elementNumber: deepExtractName(data?.elementNumber) || String(quoteId),
-        name: deepExtractName(data?.name) || deepExtractName(searchObj?.name) || 'Untitled Project',
-        customer: { name: customClient || deepExtractName(data?.customer) || deepExtractName(data?.client) || 'Unknown Client' },
-        venue: { name: customVenue || deepExtractName(data?.venue) || deepExtractName(data?.location) || 'Unknown Venue' },
-        eventDate: extractCleanDate(data?.eventDate) || extractCleanDate(searchObj?.eventDate),
-        totalEstimate: data?.totalEstimate || searchObj?.totalEstimate || 0,
+        name: deepExtractName(data?.name) || 'Untitled Project',
+        customer: { name: deepExtractName(clientBlock.customer) || deepExtractName(clientBlock.client) || deepExtractName(clientBlock) || 'Unknown Client' },
+        venue: { name: deepExtractName(venueBlock.venue) || deepExtractName(venueBlock.location) || deepExtractName(venueBlock) || 'Unknown Venue' },
+        eventDate: extractCleanDate(data?.eventDate),
+        totalEstimate: data?.totalEstimate || 0,
         notes: deepExtractName(data?.notes) || 'No Notes',
         equipmentList: { count: data?.equipmentList?.count || 0 }
     };
