@@ -7,7 +7,7 @@
  * - Multi-step Board Relation connection binding
  * - Manual PM assignment default (Lands unassigned)
  * - Recursive "Deep-Dive" text extraction for complex Flex payloads
- * - LAYER 3: Dedicated Contact API routing 
+ * - LAYER 3: Dedicated Contact API routing (with Date Safety Patch)
  * * Author: Matt James, Antic Studios
  */
 
@@ -137,8 +137,10 @@ async function fetchFlexQuoteData(quoteId) {
         return null;
     };
 
+    // PATCHED: Date safety check to prevent undefined .match() crashes
     const extractCleanDate = (dateVal) => {
-        const rawString = deepExtractName(dateVal) || JSON.stringify(dateVal);
+        if (!dateVal) return null;
+        const rawString = deepExtractName(dateVal) || String(dateVal);
         const match = rawString.match(/(\d{4}-\d{2}-\d{2})/);
         return match ? match[1] : null;
     };
