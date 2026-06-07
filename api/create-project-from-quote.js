@@ -7,7 +7,7 @@
  * - Multi-step Board Relation connection binding
  * - Manual PM assignment default (Lands unassigned)
  * - Recursive "Deep-Dive" text extraction for complex Flex payloads
- * - Unfiltered API calls to expose hidden custom fields
+ * - Unfiltered API calls to expose hidden custom fields (Fixed 405)
  * * Author: Matt James, Antic Studios
  */
 
@@ -114,9 +114,9 @@ async function fetchFlexQuoteData(quoteId) {
 
     const internalId = searchResults[0].id || searchResults[0].elementId;
     
-    // UPDATED: We completely removed the codeList filter. 
-    // This forces Flex to hand over the entire project blueprint!
-    const dataUrl = `${FLEX_BASE_URL}/api/element/${internalId}`;
+    // THE FIX: We keep the /header-data endpoint so we don't get a 405 error, 
+    // but we REMOVE the ?codeList= filter so Flex dumps everything it has!
+    const dataUrl = `${FLEX_BASE_URL}/api/element/${internalId}/header-data`;
 
     const dataResponse = await fetch(dataUrl, { headers: { 'X-Auth-Token': FLEX_API_KEY, 'Accept': 'application/json' }});
     if (!dataResponse.ok) throw new Error(`Flex Data API failed: ${dataResponse.status}`);
