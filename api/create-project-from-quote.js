@@ -3,7 +3,7 @@
  * * This endpoint receives Flex quote data and automatically creates
  * a project in monday.com with all fields populated.
  * * Handles:
- * - Direct clientId / venueId mapping discovered via OpenApi blueprint
+ * - Robust object-to-string UUID translation for contact endpoints (FIX)
  * - Multi-tier Contact lookup resolution via /api/contact/{id}/identity
  * - Intentional 1.5s delay to ensure robust item indexing
  * - Independent standalone connection binding execution
@@ -119,30 +119,11 @@ async function fetchFlexQuoteData(quoteId) {
 
     const internalId = searchResults[0].id || searchResults[0].elementId;
 
-    // TARGET STAGE REINFORCED: Query explicitly for blueprint defined internal variables: clientId and venueId
     const dataUrl = `${FLEX_BASE_URL}/api/element/${internalId}/header-data?codeList=elementNumber,name,clientId,venueId,eventDate,totalEstimate,notes,equipmentList`;
     const dataResponse = await fetch(dataUrl, { headers: { 'X-Auth-Token': FLEX_API_KEY, 'Accept': 'application/json' }});
     if (!dataResponse.ok) throw new Error(`Flex Data API failed: ${dataResponse.status}`);
 
     const data = await dataResponse.json();
-    
-    // Auxiliary resolution functions to query entity records
-    const fetchContactNameById = async (id) => {
-        if (!id || id === "") return null;
-        try {
-            const res = await fetch(`${FLEX_BASE_URL}/api/contact/${id}/identity`, { headers: { 'X-Auth-Token': FLEX_API_KEY, 'Accept': 'application/json' }});
-            if (res.ok) {
-                const contactIdentity = await res.json();
-                return contactIdentity.name || contactIdentity.preferredDisplayString || null;
-            }
-        } catch (e) {
-            console.log(`⚠️ Identity conversion tracking failed for contact block ID ${id}`);
-        }
-        return null;
-    };
-
-    const clientName = await fetchContactNameById(data?.clientId?.data || data?.clientId);
-    const venueName = await fetchContactNameById(data?.venueId?.data || data?.venueId);
 
     const deepExtractName = (obj) => {
         if (!obj) return null;
@@ -160,6 +141,27 @@ async function fetchFlexQuoteData(quoteId) {
         }
         return null;
     };
+
+    // Auxiliary resolution functions to query entity records
+    const fetchContactNameById = async (rawIdInput) => {
+        // FIXED: Extract the raw string UUID out of the inner object if necessary
+        const cleanIdString = typeof rawIdInput === 'object' ? deepExtractName(rawIdInput) : String(rawIdInput).trim();
+        if (!cleanIdString || cleanIdString === "" || cleanIdString.includes('object')) return null;
+        
+        try {
+            const res = await fetch(`${FLEX_BASE_URL}/api/contact/${cleanIdString}/identity`, { headers: { 'X-Auth-Token': FLEX_API_KEY, 'Accept': 'application/json' }});
+            if (res.ok) {
+                const contactIdentity = await res.json();
+                return contactIdentity.name || contactIdentity.preferredDisplayString || null;
+            }
+        } catch (e) {
+            console.log(`⚠️ Identity conversion tracking failed for contact block ID ${cleanIdString}`);
+        }
+        return null;
+    };
+
+    const clientName = await fetchContactNameById(data?.clientId);
+    const venueName = await fetchContactNameById(data?.venueId);
 
     const extractCleanDate = (dateVal) => {
         if (!dateVal) return null;
@@ -213,6 +215,12 @@ async function findOrCreateContact(name, type) {
     return createMutationResponse.data.create_item.id;
 }
 
+async function updateExistingProject(projectId, quoteData) {
+    const columnValues = { numeric_mm3xzncg: quoteData.totalEstimate, numeric_mm3zsgna: quoteData.equipmentList.count, long_text_mm3xfve1: quoteData.notes, date_mm3z1vqz: { date: new Date().toISOString().split('T')[0] } };
+    const mutation = `mutation { change_multiple_column_values(board_id: ${PROJECTS_BOARD_ID}, item_id: ${projectId}, column_values: ${JSON.stringify(JSON.stringify(columnValues))}) { id } }`;
+    await mondayApiCall(mutation);
+}
+
 async function createMondayProject(quoteData) {
     const columnValues = {
         text_mm3x2yr6: quoteData.elementNumber,
@@ -246,12 +254,6 @@ async function bindProjectRelations(projectId, clientId, venueId) {
 
     console.log(`🔗 Linking Client [${clientId || 'Empty'}] and Venue [${venueId || 'Empty'}] to the Project Item...`);
     const mutation = `mutation { change_multiple_column_values(board_id: ${PROJECTS_BOARD_ID}, item_id: ${projectId}, column_values: ${JSON.stringify(JSON.stringify(connectionValues))}) { id } }`;
-    await mondayApiCall(mutation);
-}
-
-async function updateExistingProject(projectId, quoteData) {
-    const columnValues = { numeric_mm3xzncg: quoteData.totalEstimate, numeric_mm3zsgna: quoteData.equipmentList.count, long_text_mm3xfve1: quoteData.notes, date_mm3z1vqz: { date: new Date().toISOString().split('T')[0] } };
-    const mutation = `mutation { change_multiple_column_values(board_id: ${PROJECTS_BOARD_ID}, item_id: ${projectId}, column_values: ${JSON.stringify(JSON.stringify(columnValues))}) { id } }`;
     await mondayApiCall(mutation);
 }
 
