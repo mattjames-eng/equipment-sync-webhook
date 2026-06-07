@@ -51,7 +51,6 @@ export default async function handler(req, res) {
         
         // Accept both elementId and itemId parameter names
         const quoteId = req.body.elementId || req.body.itemId;
-        const eventType = req.body.eventType;
 
         if (!quoteId) {
             console.log('❌ Missing quote ID in request');
@@ -136,7 +135,6 @@ async function fetchFlexQuoteData(quoteId) {
 
     const searchData = await searchResponse.json();
     
-    // Safety check to ensure we got a result back (Flex ExtJS usually returns data inside .data or .content)
     const searchResults = searchData.data || searchData.content || searchData.elements || searchData;
     if (!searchResults || searchResults.length === 0) {
         throw new Error(`Quote ${quoteId} could not be found in Flex. Please verify the quote number.`);
@@ -167,21 +165,29 @@ async function fetchFlexQuoteData(quoteId) {
     }
 
     const data = await dataResponse.json();
-    console.log(`✅ Step 2 Success! Retrieved header data for: ${data.name}`);
+    console.log(`✅ Step 2 Success! Raw data structural parse verified.`);
+
+    // Robust function to cleanly extract a string value out of a varying property types
+    const extractString = (val) => {
+        if (!val) return 'Unknown';
+        if (typeof val === 'string') return val;
+        if (typeof val === 'object') return val.name || val.text || val.value || JSON.stringify(val);
+        return String(val);
+    };
 
     return {
-        elementNumber: data.elementNumber || quoteId,
-        name: data.name || 'Untitled Project',
-        customer: { name: data.customer?.name || 'Unknown Client' },
-        venue: { name: data.venue?.name || 'Unknown Venue' },
+        elementNumber: extractString(data.elementNumber || quoteId),
+        name: extractString(data.name || 'Untitled Project'),
+        customer: { name: extractString(data.customer?.name || data.customer || 'Unknown Client') },
+        venue: { name: extractString(data.venue?.name || data.venue || 'Unknown Venue') },
         eventDate: data.eventDate || null,
         loadInDate: data.loadInDate || null,
         strikeDate: data.strikeDate || null,
         totalEstimate: data.totalEstimate || 0,
-        notes: data.notes || '',
+        notes: extractString(data.notes || ''),
         equipmentList: { count: data.equipmentList?.count || 0 },
-        status: data.status || 'Quote',
-        salesRep: { name: data.salesRep?.name || 'Unknown' }
+        status: extractString(data.status || 'Quote'),
+        salesRep: { name: extractString(data.salesRep?.name || data.salesRep || 'Unknown') }
     };
 }
 
@@ -204,12 +210,13 @@ async function checkForDuplicateProject(flexProjectNumber) {
 }
 
 async function findOrCreateContact(name, type) {
+    const safeName = String(name).replace(/"/g, '\\"');
     const searchQuery = `query {
         boards(ids: [${CONTACTS_BOARD_ID}]) {
             items_page(limit: 1, query_params: {
                 rules: [{
                     column_id: "name",
-                    compare_value: ["${name.replace(/"/g, '\\"')}"]
+                    compare_value: ["${safeName}"]
                 }]
             }) {
                 items { id name }
@@ -221,11 +228,10 @@ async function findOrCreateContact(name, type) {
     
     if (existingItems.length > 0) return existingItems[0].id;
 
-    // REMOVED GROUP ID HERE
     const createMutation = `mutation {
         create_item(
             board_id: ${CONTACTS_BOARD_ID},
-            item_name: "${name.replace(/"/g, '\\"')}",
+            item_name: "${safeName}",
             column_values: "{\\"dropdown_mm3vqxqh\\":\\"${type}\\",\\"color_mm3vqxqh\\":{\\"label\\":\\"Active\\"}}"
         ) { id }
     }`;
@@ -252,11 +258,11 @@ async function createMondayProject(quoteData, clientId, venueId) {
         if (columnValues[key] === null) delete columnValues[key];
     });
 
-    // REMOVED GROUP ID HERE
+    const safeProjectName = String(quoteData.name).replace(/"/g, '\\"');
     const mutation = `mutation {
         create_item(
             board_id: ${PROJECTS_BOARD_ID},
-            item_name: "${quoteData.name.replace(/"/g, '\\"')}",
+            item_name: "${safeProjectName}",
             column_values: ${JSON.stringify(JSON.stringify(columnValues))}
         ) { id name url }
     }`;
@@ -302,12 +308,13 @@ async function assignPM(projectId, budget) {
 
 async function sendNotification(projectId, quoteData, pmUserId) {
     const userId = pmUserId || PM_ASSIGNMENTS.default;
+    const safeProjectName = String(quoteData.name).replace(/"/g, '\\"');
     const mutation = `mutation {
         create_notification(
             user_id: ${userId},
             target_id: ${projectId},
             target_type: Project,
-            text: "New project created from Flex: ${quoteData.name.replace(/"/g, '\\"')} (${quoteData.elementNumber})",
+            text: "New project created from Flex: ${safeProjectName} (${quoteData.elementNumber})",
             payload: ${JSON.stringify(JSON.stringify({
                 client: quoteData.customer.name,
                 venue: quoteData.venue.name,
