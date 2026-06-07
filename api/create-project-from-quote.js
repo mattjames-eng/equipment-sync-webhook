@@ -9,8 +9,7 @@
  * - Notifications
  * - CORS for Vibe app access
  * - Two-step Flex API lookup using correct /api/search endpoint
- * - Strict nested metadata cleaning for complex Flex objects (Dates & Names)
- * - Vibe app form submissions with pre-fetched Flex data
+ * - Strict nested metadata cleaning for complex Flex objects (Dates, Names, & Notes)
  * * Author: Matt James, Antic Studios
  */
 
@@ -50,7 +49,6 @@ export default async function handler(req, res) {
 
     try {
         console.log('📥 Received request');
-        console.log('📦 Request body:', JSON.stringify(req.body, null, 2));
         
         // Helper to extract clean values from Vibe form fields
         const extractValue = (field) => {
@@ -62,7 +60,7 @@ export default async function handler(req, res) {
             return String(field);
         };
         
-        // Check if this is Vibe app data (has nested field objects) or simple webhook data
+        // Check if this is Vibe app data or simple webhook data
         const hasVibeStructure = req.body.name && typeof req.body.name === 'object' && req.body.name.fieldType;
         
         let quoteData;
@@ -70,7 +68,6 @@ export default async function handler(req, res) {
         if (hasVibeStructure) {
             console.log('🎨 Processing Vibe app submission with pre-fetched Flex data');
             
-            // Extract all the fields from the Vibe app structure
             const projectName = extractValue(req.body.name);
             const elementNumber = extractValue(req.body.elementNumber || req.body['Flex Quote Number']);
             const customerName = extractValue(req.body.customer);
@@ -84,9 +81,6 @@ export default async function handler(req, res) {
             const status = extractValue(req.body.status) || 'Quote';
             const salesRep = extractValue(req.body.salesRep);
             
-            console.log(`📋 Extracted Vibe data string values: ${projectName} (${elementNumber})`);
-            
-            // Build quoteData object from Vibe fields
             quoteData = {
                 elementNumber: elementNumber || 'Unknown',
                 name: projectName || 'Untitled Project',
@@ -103,7 +97,6 @@ export default async function handler(req, res) {
             };
             
         } else {
-            // Original Flex webhook/API flow - fetch directly from Flex API
             const quoteId = req.body.elementId || req.body.itemId || req.body['Flex Quote Number'];
             
             if (!quoteId) {
@@ -197,7 +190,6 @@ async function fetchFlexQuoteData(quoteId) {
         throw new Error(`Quote ${quoteId} could not be found in Flex. Please verify the quote number.`);
     }
 
-    // Extract the long internal UUID
     const internalId = searchResults[0].id || searchResults[0].elementId;
     console.log(`✅ Step 1 Success! Found internal ID: ${internalId}`);
 
@@ -223,15 +215,17 @@ async function fetchFlexQuoteData(quoteId) {
 
     const data = await dataResponse.json();
     console.log(`✅ Step 2 Success! Raw data received`);
-    console.log(`🔍 RAW NAME FIELD:`, JSON.stringify(data.name));
 
-    // Helper to safely pull clean string names out of nested structural properties
+    // Helper to safely pull clean string values out of complex nested structural properties
     const extractString = (val) => {
-        if (!val) return 'Unknown';
+        if (!val) return '';
         if (typeof val === 'string') return val;
         if (typeof val === 'object') {
-            const extracted = val.data || val.name || val.text || val.value || val.displayString;
-            if (extracted && typeof extracted === 'string') return extracted;
+            // Check common structural layout keys used by Flex endpoints
+            const extracted = val.data || val.value || val.text || val.name || val.displayString;
+            if (extracted !== undefined && extracted !== null) {
+                return typeof extracted === 'object' ? extractString(extracted) : String(extracted);
+            }
             return JSON.stringify(val);
         }
         return String(val);
@@ -251,12 +245,9 @@ async function fetchFlexQuoteData(quoteId) {
         return match ? match[1] : null;
     };
 
-    const extractedName = extractString(data.name || 'Untitled Project');
-    console.log(`🎯 EXTRACTED NAME:`, extractedName, `(Type: ${typeof extractedName})`);
-
     return {
         elementNumber: extractString(data.elementNumber || quoteId),
-        name: extractedName,
+        name: extractString(data.name || 'Untitled Project'),
         customer: { name: extractString(data.customer?.name || data.customer || 'Unknown Client') },
         venue: { name: extractString(data.venue?.name || data.venue || 'Unknown Venue') },
         eventDate: extractCleanDate(data.eventDate),
