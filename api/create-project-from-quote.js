@@ -54,9 +54,12 @@ export default async function handler(req, res) {
         const extractValue = (field) => {
             if (!field) return null;
             if (typeof field === 'string') return field;
-            if (typeof field === 'object' && field.data !== undefined) return field.data;
-            if (typeof field === 'object' && field.name !== undefined) return field.name;
-            if (typeof field === 'object' && field.value !== undefined) return field.value;
+            if (typeof field === 'object') {
+                if (field.data !== undefined) {
+                    return typeof field.data === 'object' ? (field.data.name || field.data.value || JSON.stringify(field.data)) : field.data;
+                }
+                return field.name || field.value || String(field);
+            }
             return String(field);
         };
         
@@ -112,6 +115,7 @@ export default async function handler(req, res) {
         }
         
         console.log(`🎯 TARGET INTEGRATION DELIVERY: [${quoteData.name}]`);
+        console.log(`👥 CLIENT EXTRACTED: [${quoteData.customer.name}] | 📍 VENUE EXTRACTED: [${quoteData.venue.name}]`);
 
         // Step 2: Check for duplicate project
         const existingProject = await checkForDuplicateProject(quoteData.elementNumber);
@@ -127,15 +131,15 @@ export default async function handler(req, res) {
             });
         }
 
-        // Step 3: Find or create client (with fixed robust lookups)
+        // Step 3: Find or create client
         const clientId = await findOrCreateContact(quoteData.customer.name, 'Client');
         
-        // Step 4: Find or create venue (with fixed robust lookups)
+        // Step 4: Find or create venue
         const venueId = await findOrCreateContact(quoteData.venue.name, 'Venue');
 
         // Step 5: Create project in monday.com
         const project = await createMondayProject(quoteData, clientId, venueId);
-        console.log(`✅ Created project successfully with ID: ${project.id}`);
+        console.log(`Base layout generation complete. Project record assigned ID: ${project.id}`);
 
         // Step 6: Assign PM based on budget
         const assignedPM = await assignPM(project.id, quoteData.totalEstimate);
@@ -212,16 +216,21 @@ async function fetchFlexQuoteData(quoteId) {
     }
 
     const data = await dataResponse.json();
-    console.log(`✅ Step 2 Success! Raw data received`);
+    console.log(`✅ Step 2 Success! Raw data structural layers parsed`);
 
+    // Extended layout checker to extract deep structural properties safely
     const extractString = (val, fallback = '') => {
         if (!val) return fallback;
         if (typeof val === 'string') return val;
         if (typeof val === 'object') {
-            if (val.fieldType || val.fieldRestrictions) {
-                return val.data || val.value || val.text || val.name || val.displayString || fallback;
+            // Check if there is an explicit inner data layout object nesting the properties
+            if (val.data !== undefined && val.data !== null) {
+                if (typeof val.data === 'object') {
+                    return val.data.name || val.data.text || val.data.value || val.data.displayString || fallback;
+                }
+                return String(val.data);
             }
-            return val.name || val.text || val.value || val.data || val.displayString || JSON.stringify(val);
+            return val.name || val.text || val.value || val.displayString || fallback;
         }
         return String(val);
     };
@@ -242,8 +251,8 @@ async function fetchFlexQuoteData(quoteId) {
     return {
         elementNumber: extractString(data?.elementNumber, String(quoteId)),
         name: extractString(data?.name, 'Untitled Project'),
-        customer: { name: extractString(data?.customer?.name || data?.customer, 'Unknown Client') },
-        venue: { name: extractString(data?.venue?.name || data?.venue, 'Unknown Venue') },
+        customer: { name: extractString(data?.customer, 'Unknown Client') },
+        venue: { name: extractString(data?.venue, 'Unknown Venue') },
         eventDate: extractCleanDate(data?.eventDate),
         loadInDate: extractCleanDate(data?.loadInDate),
         strikeDate: extractCleanDate(data?.strikeDate),
@@ -251,7 +260,7 @@ async function fetchFlexQuoteData(quoteId) {
         notes: extractString(data?.notes, 'No Notes'),
         equipmentList: { count: data?.equipmentList?.count || 0 },
         status: extractString(data?.status, 'Quote'),
-        salesRep: { name: extractString(data?.salesRep?.name || data?.salesRep, 'Unknown') }
+        salesRep: { name: extractString(data?.salesRep, 'Unknown') }
     };
 }
 
@@ -273,18 +282,14 @@ async function checkForDuplicateProject(flexProjectNumber) {
     return items.length > 0 ? items[0] : null;
 }
 
-/**
- * Modernized fallback lookup function using robust global item board filtering arrays
- */
 async function findOrCreateContact(name, type) {
-    if (!name || name === 'Unknown Client' || name === 'Unknown Venue' || name === 'Unknown') {
+    if (!name || name === 'Unknown Client' || name === 'Unknown Venue' || name === 'Unknown' || name === '') {
         return null;
     }
 
     const safeName = String(name).trim();
     console.log(`🔍 Scanning contacts registry for existing ${type}: "${safeName}"`);
 
-    // Using the correct global items board search structure to check item names safely
     const searchQuery = `query {
         boards(ids: [${CONTACTS_BOARD_ID}]) {
             items_page(limit: 10, query_params: {
@@ -298,7 +303,6 @@ async function findOrCreateContact(name, type) {
     const searchResponse = await mondayApiCall(searchQuery);
     const existingItems = searchResponse.data.boards[0]?.items_page?.items || [];
     
-    // Exact strict match cleanup logic to isolate true record pairs
     const match = existingItems.find(item => item.name.trim().toLowerCase() === safeName.toLowerCase());
     
     if (match) {
@@ -332,7 +336,6 @@ async function createMondayProject(quoteData, clientId, venueId) {
         color_mm3y3bxj: { label: "Synced" }
     };
 
-    // Safely append relational references only if database link IDs exist
     if (clientId) columnValues.board_relation_mm3x8evw = { item_ids: [parseInt(clientId)] };
     if (venueId) columnValues.board_relation_mm3xrm02 = { item_ids: [parseInt(venueId)] };
 
