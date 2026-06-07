@@ -1,10 +1,8 @@
 /**
  * Flex Quote → monday.com Project Creator
- * 
- * This endpoint receives Flex quote data and automatically creates
+ * * This endpoint receives Flex quote data and automatically creates
  * a project in monday.com with all fields populated.
- * 
- * Handles:
+ * * Handles:
  * - Client/venue lookup and creation
  * - Duplicate prevention
  * - PM assignment based on budget
@@ -13,8 +11,7 @@
  * - Two-step Flex API lookup using correct /api/search endpoint
  * - Strict nested metadata cleaning for complex Flex objects (Dates & Names)
  * - Vibe app form submissions with pre-fetched Flex data
- * 
- * Author: Matt James, Antic Studios
+ * * Author: Matt James, Antic Studios
  */
 
 // Environment variables (set in Vercel)
@@ -87,7 +84,7 @@ export default async function handler(req, res) {
             const status = extractValue(req.body.status) || 'Quote';
             const salesRep = extractValue(req.body.salesRep);
             
-            console.log(`📋 Extracted data: ${projectName} (${elementNumber})`);
+            console.log(`📋 Extracted Vibe data string values: ${projectName} (${elementNumber})`);
             
             // Build quoteData object from Vibe fields
             quoteData = {
@@ -106,7 +103,7 @@ export default async function handler(req, res) {
             };
             
         } else {
-            // Original Flex webhook flow - fetch from Flex API
+            // Original Flex webhook/API flow - fetch directly from Flex API
             const quoteId = req.body.elementId || req.body.itemId || req.body['Flex Quote Number'];
             
             if (!quoteId) {
@@ -117,11 +114,11 @@ export default async function handler(req, res) {
                 });
             }
             
-            console.log(`🔍 Processing Flex webhook for quote: ${quoteId}`);
+            console.log(`🔍 Processing Flex webhook lookup for quote: ${quoteId}`);
             quoteData = await fetchFlexQuoteData(quoteId);
         }
         
-        console.log(`✅ Quote data ready: ${quoteData.name}`);
+        console.log(`🎯 TARGET INTEGRATION DELIVERY: [${quoteData.name}]`);
 
         // Step 2: Check for duplicate project
         const existingProject = await checkForDuplicateProject(quoteData.elementNumber);
@@ -145,7 +142,7 @@ export default async function handler(req, res) {
 
         // Step 5: Create project in monday.com
         const project = await createMondayProject(quoteData, clientId, venueId);
-        console.log(`✅ Created project: ${project.id}`);
+        console.log(`✅ Created project successfully with ID: ${project.id}`);
 
         // Step 6: Assign PM based on budget
         const assignedPM = await assignPM(project.id, quoteData.totalEstimate);
@@ -233,10 +230,8 @@ async function fetchFlexQuoteData(quoteId) {
         if (!val) return 'Unknown';
         if (typeof val === 'string') return val;
         if (typeof val === 'object') {
-            // Try multiple properties
             const extracted = val.data || val.name || val.text || val.value || val.displayString;
             if (extracted && typeof extracted === 'string') return extracted;
-            // If still an object, stringify it
             return JSON.stringify(val);
         }
         return String(val);
@@ -252,7 +247,6 @@ async function fetchFlexQuoteData(quoteId) {
             rawString = dateVal.data || dateVal.value || dateVal.date || JSON.stringify(dateVal);
         }
         
-        // Use regex pattern extraction to pull out YYYY-MM-DD cleanly
         const match = rawString.match(/(\d{4}-\d{2}-\d{2})/);
         return match ? match[1] : null;
     };
