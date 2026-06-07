@@ -12,7 +12,7 @@
  * - CORS for Vibe app access
  * - Two-step Flex API lookup using correct /api/search endpoint
  * - Strict nested metadata cleaning for complex Flex objects (Dates & Names)
- * - Vibe app form submissions with "Flex Quote Number" field
+ * - Vibe app form submissions with pre-fetched Flex data
  * 
  * Author: Matt James, Antic Studios
  */
@@ -60,29 +60,68 @@ export default async function handler(req, res) {
             if (!field) return null;
             if (typeof field === 'string') return field;
             if (typeof field === 'object' && field.data !== undefined) return field.data;
+            if (typeof field === 'object' && field.name !== undefined) return field.name;
+            if (typeof field === 'object' && field.value !== undefined) return field.value;
             return String(field);
         };
         
-        // Detect if this is from Vibe app (has "Flex Quote Number" field) or Flex webhook (has elementId)
-        const vibeQuoteNumber = extractValue(req.body['Flex Quote Number']);
-        const flexWebhookId = req.body.elementId || req.body.itemId;
+        // Check if this is Vibe app data (has nested field objects) or simple webhook data
+        const hasVibeStructure = req.body.name && typeof req.body.name === 'object' && req.body.name.fieldType;
         
-        const quoteId = vibeQuoteNumber || flexWebhookId;
+        let quoteData;
         
-        if (!quoteId) {
-            console.log('❌ Missing quote ID in request');
-            return res.status(400).json({ 
-                error: 'Missing quote ID', 
-                message: 'Please provide either "Flex Quote Number" field or elementId/itemId parameter' 
-            });
+        if (hasVibeStructure) {
+            console.log('🎨 Processing Vibe app submission with pre-fetched Flex data');
+            
+            // Extract all the fields from the Vibe app structure
+            const projectName = extractValue(req.body.name);
+            const elementNumber = extractValue(req.body.elementNumber || req.body['Flex Quote Number']);
+            const customerName = extractValue(req.body.customer);
+            const venueName = extractValue(req.body.venue);
+            const eventDate = extractValue(req.body.eventDate);
+            const loadInDate = extractValue(req.body.loadInDate);
+            const strikeDate = extractValue(req.body.strikeDate);
+            const totalEstimate = extractValue(req.body.totalEstimate) || 0;
+            const notes = extractValue(req.body.notes) || '';
+            const equipmentCount = extractValue(req.body.equipmentCount) || 0;
+            const status = extractValue(req.body.status) || 'Quote';
+            const salesRep = extractValue(req.body.salesRep);
+            
+            console.log(`📋 Extracted data: ${projectName} (${elementNumber})`);
+            
+            // Build quoteData object from Vibe fields
+            quoteData = {
+                elementNumber: elementNumber || 'Unknown',
+                name: projectName || 'Untitled Project',
+                customer: { name: customerName || 'Unknown Client' },
+                venue: { name: venueName || 'Unknown Venue' },
+                eventDate: eventDate,
+                loadInDate: loadInDate,
+                strikeDate: strikeDate,
+                totalEstimate: parseFloat(totalEstimate) || 0,
+                notes: notes,
+                equipmentList: { count: parseInt(equipmentCount) || 0 },
+                status: status,
+                salesRep: { name: salesRep || 'Unknown' }
+            };
+            
+        } else {
+            // Original Flex webhook flow - fetch from Flex API
+            const quoteId = req.body.elementId || req.body.itemId || req.body['Flex Quote Number'];
+            
+            if (!quoteId) {
+                console.log('❌ Missing quote ID in request');
+                return res.status(400).json({ 
+                    error: 'Missing quote ID', 
+                    message: 'Please provide either elementId, itemId, or Flex Quote Number parameter' 
+                });
+            }
+            
+            console.log(`🔍 Processing Flex webhook for quote: ${quoteId}`);
+            quoteData = await fetchFlexQuoteData(quoteId);
         }
         
-        const source = vibeQuoteNumber ? 'Vibe App' : 'Flex Webhook';
-        console.log(`🔍 Processing quote ${quoteId} from ${source}`);
-
-        // Step 1: Fetch full quote details from Flex
-        const quoteData = await fetchFlexQuoteData(quoteId);
-        console.log(`✅ Fetched quote data: ${quoteData.name}`);
+        console.log(`✅ Quote data ready: ${quoteData.name}`);
 
         // Step 2: Check for duplicate project
         const existingProject = await checkForDuplicateProject(quoteData.elementNumber);
@@ -348,7 +387,6 @@ async function sendNotification(projectId, quoteData, pmUserId) {
     const userId = pmUserId || PM_ASSIGNMENTS.default;
     const safeProjectName = String(quoteData.name).replace(/"/g, '\\"');
     
-    // REMOVED UNSUPPORTED PAYLOAD ARGUMENT HERE
     const mutation = `mutation {
         create_notification(
             user_id: ${userId},
