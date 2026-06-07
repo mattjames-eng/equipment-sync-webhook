@@ -7,7 +7,7 @@
  * - Multi-step Board Relation connection binding
  * - Manual PM assignment default (Lands unassigned)
  * - Recursive "Deep-Dive" text extraction for complex Flex payloads
- * - Fallback internal database key scanning for older Flex API schemas
+ * - Unfiltered API calls to expose hidden custom fields
  * * Author: Matt James, Antic Studios
  */
 
@@ -114,14 +114,16 @@ async function fetchFlexQuoteData(quoteId) {
 
     const internalId = searchResults[0].id || searchResults[0].elementId;
     
-    // UPDATED: Now queries for the 'client' and 'location' internal database keys as well
-    const codeList = "elementNumber,name,customer,client,venue,location,eventDate,totalEstimate,notes,equipmentList";
-    const dataUrl = `${FLEX_BASE_URL}/api/element/${internalId}/header-data?codeList=${codeList}`;
+    // UPDATED: We completely removed the codeList filter. 
+    // This forces Flex to hand over the entire project blueprint!
+    const dataUrl = `${FLEX_BASE_URL}/api/element/${internalId}`;
 
     const dataResponse = await fetch(dataUrl, { headers: { 'X-Auth-Token': FLEX_API_KEY, 'Accept': 'application/json' }});
     if (!dataResponse.ok) throw new Error(`Flex Data API failed: ${dataResponse.status}`);
 
     const data = await dataResponse.json();
+    
+    // Kept this here so we can see the full unfiltered object in the logs
     console.log("🚨 RAW FLEX PAYLOAD REVEALED:", JSON.stringify(data));
 
     const deepExtractName = (obj) => {
@@ -150,7 +152,6 @@ async function fetchFlexQuoteData(quoteId) {
     return {
         elementNumber: deepExtractName(data?.elementNumber) || String(quoteId),
         name: deepExtractName(data?.name) || 'Untitled Project',
-        // UPDATED: Actively checks both structural property types depending on API version
         customer: { name: deepExtractName(data?.customer) || deepExtractName(data?.client) || 'Unknown Client' },
         venue: { name: deepExtractName(data?.venue) || deepExtractName(data?.location) || 'Unknown Venue' },
         eventDate: extractCleanDate(data?.eventDate),
