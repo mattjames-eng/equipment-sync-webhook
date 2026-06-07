@@ -144,7 +144,7 @@ async function fetchFlexQuoteData(quoteId) {
 
     // Auxiliary resolution functions to query entity records
     const fetchContactNameById = async (rawIdInput) => {
-        // FIXED: Extract the raw string UUID out of the inner object if necessary
+        // FIXED: Extract the raw string UUID out of the inner object wrapper before mapping to the URL
         const cleanIdString = typeof rawIdInput === 'object' ? deepExtractName(rawIdInput) : String(rawIdInput).trim();
         if (!cleanIdString || cleanIdString === "" || cleanIdString.includes('object')) return null;
         
