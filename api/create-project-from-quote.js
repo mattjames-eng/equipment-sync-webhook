@@ -3,8 +3,8 @@
  * * This endpoint receives Flex quote data and automatically creates
  * a project in monday.com with all fields populated.
  * * Handles:
- * - Client/venue lookup and creation
- * - Duplicate prevention
+ * - Client/venue lookup and creation (Strict duplicate prevention)
+ * - Duplicate prevention for primary projects
  * - PM assignment based on budget
  * - Notifications
  * - CORS for Vibe app access
@@ -127,10 +127,10 @@ export default async function handler(req, res) {
             });
         }
 
-        // Step 3: Find or create client
+        // Step 3: Find or create client (with fixed robust lookups)
         const clientId = await findOrCreateContact(quoteData.customer.name, 'Client');
         
-        // Step 4: Find or create venue
+        // Step 4: Find or create venue (with fixed robust lookups)
         const venueId = await findOrCreateContact(quoteData.venue.name, 'Venue');
 
         // Step 5: Create project in monday.com
@@ -164,7 +164,6 @@ export default async function handler(req, res) {
  * Fetch quote data from Flex API using a Two-Step Process
  */
 async function fetchFlexQuoteData(quoteId) {
-    // STEP 1: Search Flex to find the internal UUID using the correct /api/search endpoint
     const searchUrl = `${FLEX_BASE_URL}/api/search?searchText=${encodeURIComponent(quoteId)}&searchTypes=all&includeClosed=true`;
     console.log(`🔍 Step 1: Searching for internal Flex ID using quote number: ${quoteId}`);
     
@@ -193,7 +192,6 @@ async function fetchFlexQuoteData(quoteId) {
     const internalId = searchResults[0].id || searchResults[0].elementId;
     console.log(`✅ Step 1 Success! Found internal ID: ${internalId}`);
 
-    // STEP 2: Fetch actual header data with codeList
     const codeList = "elementNumber,name,customer,venue,eventDate,loadInDate,strikeDate,totalEstimate,notes,equipmentList,status,salesRep";
     const dataUrl = `${FLEX_BASE_URL}/api/element/${internalId}/header-data?codeList=${codeList}`;
     console.log(`📥 Step 2: Fetching header data using internal ID...`);
@@ -216,12 +214,10 @@ async function fetchFlexQuoteData(quoteId) {
     const data = await dataResponse.json();
     console.log(`✅ Step 2 Success! Raw data received`);
 
-    // Fully fortified string extractor with optional chaining safeguards
     const extractString = (val, fallback = '') => {
         if (!val) return fallback;
         if (typeof val === 'string') return val;
         if (typeof val === 'object') {
-            // Check structural wrappers safely
             if (val.fieldType || val.fieldRestrictions) {
                 return val.data || val.value || val.text || val.name || val.displayString || fallback;
             }
@@ -230,7 +226,6 @@ async function fetchFlexQuoteData(quoteId) {
         return String(val);
     };
 
-    // Helper to extract clean YYYY-MM-DD date values from nested layout structures
     const extractCleanDate = (dateVal) => {
         if (!dateVal) return null;
         let rawString = '';
@@ -253,7 +248,7 @@ async function fetchFlexQuoteData(quoteId) {
         loadInDate: extractCleanDate(data?.loadInDate),
         strikeDate: extractCleanDate(data?.strikeDate),
         totalEstimate: data?.totalEstimate || 0,
-        notes: extractString(data?.notes, 'No Notes'), // Clean fallback string instead of structural layout dump
+        notes: extractString(data?.notes, 'No Notes'),
         equipmentList: { count: data?.equipmentList?.count || 0 },
         status: extractString(data?.status, 'Quote'),
         salesRep: { name: extractString(data?.salesRep?.name || data?.salesRep, 'Unknown') }
@@ -278,29 +273,45 @@ async function checkForDuplicateProject(flexProjectNumber) {
     return items.length > 0 ? items[0] : null;
 }
 
+/**
+ * Modernized fallback lookup function using robust global item board filtering arrays
+ */
 async function findOrCreateContact(name, type) {
-    const safeName = String(name).replace(/"/g, '\\"');
+    if (!name || name === 'Unknown Client' || name === 'Unknown Venue' || name === 'Unknown') {
+        return null;
+    }
+
+    const safeName = String(name).trim();
+    console.log(`🔍 Scanning contacts registry for existing ${type}: "${safeName}"`);
+
+    // Using the correct global items board search structure to check item names safely
     const searchQuery = `query {
         boards(ids: [${CONTACTS_BOARD_ID}]) {
-            items_page(limit: 1, query_params: {
-                rules: [{
-                    column_id: "name",
-                    compare_value: ["${safeName}"]
-                }]
+            items_page(limit: 10, query_params: {
+                term: "${safeName.replace(/"/g, '\\"')}"
             }) {
                 items { id name }
             }
         }
     }`;
+    
     const searchResponse = await mondayApiCall(searchQuery);
     const existingItems = searchResponse.data.boards[0]?.items_page?.items || [];
     
-    if (existingItems.length > 0) return existingItems[0].id;
+    // Exact strict match cleanup logic to isolate true record pairs
+    const match = existingItems.find(item => item.name.trim().toLowerCase() === safeName.toLowerCase());
+    
+    if (match) {
+        console.log(`🎯 Match found in database! Linking to existing contact ID: ${match.id}`);
+        return match.id;
+    }
 
+    console.log(`✨ No match found. Generating new entry in Database for ${type}: "${safeName}"`);
+    const escapedSafeName = safeName.replace(/"/g, '\\"');
     const createMutation = `mutation {
         create_item(
             board_id: ${CONTACTS_BOARD_ID},
-            item_name: "${safeName}",
+            item_name: "${escapedSafeName}",
             column_values: "{\\"dropdown_mm3vqxqh\\":\\"${type}\\",\\"color_mm3vqxqh\\":{\\"label\\":\\"Active\\"}}"
         ) { id }
     }`;
@@ -311,8 +322,6 @@ async function findOrCreateContact(name, type) {
 async function createMondayProject(quoteData, clientId, venueId) {
     const columnValues = {
         text_mm3x2yr6: quoteData.elementNumber,
-        board_relation_mm3x8evw: { item_ids: [parseInt(clientId)] },
-        board_relation_mm3xrm02: { item_ids: [parseInt(venueId)] },
         date_mm3xca9r: quoteData.eventDate ? { date: quoteData.eventDate } : null,
         numeric_mm3xzncg: quoteData.totalEstimate,
         numeric_mm3zsgna: quoteData.equipmentList.count,
@@ -322,6 +331,10 @@ async function createMondayProject(quoteData, clientId, venueId) {
         date_mm3z1vqz: { date: new Date().toISOString().split('T')[0] },
         color_mm3y3bxj: { label: "Synced" }
     };
+
+    // Safely append relational references only if database link IDs exist
+    if (clientId) columnValues.board_relation_mm3x8evw = { item_ids: [parseInt(clientId)] };
+    if (venueId) columnValues.board_relation_mm3xrm02 = { item_ids: [parseInt(venueId)] };
 
     Object.keys(columnValues).forEach(key => {
         if (columnValues[key] === null) delete columnValues[key];
