@@ -7,6 +7,7 @@
  * - Multi-step Board Relation connection binding
  * - Manual PM assignment default (Lands unassigned)
  * - Recursive "Deep-Dive" text extraction for complex Flex payloads
+ * - Fallback internal database key scanning for older Flex API schemas
  * * Author: Matt James, Antic Studios
  */
 
@@ -57,8 +58,8 @@ export default async function handler(req, res) {
             quoteData = {
                 elementNumber: deepExtractName(req.body.elementNumber || req.body['Flex Quote Number']) || 'Unknown',
                 name: deepExtractName(req.body.name) || 'Untitled Project',
-                customer: { name: deepExtractName(req.body.customer) || 'Unknown Client' },
-                venue: { name: deepExtractName(req.body.venue) || 'Unknown Venue' },
+                customer: { name: deepExtractName(req.body.customer) || deepExtractName(req.body.client) || 'Unknown Client' },
+                venue: { name: deepExtractName(req.body.venue) || deepExtractName(req.body.location) || 'Unknown Venue' },
                 eventDate: deepExtractName(req.body.eventDate),
                 totalEstimate: parseFloat(deepExtractName(req.body.totalEstimate)) || 0,
                 notes: deepExtractName(req.body.notes) || 'No Notes',
@@ -112,7 +113,9 @@ async function fetchFlexQuoteData(quoteId) {
     if (!searchResults || searchResults.length === 0) throw new Error(`Quote ${quoteId} could not be found in Flex.`);
 
     const internalId = searchResults[0].id || searchResults[0].elementId;
-    const codeList = "elementNumber,name,customer,venue,eventDate,totalEstimate,notes,equipmentList";
+    
+    // UPDATED: Now queries for the 'client' and 'location' internal database keys as well
+    const codeList = "elementNumber,name,customer,client,venue,location,eventDate,totalEstimate,notes,equipmentList";
     const dataUrl = `${FLEX_BASE_URL}/api/element/${internalId}/header-data?codeList=${codeList}`;
 
     const dataResponse = await fetch(dataUrl, { headers: { 'X-Auth-Token': FLEX_API_KEY, 'Accept': 'application/json' }});
@@ -146,8 +149,9 @@ async function fetchFlexQuoteData(quoteId) {
     return {
         elementNumber: deepExtractName(data?.elementNumber) || String(quoteId),
         name: deepExtractName(data?.name) || 'Untitled Project',
-        customer: { name: deepExtractName(data?.customer) || 'Unknown Client' },
-        venue: { name: deepExtractName(data?.venue) || 'Unknown Venue' },
+        // UPDATED: Actively checks both structural property types depending on API version
+        customer: { name: deepExtractName(data?.customer) || deepExtractName(data?.client) || 'Unknown Client' },
+        venue: { name: deepExtractName(data?.venue) || deepExtractName(data?.location) || 'Unknown Venue' },
         eventDate: extractCleanDate(data?.eventDate),
         totalEstimate: data?.totalEstimate || 0,
         notes: deepExtractName(data?.notes) || 'No Notes',
