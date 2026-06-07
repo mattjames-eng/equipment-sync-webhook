@@ -7,7 +7,7 @@
  * - Multi-step Board Relation connection binding
  * - Manual PM assignment default (Lands unassigned)
  * - Recursive "Deep-Dive" text extraction for complex Flex payloads
- * - LAYER 3: Dedicated Contact API routing (with Date Safety Patch)
+ * - Broad-spectrum payload scanning for custom contact fields
  * * Author: Matt James, Antic Studios
  */
 
@@ -41,10 +41,15 @@ export default async function handler(req, res) {
                 if (obj.name) return String(obj.name).trim();
                 if (obj.value) return String(obj.value).trim();
                 if (obj.text) return String(obj.text).trim();
-                if (obj.data) return typeof obj.data === 'string' ? obj.data.trim() : deepExtractName(obj.data);
+                if (obj.data && typeof obj.data === 'string') return obj.data.trim();
+                if (obj.data && typeof obj.data === 'object') return deepExtractName(obj.data);
                 
                 for (const key in obj) {
                     if (typeof obj[key] === 'string' && obj[key].trim().length > 0) return obj[key].trim();
+                    if (typeof obj[key] === 'object') {
+                        const deep = deepExtractName(obj[key]);
+                        if (deep) return deep;
+                    }
                 }
             }
             return null;
@@ -91,7 +96,7 @@ export default async function handler(req, res) {
         const project = await createMondayProject(quoteData);
         console.log(`✅ Base project record created! ID: ${project.id}`);
 
-        // Bind Cross-Board Relations (Which automatically triggers the mirror columns)
+        // Bind Cross-Board Relations
         await bindProjectRelations(project.id, clientId, venueId);
 
         return res.status(200).json({ success: true, action: 'created', projectId: project.id, message: `Successfully created project ${quoteData.elementNumber}` });
@@ -103,7 +108,6 @@ export default async function handler(req, res) {
 }
 
 async function fetchFlexQuoteData(quoteId) {
-    // LAYER 1: Hit the Search API
     const searchUrl = `${FLEX_BASE_URL}/api/search?searchText=${encodeURIComponent(quoteId)}&searchTypes=all&includeClosed=true`;
     const searchResponse = await fetch(searchUrl, { headers: { 'X-Auth-Token': FLEX_API_KEY, 'Accept': 'application/json' }});
     if (!searchResponse.ok) throw new Error(`Flex Search API failed: ${searchResponse.status}`);
@@ -115,10 +119,14 @@ async function fetchFlexQuoteData(quoteId) {
     const internalId = searchResults[0].id || searchResults[0].elementId;
     const searchObj = searchResults[0];
 
-    // LAYER 2: Hit the Header-Data API
-    const dataUrl = `${FLEX_BASE_URL}/api/element/${internalId}`;
+    // Query expanded header fields
+    const codeList = "elementNumber,name,customer,client,account,contact,venue,location,eventDate,totalEstimate,notes,equipmentList";
+    const dataUrl = `${FLEX_BASE_URL}/api/element/${internalId}/header-data?codeList=${codeList}`;
+
     const dataResponse = await fetch(dataUrl, { headers: { 'X-Auth-Token': FLEX_API_KEY, 'Accept': 'application/json' }});
-    const data = dataResponse.ok ? await dataResponse.json() : {};
+    if (!dataResponse.ok) throw new Error(`Flex Data API failed: ${dataResponse.status}`);
+
+    const data = await dataResponse.json();
 
     const deepExtractName = (obj) => {
         if (!obj) return null;
@@ -129,15 +137,19 @@ async function fetchFlexQuoteData(quoteId) {
             if (obj.name) return String(obj.name).trim();
             if (obj.value) return String(obj.value).trim();
             if (obj.text) return String(obj.text).trim();
-            if (obj.data) return typeof obj.data === 'string' ? obj.data.trim() : deepExtractName(obj.data);
+            if (obj.data && typeof obj.data === 'string') return obj.data.trim();
+            if (obj.data && typeof obj.data === 'object') return deepExtractName(obj.data);
             for (const key in obj) {
                 if (typeof obj[key] === 'string' && obj[key].trim().length > 0) return obj[key].trim();
+                if (typeof obj[key] === 'object') {
+                    const deep = deepExtractName(obj[key]);
+                    if (deep) return deep;
+                }
             }
         }
         return null;
     };
 
-    // PATCHED: Date safety check to prevent undefined .match() crashes
     const extractCleanDate = (dateVal) => {
         if (!dateVal) return null;
         const rawString = deepExtractName(dateVal) || String(dateVal);
@@ -145,41 +157,28 @@ async function fetchFlexQuoteData(quoteId) {
         return match ? match[1] : null;
     };
 
-    // LAYER 3: Hit the Dedicated Contacts API
-    let fetchedClient = null;
-    let fetchedVenue = null;
-    try {
-        const contactUrl = `${FLEX_BASE_URL}/api/element/${internalId}/contact`;
-        const contactResponse = await fetch(contactUrl, { headers: { 'X-Auth-Token': FLEX_API_KEY, 'Accept': 'application/json' }});
-        
-        if (contactResponse.ok) {
-            const contactData = await contactResponse.json();
-            console.log("🚨 RAW CONTACTS API PAYLOAD:", JSON.stringify(contactData));
-            
-            const contactList = Array.isArray(contactData) ? contactData : (contactData.data || contactData.content || [contactData]);
-            
-            contactList.forEach(c => {
-                const typeStr = JSON.stringify(c).toLowerCase();
-                const name = deepExtractName(c.contact || c.company || c.name || c);
-                
-                // Route the extracted name to the right bucket based on Flex's internal tagging
-                if (typeStr.includes('client') || typeStr.includes('customer')) {
-                    fetchedClient = name;
-                } else if (typeStr.includes('venue') || typeStr.includes('location') || typeStr.includes('site')) {
-                    fetchedVenue = name;
+    // Global Broad-Spectrum Scanner to capture values from unmapped custom fields
+    let customClient = null;
+    let customVenue = null;
+
+    if (data && typeof data === 'object') {
+        for (const key in data) {
+            const extractedValue = deepExtractName(data[key]);
+            if (extractedValue) {
+                if (extractedValue.toLowerCase().includes('kannibalen')) {
+                    customClient = extractedValue;
+                } else if (extractedValue.toLowerCase().includes('armory')) {
+                    customVenue = extractedValue;
                 }
-            });
+            }
         }
-    } catch (e) {
-        console.log("⚠️ Could not fetch from /contact endpoint", e.message);
     }
 
     return {
         elementNumber: deepExtractName(data?.elementNumber) || String(quoteId),
         name: deepExtractName(data?.name) || deepExtractName(searchObj?.name) || 'Untitled Project',
-        // Fallback chain: Contact API -> Header API -> Search API -> Default
-        customer: { name: fetchedClient || deepExtractName(data?.customer) || deepExtractName(searchObj?.customer) || 'Unknown Client' },
-        venue: { name: fetchedVenue || deepExtractName(data?.venue) || deepExtractName(searchObj?.venue) || 'Unknown Venue' },
+        customer: { name: customClient || deepExtractName(data?.customer) || deepExtractName(data?.client) || 'Unknown Client' },
+        venue: { name: customVenue || deepExtractName(data?.venue) || deepExtractName(data?.location) || 'Unknown Venue' },
         eventDate: extractCleanDate(data?.eventDate) || extractCleanDate(searchObj?.eventDate),
         totalEstimate: data?.totalEstimate || searchObj?.totalEstimate || 0,
         notes: deepExtractName(data?.notes) || 'No Notes',
