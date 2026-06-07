@@ -7,7 +7,7 @@
  * - Multi-step Board Relation connection binding
  * - Manual PM assignment default (Lands unassigned)
  * - Recursive "Deep-Dive" text extraction for complex Flex payloads
- * - Unfiltered API calls to expose hidden custom fields (Fixed 405)
+ * - Dual-layer API extraction (Search Object + Header Object) 
  * * Author: Matt James, Antic Studios
  */
 
@@ -32,7 +32,6 @@ export default async function handler(req, res) {
     try {
         console.log('📥 Received request payload');
         
-        // Recursive Deep-Dive Extractor to hunt down text in messy payloads
         const deepExtractName = (obj) => {
             if (!obj) return null;
             if (typeof obj === 'string') return obj.trim();
@@ -104,6 +103,7 @@ export default async function handler(req, res) {
 }
 
 async function fetchFlexQuoteData(quoteId) {
+    // LAYER 1: Hit the Search API
     const searchUrl = `${FLEX_BASE_URL}/api/search?searchText=${encodeURIComponent(quoteId)}&searchTypes=all&includeClosed=true`;
     const searchResponse = await fetch(searchUrl, { headers: { 'X-Auth-Token': FLEX_API_KEY, 'Accept': 'application/json' }});
     if (!searchResponse.ok) throw new Error(`Flex Search API failed: ${searchResponse.status}`);
@@ -113,18 +113,22 @@ async function fetchFlexQuoteData(quoteId) {
     if (!searchResults || searchResults.length === 0) throw new Error(`Quote ${quoteId} could not be found in Flex.`);
 
     const internalId = searchResults[0].id || searchResults[0].elementId;
-    
-    // THE FIX: We keep the /header-data endpoint so we don't get a 405 error, 
-    // but we REMOVE the ?codeList= filter so Flex dumps everything it has!
-    const dataUrl = `${FLEX_BASE_URL}/api/element/${internalId}/header-data`;
+    const searchObj = searchResults[0];
+
+    // Log the raw search payload so we can see what Flex includes by default
+    console.log("🚨 RAW SEARCH PAYLOAD REVEALED:", JSON.stringify(searchObj));
+
+    // LAYER 2: Hit the Header-Data API (with an expanded CodeList to avoid the 400 error)
+    const codeList = "elementNumber,name,customer,client,account,contact,venue,location,eventDate,totalEstimate,notes,equipmentList";
+    const dataUrl = `${FLEX_BASE_URL}/api/element/${internalId}/header-data?codeList=${codeList}`;
 
     const dataResponse = await fetch(dataUrl, { headers: { 'X-Auth-Token': FLEX_API_KEY, 'Accept': 'application/json' }});
     if (!dataResponse.ok) throw new Error(`Flex Data API failed: ${dataResponse.status}`);
 
     const data = await dataResponse.json();
     
-    // Kept this here so we can see the full unfiltered object in the logs
-    console.log("🚨 RAW FLEX PAYLOAD REVEALED:", JSON.stringify(data));
+    // Log the raw header payload
+    console.log("🚨 RAW HEADER PAYLOAD REVEALED:", JSON.stringify(data));
 
     const deepExtractName = (obj) => {
         if (!obj) return null;
@@ -151,11 +155,12 @@ async function fetchFlexQuoteData(quoteId) {
 
     return {
         elementNumber: deepExtractName(data?.elementNumber) || String(quoteId),
-        name: deepExtractName(data?.name) || 'Untitled Project',
-        customer: { name: deepExtractName(data?.customer) || deepExtractName(data?.client) || 'Unknown Client' },
-        venue: { name: deepExtractName(data?.venue) || deepExtractName(data?.location) || 'Unknown Venue' },
-        eventDate: extractCleanDate(data?.eventDate),
-        totalEstimate: data?.totalEstimate || 0,
+        name: deepExtractName(data?.name) || deepExtractName(searchObj?.name) || 'Untitled Project',
+        // Fallback checks the primary payload first, then checks the search payload
+        customer: { name: deepExtractName(data?.customer) || deepExtractName(data?.client) || deepExtractName(data?.account) || deepExtractName(searchObj?.customer) || deepExtractName(searchObj?.client) || 'Unknown Client' },
+        venue: { name: deepExtractName(data?.venue) || deepExtractName(data?.location) || deepExtractName(searchObj?.venue) || deepExtractName(searchObj?.location) || 'Unknown Venue' },
+        eventDate: extractCleanDate(data?.eventDate) || extractCleanDate(searchObj?.eventDate),
+        totalEstimate: data?.totalEstimate || searchObj?.totalEstimate || 0,
         notes: deepExtractName(data?.notes) || 'No Notes',
         equipmentList: { count: data?.equipmentList?.count || 0 }
     };
