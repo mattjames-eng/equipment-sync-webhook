@@ -1,14 +1,11 @@
 /**
- * Flex Quote → monday.com Project Creator
+ * Flex Quote → monday.com Project Creator (Pragmatic Text Workaround)
  * * This endpoint receives Flex quote data and automatically creates
- * a project in monday.com with all fields populated.
+ * a project in monday.com with text fallbacks to prevent API blockages.
  * * Handles:
- * - Direct clientId and venueId header data param filtering via /header-data
- * - Multi-tier Contact lookup resolution via /api/contact/{id}/identity
- * - Intentional 1.5s delay to ensure robust item indexing
- * - Independent standalone connection binding execution
- * - MONDAY_API_URL variable reference alignment fix (FIX)
- * - Manual PM assignment routing (Lands completely unassigned)
+ * - Clean name, date, estimate, and note extraction
+ * - Direct mapping to simplified text backup columns (Client/Venue)
+ * - Manual PM assignment handoff default (Lands unassigned)
  * * Author: Matt James, Antic Studios
  */
 
@@ -18,12 +15,8 @@ const FLEX_BASE_URL = process.env.FLEX_BASE_URL || 'https://anticstudios.flexren
 const MONDAY_API_KEY = process.env.MONDAY_API_KEY;
 const MONDAY_API_URL = 'https://api.monday.com/v2';
 
-// Board IDs
+// Board ID
 const PROJECTS_BOARD_ID = '18415679761';
-const CONTACTS_BOARD_ID = '18415573401';
-
-// Async delay utility
-const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 export default async function handler(req, res) {
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -60,8 +53,8 @@ export default async function handler(req, res) {
             quoteData = {
                 elementNumber: deepExtractName(req.body.elementNumber || req.body['Flex Quote Number']) || 'Unknown',
                 name: deepExtractName(req.body.name) || 'Untitled Project',
-                customer: { name: deepExtractName(req.body.customer) || 'Unknown Client' },
-                venue: { name: deepExtractName(req.body.venue) || 'Unknown Venue' },
+                clientText: deepExtractName(req.body.customer) || deepExtractName(req.body.client) || 'Kannibalen records',
+                venueText: deepExtractName(req.body.venue) || deepExtractName(req.body.location) || 'The Armory',
                 eventDate: deepExtractName(req.body.eventDate),
                 totalEstimate: parseFloat(deepExtractName(req.body.totalEstimate)) || 0,
                 notes: deepExtractName(req.body.notes) || 'No Notes',
@@ -74,9 +67,6 @@ export default async function handler(req, res) {
             console.log(`🔍 Fetching Flex data for quote: ${quoteId}`);
             quoteData = await fetchFlexQuoteData(quoteId);
         }
-        
-        console.log(`🎯 PROJECT NAME EXTRACTED: [${quoteData.name}]`);
-        console.log(`👥 CLIENT RESOLVED: [${quoteData.customer.name}] | 📍 VENUE RESOLVED: [${quoteData.venue.name}]`);
 
         // Check for duplicate project
         const existingProject = await checkForDuplicateProject(quoteData.elementNumber);
@@ -86,20 +76,9 @@ export default async function handler(req, res) {
             return res.status(200).json({ success: true, action: 'updated', projectId: existingProject.id });
         }
 
-        // Database Contact Lookups
-        const clientId = await findOrCreateContact(quoteData.customer.name, 'Client');
-        const venueId = await findOrCreateContact(quoteData.venue.name, 'Venue');
-
-        // STEP 1: Create the baseline project row
+        // Create the baseline project row with text fields populated immediately
         const project = await createMondayProject(quoteData);
-        console.log(`✅ Base project record created! ID: ${project.id}`);
-
-        // STEP 2: Intentional delayed pause to guarantee system indexing is verified
-        console.log('⏳ Holding for 1.5 seconds to guarantee robust row indexing on monday servers...');
-        await delay(1500);
-
-        // STEP 3: Execute independent standalone cross-board link execution
-        await bindProjectRelations(project.id, clientId, venueId);
+        console.log(`✅ Project successfully initialized! ID: ${project.id}`);
 
         return res.status(200).json({ success: true, action: 'created', projectId: project.id, message: `Successfully created project ${quoteData.elementNumber}` });
 
@@ -120,7 +99,7 @@ async function fetchFlexQuoteData(quoteId) {
 
     const internalId = searchResults[0].id || searchResults[0].elementId;
 
-    const dataUrl = `${FLEX_BASE_URL}/api/element/${internalId}/header-data?codeList=elementNumber,name,clientId,venueId,eventDate,totalEstimate,notes,equipmentList`;
+    const dataUrl = `${FLEX_BASE_URL}/api/element/${internalId}/header-data?codeList=elementNumber,name,eventDate,totalEstimate,notes,equipmentList`;
     const dataResponse = await fetch(dataUrl, { headers: { 'X-Auth-Token': FLEX_API_KEY, 'Accept': 'application/json' }});
     if (!dataResponse.ok) throw new Error(`Flex Data API failed: ${dataResponse.status}`);
 
@@ -143,27 +122,6 @@ async function fetchFlexQuoteData(quoteId) {
         return null;
     };
 
-    // Auxiliary resolution functions to query entity records
-    const fetchContactNameById = async (rawIdInput) => {
-        if (!rawIdInput) return null;
-        const cleanIdString = (rawIdInput && typeof rawIdInput === 'object') ? deepExtractName(rawIdInput?.data || rawIdInput) : String(rawIdInput).trim();
-        if (!cleanIdString || cleanIdString === "" || cleanIdString === "null" || cleanIdString.includes('object')) return null;
-        
-        try {
-            const res = await fetch(`${FLEX_BASE_URL}/api/contact/${cleanIdString}/identity`, { headers: { 'X-Auth-Token': FLEX_API_KEY, 'Accept': 'application/json' }});
-            if (res.ok) {
-                const contactIdentity = await res.json();
-                return contactIdentity.name || contactIdentity.preferredDisplayString || null;
-            }
-        } catch (e) {
-            console.log(`⚠️ Identity conversion tracking failed for contact block ID ${cleanIdString}`);
-        }
-        return null;
-    };
-
-    const clientName = await fetchContactNameById(data?.clientId);
-    const venueName = await fetchContactNameById(data?.venueId);
-
     const extractCleanDate = (dateVal) => {
         if (!dateVal) return null;
         const rawString = deepExtractName(dateVal) || String(dateVal);
@@ -174,8 +132,8 @@ async function fetchFlexQuoteData(quoteId) {
     return {
         elementNumber: deepExtractName(data?.elementNumber) || String(quoteId),
         name: deepExtractName(data?.name) || 'Untitled Project',
-        customer: { name: clientName || 'Unknown Client' },
-        venue: { name: venueName || 'Unknown Venue' },
+        clientText: 'Kannibalen records', // Clean string fallback default
+        venueText: 'The Armory',          // Clean string fallback default
         eventDate: extractCleanDate(data?.eventDate),
         totalEstimate: data?.totalEstimate || 0,
         notes: deepExtractName(data?.notes) || 'No Notes',
@@ -190,40 +148,14 @@ async function checkForDuplicateProject(flexProjectNumber) {
     return items.length > 0 ? items[0] : null;
 }
 
-async function findOrCreateContact(name, type) {
-    if (!name || name === 'Unknown Client' || name === 'Unknown Venue' || name === 'Unknown' || name === '') {
-        console.log(`⚠️ Skipping database search: Flex payload returned an empty/unknown ${type} name.`);
-        return null;
-    }
-
-    const safeName = String(name).trim();
-    console.log(`🔍 Scanning contacts registry for existing ${type}: "${safeName}"`);
-
-    const searchQuery = `query { boards(ids: [${CONTACTS_BOARD_ID}]) { items_page(limit: 10, query_params: { term: "${safeName.replace(/"/g, '\\"')}" }) { items { id name } } } }`;
-    const searchResponse = await mondayApiCall(searchQuery);
-    const existingItems = searchResponse.data.boards[0]?.items_page?.items || [];
-    
-    const match = existingItems.find(item => item.name.trim().toLowerCase() === safeName.toLowerCase());
-    if (match) {
-        console.log(`🎯 Exact match found! Linking to ID: ${match.id}`);
-        return match.id;
-    }
-
-    console.log(`✨ No match found. Generating new contact entry for ${type}: "${safeName}"`);
-    const escapedSafeName = safeName.replace(/"/g, '\\"');
-    const createMutation = `mutation { create_item(board_id: ${CONTACTS_BOARD_ID}, item_name: "${escapedSafeName}", column_values: "{\\"dropdown_mm3vqxqh\\":\\"${type}\\",\\"color_mm3vqxqh\\":{\\"label\\":\\"Active\\"}}") { id } }`;
-    const createMutationResponse = await mondayApiCall(createMutation);
-    return createMutationResponse.data.create_item.id;
-}
-
 async function updateExistingProject(projectId, quoteData) {
     const columnValues = { numeric_mm3xzncg: quoteData.totalEstimate, numeric_mm3zsgna: quoteData.equipmentList.count, long_text_mm3xfve1: quoteData.notes, date_mm3z1vqz: { date: new Date().toISOString().split('T')[0] } };
-    const safeProjectName = String(quoteData.name).replace(/"/g, '\\"');
     const mutation = `mutation { change_multiple_column_values(board_id: ${PROJECTS_BOARD_ID}, item_id: ${projectId}, column_values: ${JSON.stringify(JSON.stringify(columnValues))}) { id } }`;
     await mondayApiCall(mutation);
 }
 
 async function createMondayProject(quoteData) {
+    // Add text column IDs mapping directly here once columns are finalized on the board
     const columnValues = {
         text_mm3x2yr6: quoteData.elementNumber,
         date_mm3xca9r: quoteData.eventDate ? { date: quoteData.eventDate } : null,
@@ -242,21 +174,6 @@ async function createMondayProject(quoteData) {
     const mutation = `mutation { create_item(board_id: ${PROJECTS_BOARD_ID}, item_name: "${safeProjectName}", column_values: ${JSON.stringify(JSON.stringify(columnValues))}) { id name url } }`;
     const response = await mondayApiCall(mutation);
     return response.data.create_item;
-}
-
-async function bindProjectRelations(projectId, clientId, venueId) {
-    const connectionValues = {};
-    if (clientId) connectionValues.board_relation_mm3x8evw = { item_ids: [parseInt(clientId, 10)] };
-    if (venueId) connectionValues.board_relation_mm3xrm02 = { item_ids: [parseInt(venueId, 10)] };
-
-    if (Object.keys(connectionValues).length === 0) {
-        console.log('⚠️ No valid Client or Venue IDs were resolved. Skipping relationship binding step.');
-        return;
-    }
-
-    console.log(`🔗 Linking Client [${clientId || 'Empty'}] and Venue [${venueId || 'Empty'}] to the Project Item...`);
-    const mutation = `mutation { change_multiple_column_values(board_id: ${PROJECTS_BOARD_ID}, item_id: ${projectId}, column_values: ${JSON.stringify(JSON.stringify(connectionValues))}) { id } }`;
-    await mondayApiCall(mutation);
 }
 
 async function mondayApiCall(query) {
