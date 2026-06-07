@@ -4,10 +4,10 @@
  * a project in monday.com with all fields populated.
  * * Handles:
  * - Client/venue lookup and creation (Strict duplicate prevention)
- * - Multi-step Board Relation connection binding
+ * - Async Two-Step Creation with a 1.5-second indexing delay (FIX)
+ * - Standalone relationship mutation execution
  * - Manual PM assignment default (Lands unassigned)
  * - Recursive "Deep-Dive" text extraction for complex Flex payloads
- * - Native customerGroup & venueGroup Object Mapping
  * * Author: Matt James, Antic Studios
  */
 
@@ -20,6 +20,9 @@ const MONDAY_API_URL = 'https://api.monday.com/v2';
 // Board IDs
 const PROJECTS_BOARD_ID = '18415679761';
 const CONTACTS_BOARD_ID = '18415573401';
+
+// Helper utility to pause execution
+const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 export default async function handler(req, res) {
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -42,8 +45,6 @@ export default async function handler(req, res) {
                 if (obj.value) return String(obj.value).trim();
                 if (obj.text) return String(obj.text).trim();
                 if (obj.data && typeof obj.data === 'string') return obj.data.trim();
-                if (obj.data && typeof obj.data === 'object') return deepExtractName(obj.data);
-                
                 for (const key in obj) {
                     if (typeof obj[key] === 'string' && obj[key].trim().length > 0) return obj[key].trim();
                 }
@@ -74,7 +75,7 @@ export default async function handler(req, res) {
         }
         
         console.log(`🎯 PROJECT NAME EXTRACTED: [${quoteData.name}]`);
-        console.log(`👥 CLIENT EXTRACTED: [${quoteData.customer.name}] | 📍 VENUE EXTRACTED: [${quoteData.venue.name}]`);
+        console.log(`👥 CLIENT TARGET: [${quoteData.customer.name}] | 📍 VENUE TARGET: [${quoteData.venue.name}]`);
 
         // Check for duplicate project
         const existingProject = await checkForDuplicateProject(quoteData.elementNumber);
@@ -88,11 +89,15 @@ export default async function handler(req, res) {
         const clientId = await findOrCreateContact(quoteData.customer.name, 'Client');
         const venueId = await findOrCreateContact(quoteData.venue.name, 'Venue');
 
-        // Create the base project
+        // STEP 1: Create the base project row
         const project = await createMondayProject(quoteData);
         console.log(`✅ Base project record created! ID: ${project.id}`);
 
-        // Bind Cross-Board Relations (Which automatically triggers the mirror columns)
+        // STEP 2: Multi-step intentional delay to allow database indexing to catch up
+        console.log('⏳ Pausing for 1.5 seconds to let monday.com index the new item ID...');
+        await delay(1500);
+
+        // STEP 3: Execute independent standalone relationship link
         await bindProjectRelations(project.id, clientId, venueId);
 
         return res.status(200).json({ success: true, action: 'created', projectId: project.id, message: `Successfully created project ${quoteData.elementNumber}` });
@@ -114,7 +119,6 @@ async function fetchFlexQuoteData(quoteId) {
 
     const internalId = searchResults[0].id || searchResults[0].elementId;
 
-    // Call the core element properties endpoint
     const dataUrl = `${FLEX_BASE_URL}/api/element/${internalId}/header-data?codeList=elementNumber,name,customerGroup,venueGroup,eventDate,totalEstimate,notes,equipmentList`;
     const dataResponse = await fetch(dataUrl, { headers: { 'X-Auth-Token': FLEX_API_KEY, 'Accept': 'application/json' }});
     if (!dataResponse.ok) throw new Error(`Flex Data API failed: ${dataResponse.status}`);
@@ -145,7 +149,6 @@ async function fetchFlexQuoteData(quoteId) {
         return match ? match[1] : null;
     };
 
-    // Extract values directly out of Flex's internal structural components
     const clientBlock = data?.customerGroup?.data || data?.customerGroup || {};
     const venueBlock = data?.venueGroup?.data || data?.venueGroup || {};
 
