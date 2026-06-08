@@ -57,12 +57,16 @@ export default async function handler(req, res) {
     if (config.requiredStatus) {
       const parentCheckQuery = `query { items(ids: [${projectId}]) { column_values(ids: ["color_mm3ycrm1"]) { text } } }`;
       const parentResponse = await mondayApiCall(parentCheckQuery);
-      const currentStatus = parentResponse.data?.items?.[0]?.column_values?.[0]?.text;
+      const currentStatus = parentResponse.data?.items?.[0]?.column_values?.[0]?.text || '';
       
       // Allow progression if it matches the prerequisite OR its own active loading trigger state
       const allowedLoadingStatus = `Loading ${config.tierName}...`;
       
-      if (currentStatus !== config.requiredStatus && currentStatus !== allowedLoadingStatus) {
+      if (
+        currentStatus !== config.requiredStatus && 
+        currentStatus !== allowedLoadingStatus && 
+        !currentStatus.toLowerCase().includes(config.tierName.toLowerCase())
+      ) {
         return res.status(400).json({
           success: false,
           error: `Sequence Block: Must load '${config.requiredStatus}' tasks before escalation to ${config.tierName}. Current state: ${currentStatus || 'None'}`
@@ -76,16 +80,19 @@ export default async function handler(req, res) {
     const templateResponse = await mondayApiCall(templateQuery);
     const allTemplateSubitems = templateResponse.data?.items?.[0]?.subitems || [];
 
-    // STEP 3: Filter out only the tasks tagged under the requested complexity tier
+    // STEP 3: Filter using case-insensitive partial match to catch multi-selected tiers flawlessly
     const targetTierTasks = allTemplateSubitems.filter(subitem => {
-      const tierValue = subitem.column_values.find(col => col.id === 'dropdown_mm3xhker')?.text;
-      return tierValue === config.tierName;
+      const tierValue = subitem.column_values.find(col => col.id === 'dropdown_mm3xhker')?.text || '';
+      return tierValue.toLowerCase().includes(config.tierName.toLowerCase());
     });
 
     console.log(`🎯 Filtered out [${targetTierTasks.length}] tasks matching the [${config.tierName}] index flag.`);
 
+    // If no tasks match, clear the UI loading state safely instead of freezing it
     if (targetTierTasks.length === 0) {
-      return res.status(200).json({ success: true, tasksAdded: 0, message: `No blueprint subitems found under tier context.` });
+      const updateParentMutation = `mutation { change_column_value(board_id: ${PROJECTS_BOARD_ID}, item_id: ${projectId}, column_id: "color_mm3ycrm1", value: "{\\"label\\":\\"${config.nextStatus}\\"}") { id } }`;
+      await mondayApiCall(updateParentMutation);
+      return res.status(200).json({ success: true, tasksAdded: 0, message: `No remaining standalone tasks found for tier context. Advanced state.` });
     }
 
     // STEP 4: Programmatically generate subitems and carry over matching parameters asynchronously
@@ -97,11 +104,11 @@ export default async function handler(req, res) {
       
       const subitemValues = {
         status: { label: "Not Started" },
-        dropdown_mm3xhker: { labels: [config.tierName] } // FIXED: Dropdowns use array labels
+        dropdown_mm3xhker: { labels: [config.tierName] }
       };
 
-      if (phaseText) subitemValues.dropdown_mm3x2wmx = { labels: [phaseText] }; // FIXED: Dropdowns use array labels
-      if (priorityText) subitemValues.color_mm3x885a = { label: priorityText }; // Status/Color columns use standard label strings
+      if (phaseText) subitemValues.dropdown_mm3x2wmx = { labels: [phaseText] }; 
+      if (priorityText) subitemValues.color_mm3x885a = { label: priorityText }; 
 
       const createSubitemMutation = `mutation { create_subitem(parent_item_id: ${projectId}, item_name: "${task.name.replace(/"/g, '\\"')}", column_values: ${JSON.stringify(JSON.stringify(subitemValues))}) { id } }`;
       await mondayApiCall(createSubitemMutation);
