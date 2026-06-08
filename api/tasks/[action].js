@@ -1,12 +1,11 @@
 /**
- * monday.com Tiered Project Task Template Generator
+ * monday.com Tiered Project Task Template Generator (Robust Edition)
  * * This unified dynamic endpoint handles task generation for all 4 event complexity tiers.
  * * Routes:
  * - POST /api/tasks/add-basic
  * - POST /api/tasks/add-standard
  * - POST /api/tasks/add-complex
  * - POST /api/tasks/add-festival
- * * Aligns perfectly with the template project matrix on Subitems Board 18415691596
  * * Author: Matt James, Antic Studios
  */
 
@@ -15,7 +14,7 @@ const MONDAY_API_KEY = process.env.MONDAY_API_KEY;
 const PROJECTS_BOARD_ID = '18415679761';
 const TEMPLATE_PROJECT_ID = '12153638858';
 
-// Dynamic execution router map explicitly matching literal character limits of monday labels
+// Dynamic execution router map explicitly matching literal monday label strings
 const TIER_CONFIGS = {
   'add-basic': { 
     tierName: 'Basic', 
@@ -25,26 +24,25 @@ const TIER_CONFIGS = {
   },
   'add-standard': { 
     tierName: 'Standard', 
-    loadingStatus: 'Loading Stand...', 
+    loadingStatus: 'Loading Standard', 
     requiredStatus: 'Basic Added', 
     nextStatus: 'Standard Added' 
   },
   'add-complex': { 
     tierName: 'Complex', 
-    loadingStatus: 'Loading Comp...', 
+    loadingStatus: 'Loading Complex', 
     requiredStatus: 'Standard Added', 
     nextStatus: 'Complex Added' 
   },
   'add-festival': { 
     tierName: 'Festival', 
-    loadingStatus: 'Loading Festiv...', 
+    loadingStatus: 'Loading Festival', 
     requiredStatus: 'Complex Added', 
     nextStatus: 'Festival Add' 
   }
 };
 
 export default async function handler(req, res) {
-  // Rigid CORS framework to ensure app handshakes validate instantly
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
@@ -52,10 +50,9 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  // Handle initial monday connection handshake tests gracefully
   if (req.body && req.body.challenge) return res.status(200).json({ challenge: req.body.challenge });
 
-  const { action } = req.query; // Captures "add-basic", "add-standard", etc. from the filename route parameter
+  const { action } = req.query; 
   const config = TIER_CONFIGS[action];
 
   if (!config) {
@@ -78,7 +75,6 @@ export default async function handler(req, res) {
       const parentResponse = await mondayApiCall(parentCheckQuery);
       const currentStatus = parentResponse.data?.items?.[0]?.column_values?.[0]?.text || '';
       
-      // Allow progression if it matches the prerequisite, its live loading state, or contains part of the name
       if (
         currentStatus !== config.requiredStatus && 
         currentStatus !== config.loadingStatus && 
@@ -105,39 +101,46 @@ export default async function handler(req, res) {
 
     console.log(`🎯 Filtered out [${targetTierTasks.length}] tasks matching the [${config.tierName}] index flag.`);
 
-    // If no tasks match, clear the UI loading state safely via clean mutation strings
+    // Reusable update block to clear loading filters
+    const finalParentValues = { "color_mm3ycrm1": { "label": config.nextStatus } };
+    const updateParentMutation = `mutation { change_multiple_column_values(board_id: ${PROJECTS_BOARD_ID}, item_id: ${projectId}, column_values: ${JSON.stringify(JSON.stringify(finalParentValues))}) { id } }`;
+
     if (targetTierTasks.length === 0) {
-      const parentUpdateValues = { "color_mm3ycrm1": { "label": config.nextStatus } };
-      const updateParentMutation = `mutation { change_multiple_column_values(board_id: ${PROJECTS_BOARD_ID}, item_id: ${projectId}, column_values: ${JSON.stringify(JSON.stringify(parentUpdateValues))}) { id } }`;
       await mondayApiCall(updateParentMutation);
       return res.status(200).json({ success: true, tasksAdded: 0, message: `No remaining standalone tasks found for tier context. Advanced state.` });
     }
 
-    // STEP 4: Programmatically generate subitems and carry over matching parameters asynchronously
+    // STEP 4: Programmatically generate subitems with comprehensive try/catch isolation per row
     let operationsLogged = 0;
     for (const task of targetTierTasks) {
-      // Isolate Phase, Priority, and baseline settings
-      const phaseText = task.column_values.find(col => col.id === 'dropdown_mm3x2wmx')?.text;
-      const priorityText = task.column_values.find(col => col.id === 'color_mm3x885a')?.text;
-      
-      const subitemValues = {
-        status: { label: "Not Started" },
-        dropdown_mm3xhker: { labels: [config.tierName] }
-      };
+      try {
+        const phaseText = task.column_values.find(col => col.id === 'dropdown_mm3x2wmx')?.text;
+        const priorityText = task.column_values.find(col => col.id === 'color_mm3x885a')?.text;
+        
+        const subitemValues = {
+          status: { label: "Not Started" },
+          dropdown_mm3xhker: { labels: [config.tierName] }
+        };
 
-      if (phaseText) subitemValues.dropdown_mm3x2wmx = { labels: [phaseText] }; 
-      if (priorityText) subitemValues.color_mm3x885a = { label: priorityText }; 
+        // Multi-select safe parsing for dropdown mapping strings
+        if (phaseText) {
+          subitemValues.dropdown_mm3x2wmx = { labels: phaseText.split(',').map(s => s.trim()) };
+        }
+        if (priorityText) {
+          subitemValues.color_mm3x885a = { label: priorityText };
+        }
 
-      // Using double JSON stringify ensures task names and column maps are perfectly serialized for GraphQL inputs
-      const createSubitemMutation = `mutation { create_subitem(parent_item_id: ${projectId}, item_name: ${JSON.stringify(task.name)}, column_values: ${JSON.stringify(JSON.stringify(subitemValues))}) { id } }`;
-      await mondayApiCall(createSubitemMutation);
-      operationsLogged++;
+        const createSubitemMutation = `mutation { create_subitem(parent_item_id: ${projectId}, item_name: ${JSON.stringify(task.name)}, column_values: ${JSON.stringify(JSON.stringify(subitemValues))}) { id } }`;
+        await mondayApiCall(createSubitemMutation);
+        operationsLogged++;
+      } catch (rowError) {
+        // Log individual item errors clearly but prevent them from stopping the outer script execution
+        console.error(`⚠️ Non-fatal exception encountered creating item "${task.name}":`, rowError.message);
+      }
     }
 
-    // STEP 5: Flash-update parent tracking state checkpoint via standard multiple column serialization
+    // STEP 5: Force flash-update parent tracking state checkpoint
     console.log(`🏁 Escalating parent checklist status coordinate label directly to: "${config.nextStatus}"`);
-    const finalParentValues = { "color_mm3ycrm1": { "label": config.nextStatus } };
-    const updateParentMutation = `mutation { change_multiple_column_values(board_id: ${PROJECTS_BOARD_ID}, item_id: ${projectId}, column_values: ${JSON.stringify(JSON.stringify(finalParentValues))}) { id } }`;
     await mondayApiCall(updateParentMutation);
 
     return res.status(200).json({ success: true, tasksAdded: operationsLogged, tier: config.tierName });
@@ -159,9 +162,8 @@ async function mondayApiCall(query) {
     body: JSON.stringify({ query })
   });
 
-  if (!response.ok) throw new Error(`monday.com HTTP channel rejected request with code: ${response.status}`);
-  
   const data = await response.json();
+  if (!response.ok) throw new Error(`monday.com HTTP channel rejected request with code: ${response.status}`);
   if (data.errors) throw new Error(`monday.com GraphQL validation fallout: ${JSON.stringify(data.errors)}`);
   return data;
 }
