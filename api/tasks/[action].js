@@ -102,7 +102,7 @@ export default async function handler(req, res) {
         boardId: PROJECTS_BOARD_ID,
         itemId: projectId.toString(),
         columnId: "color_mm3ycrm1",
-        value: JSON.stringify({ label: config.nextStatus })
+        value: { label: config.nextStatus } // FIXED: Pass raw object directly for JSON! type variables
       });
       return res.status(200).json({ success: true, tasksAdded: 0, message: `No remaining standalone tasks found for tier context. Advanced state.` });
     }
@@ -133,7 +133,7 @@ export default async function handler(req, res) {
       await mondayApiCall(createSubitemMutation, {
         parentId: projectId.toString(),
         itemName: task.name,
-        columnValues: JSON.stringify(subitemValues)
+        columnValues: subitemValues // FIXED: Pass raw object directly for JSON! type variables
       });
       operationsLogged++;
     }
@@ -144,7 +144,7 @@ export default async function handler(req, res) {
       boardId: PROJECTS_BOARD_ID,
       itemId: projectId.toString(),
       columnId: "color_mm3ycrm1",
-      value: JSON.stringify({ label: config.nextStatus })
+      value: { label: config.nextStatus } // FIXED: Pass raw object directly for JSON! type variables
     });
 
     return res.status(200).json({ success: true, tasksAdded: operationsLogged, tier: config.tierName });
