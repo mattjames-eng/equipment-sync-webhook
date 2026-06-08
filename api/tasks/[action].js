@@ -15,12 +15,32 @@ const MONDAY_API_KEY = process.env.MONDAY_API_KEY;
 const PROJECTS_BOARD_ID = '18415679761';
 const TEMPLATE_PROJECT_ID = '12153638858';
 
-// Dynamic execution router map based on Sidekick parameter criteria
+// Dynamic execution router map explicitly matching literal character limits of monday labels
 const TIER_CONFIGS = {
-  'add-basic': { tierName: 'Basic', requiredStatus: null, nextStatus: 'Basic Added' },
-  'add-standard': { tierName: 'Standard', requiredStatus: 'Basic Added', nextStatus: 'Standard Added' },
-  'add-complex': { tierName: 'Complex', requiredStatus: 'Standard Added', nextStatus: 'Complex Added' },
-  'add-festival': { tierName: 'Festival', requiredStatus: 'Complex Added', nextStatus: 'Festival Added' }
+  'add-basic': { 
+    tierName: 'Basic', 
+    loadingStatus: 'Loading Basic...', 
+    requiredStatus: null, 
+    nextStatus: 'Basic Added' 
+  },
+  'add-standard': { 
+    tierName: 'Standard', 
+    loadingStatus: 'Loading Stand...', 
+    requiredStatus: 'Basic Added', 
+    nextStatus: 'Standard Added' 
+  },
+  'add-complex': { 
+    tierName: 'Complex', 
+    loadingStatus: 'Loading Comp...', 
+    requiredStatus: 'Standard Added', 
+    nextStatus: 'Complex Added' 
+  },
+  'add-festival': { 
+    tierName: 'Festival', 
+    loadingStatus: 'Loading Festiv...', 
+    requiredStatus: 'Complex Added', 
+    nextStatus: 'Festival Add' 
+  }
 };
 
 export default async function handler(req, res) {
@@ -58,12 +78,10 @@ export default async function handler(req, res) {
       const parentResponse = await mondayApiCall(parentCheckQuery);
       const currentStatus = parentResponse.data?.items?.[0]?.column_values?.[0]?.text || '';
       
-      // Allow progression if it matches the prerequisite OR its own active loading trigger state
-      const allowedLoadingStatus = `Loading ${config.tierName}...`;
-      
+      // Allow progression if it matches the prerequisite, its live loading state, or contains part of the name
       if (
         currentStatus !== config.requiredStatus && 
-        currentStatus !== allowedLoadingStatus && 
+        currentStatus !== config.loadingStatus && 
         !currentStatus.toLowerCase().includes(config.tierName.toLowerCase())
       ) {
         return res.status(400).json({
