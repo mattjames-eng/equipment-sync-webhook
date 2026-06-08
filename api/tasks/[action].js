@@ -1,5 +1,5 @@
 /**
- * monday.com Tiered Project Task Template Generator (Robust Edition)
+ * monday.com Tiered Project Task Template Generator (Unconditional Edition)
  * * This unified dynamic endpoint handles task generation for all 4 event complexity tiers.
  * * Routes:
  * - POST /api/tasks/add-basic
@@ -16,30 +16,10 @@ const TEMPLATE_PROJECT_ID = '12153638858';
 
 // Dynamic execution router map explicitly matching literal monday label strings
 const TIER_CONFIGS = {
-  'add-basic': { 
-    tierName: 'Basic', 
-    loadingStatus: 'Loading Basic...', 
-    requiredStatus: null, 
-    nextStatus: 'Basic Added' 
-  },
-  'add-standard': { 
-    tierName: 'Standard', 
-    loadingStatus: 'Loading Standard', 
-    requiredStatus: 'Basic Added', 
-    nextStatus: 'Standard Added' 
-  },
-  'add-complex': { 
-    tierName: 'Complex', 
-    loadingStatus: 'Loading Complex', 
-    requiredStatus: 'Standard Added', 
-    nextStatus: 'Complex Added' 
-  },
-  'add-festival': { 
-    tierName: 'Festival', 
-    loadingStatus: 'Loading Festival', 
-    requiredStatus: 'Complex Added', 
-    nextStatus: 'Festival Add' 
-  }
+  'add-basic': { tierName: 'Basic', nextStatus: 'Basic Added' },
+  'add-standard': { tierName: 'Standard', nextStatus: 'Standard Added' },
+  'add-complex': { tierName: 'Complex', nextStatus: 'Complex Added' },
+  'add-festival': { tierName: 'Festival', nextStatus: 'Festival Add' }
 };
 
 export default async function handler(req, res) {
@@ -69,31 +49,13 @@ export default async function handler(req, res) {
   try {
     console.log(`📥 Initializing Atomic Task Pass [${config.tierName}] for Project ID: ${projectId}`);
 
-    // STEP 1: Query Parent Project to ensure checklist progression dependencies match
-    if (config.requiredStatus) {
-      const parentCheckQuery = `query { items(ids: [${projectId}]) { column_values(ids: ["color_mm3ycrm1"]) { text } } }`;
-      const parentResponse = await mondayApiCall(parentCheckQuery);
-      const currentStatus = parentResponse.data?.items?.[0]?.column_values?.[0]?.text || '';
-      
-      if (
-        currentStatus !== config.requiredStatus && 
-        currentStatus !== config.loadingStatus && 
-        !currentStatus.toLowerCase().includes(config.tierName.toLowerCase())
-      ) {
-        return res.status(400).json({
-          success: false,
-          error: `Sequence Block: Must load '${config.requiredStatus}' tasks before escalation to ${config.tierName}. Current state: ${currentStatus || 'None'}`
-        });
-      }
-    }
-
-    // STEP 2: Query the Subitems board matrix configuration matching our Master Template Project
+    // STEP 1: Query the Subitems board matrix configuration matching our Master Template Project
     console.log(`🔍 Fetching blueprint template subitems from parent record: ${TEMPLATE_PROJECT_ID}`);
     const templateQuery = `query { items(ids: [${TEMPLATE_PROJECT_ID}]) { subitems { id name column_values { id text } } } }`;
     const templateResponse = await mondayApiCall(templateQuery);
     const allTemplateSubitems = templateResponse.data?.items?.[0]?.subitems || [];
 
-    // STEP 3: Filter using case-insensitive partial match to catch multi-selected tiers flawlessly
+    // STEP 2: Filter using case-insensitive partial match to catch multi-selected tiers flawlessly
     const targetTierTasks = allTemplateSubitems.filter(subitem => {
       const tierValue = subitem.column_values.find(col => col.id === 'dropdown_mm3xhker')?.text || '';
       return tierValue.toLowerCase().includes(config.tierName.toLowerCase());
@@ -110,7 +72,7 @@ export default async function handler(req, res) {
       return res.status(200).json({ success: true, tasksAdded: 0, message: `No remaining standalone tasks found for tier context. Advanced state.` });
     }
 
-    // STEP 4: Programmatically generate subitems with comprehensive try/catch isolation per row
+    // STEP 3: Programmatically generate subitems with comprehensive try/catch isolation per row
     let operationsLogged = 0;
     for (const task of targetTierTasks) {
       try {
@@ -134,12 +96,11 @@ export default async function handler(req, res) {
         await mondayApiCall(createSubitemMutation);
         operationsLogged++;
       } catch (rowError) {
-        // Log individual item errors clearly but prevent them from stopping the outer script execution
         console.error(`⚠️ Non-fatal exception encountered creating item "${task.name}":`, rowError.message);
       }
     }
 
-    // STEP 5: Force flash-update parent tracking state checkpoint
+    // STEP 4: Force flash-update parent tracking state checkpoint
     console.log(`🏁 Escalating parent checklist status coordinate label directly to: "${config.nextStatus}"`);
     await mondayApiCall(updateParentMutation);
 
