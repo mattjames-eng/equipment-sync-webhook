@@ -97,11 +97,11 @@ export default async function handler(req, res) {
       
       const subitemValues = {
         status: { label: "Not Started" },
-        dropdown_mm3xhker: { label: config.tierName } // Sync loaded tier type
+        dropdown_mm3xhker: { labels: [config.tierName] } // FIXED: Dropdowns use array labels
       };
 
-      if (phaseText) subitemValues.dropdown_mm3x2wmx = { label: phaseText };
-      if (priorityText) subitemValues.color_mm3x885a = { label: priorityText };
+      if (phaseText) subitemValues.dropdown_mm3x2wmx = { labels: [phaseText] }; // FIXED: Dropdowns use array labels
+      if (priorityText) subitemValues.color_mm3x885a = { label: priorityText }; // Status/Color columns use standard label strings
 
       const createSubitemMutation = `mutation { create_subitem(parent_item_id: ${projectId}, item_name: "${task.name.replace(/"/g, '\\"')}", column_values: ${JSON.stringify(JSON.stringify(subitemValues))}) { id } }`;
       await mondayApiCall(createSubitemMutation);
