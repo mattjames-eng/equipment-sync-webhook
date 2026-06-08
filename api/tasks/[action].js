@@ -54,8 +54,8 @@ export default async function handler(req, res) {
 
     // STEP 1: Query Parent Project to ensure checklist progression dependencies match
     if (config.requiredStatus) {
-      const parentCheckQuery = `query($ids: [ID!]) { items(ids: $ids) { column_values(ids: ["color_mm3ycrm1"]) { text } } }`;
-      const parentResponse = await mondayApiCall(parentCheckQuery, { ids: [projectId.toString()] });
+      const parentCheckQuery = `query { items(ids: [${projectId}]) { column_values(ids: ["color_mm3ycrm1"]) { text } } }`;
+      const parentResponse = await mondayApiCall(parentCheckQuery);
       const currentStatus = parentResponse.data?.items?.[0]?.column_values?.[0]?.text || '';
       
       // Allow progression if it matches the prerequisite OR its own active loading trigger state
@@ -75,8 +75,8 @@ export default async function handler(req, res) {
 
     // STEP 2: Query the Subitems board matrix configuration matching our Master Template Project
     console.log(`🔍 Fetching blueprint template subitems from parent record: ${TEMPLATE_PROJECT_ID}`);
-    const templateQuery = `query($ids: [ID!]) { items(ids: $ids) { subitems { id name column_values { id text } } } }`;
-    const templateResponse = await mondayApiCall(templateQuery, { ids: [TEMPLATE_PROJECT_ID] });
+    const templateQuery = `query { items(ids: [${TEMPLATE_PROJECT_ID}]) { subitems { id name column_values { id text } } } }`;
+    const templateResponse = await mondayApiCall(templateQuery);
     const allTemplateSubitems = templateResponse.data?.items?.[0]?.subitems || [];
 
     // STEP 3: Filter using case-insensitive partial match to catch multi-selected tiers flawlessly
@@ -87,35 +87,15 @@ export default async function handler(req, res) {
 
     console.log(`🎯 Filtered out [${targetTierTasks.length}] tasks matching the [${config.tierName}] index flag.`);
 
-    // Reusable mutation structure for updating the parent status safely via variables
-    const updateParentMutation = `
-      mutation($boardId: ID!, $itemId: ID!, $columnId: String!, $value: JSON!) {
-        change_column_value(board_id: $boardId, item_id: $itemId, column_id: $columnId, value: $value) {
-          id
-        }
-      }
-    `;
-
-    // If no tasks match, clear the UI loading state safely instead of freezing it
+    // If no tasks match, clear the UI loading state safely via clean mutation strings
     if (targetTierTasks.length === 0) {
-      await mondayApiCall(updateParentMutation, {
-        boardId: PROJECTS_BOARD_ID,
-        itemId: projectId.toString(),
-        columnId: "color_mm3ycrm1",
-        value: { label: config.nextStatus } // FIXED: Pass raw object directly for JSON! type variables
-      });
+      const parentUpdateValues = { "color_mm3ycrm1": { "label": config.nextStatus } };
+      const updateParentMutation = `mutation { change_multiple_column_values(board_id: ${PROJECTS_BOARD_ID}, item_id: ${projectId}, column_values: ${JSON.stringify(JSON.stringify(parentUpdateValues))}) { id } }`;
+      await mondayApiCall(updateParentMutation);
       return res.status(200).json({ success: true, tasksAdded: 0, message: `No remaining standalone tasks found for tier context. Advanced state.` });
     }
 
     // STEP 4: Programmatically generate subitems and carry over matching parameters asynchronously
-    const createSubitemMutation = `
-      mutation($parentId: ID!, $itemName: String!, $columnValues: JSON!) {
-        create_subitem(parent_item_id: $parentId, item_name: $itemName, column_values: $columnValues) {
-          id
-        }
-      }
-    `;
-
     let operationsLogged = 0;
     for (const task of targetTierTasks) {
       // Isolate Phase, Priority, and baseline settings
@@ -130,22 +110,17 @@ export default async function handler(req, res) {
       if (phaseText) subitemValues.dropdown_mm3x2wmx = { labels: [phaseText] }; 
       if (priorityText) subitemValues.color_mm3x885a = { label: priorityText }; 
 
-      await mondayApiCall(createSubitemMutation, {
-        parentId: projectId.toString(),
-        itemName: task.name,
-        columnValues: subitemValues // FIXED: Pass raw object directly for JSON! type variables
-      });
+      // Using double JSON stringify ensures task names and column maps are perfectly serialized for GraphQL inputs
+      const createSubitemMutation = `mutation { create_subitem(parent_item_id: ${projectId}, item_name: ${JSON.stringify(task.name)}, column_values: ${JSON.stringify(JSON.stringify(subitemValues))}) { id } }`;
+      await mondayApiCall(createSubitemMutation);
       operationsLogged++;
     }
 
-    // STEP 5: Flash-update parent tracking state checkpoint
+    // STEP 5: Flash-update parent tracking state checkpoint via standard multiple column serialization
     console.log(`🏁 Escalating parent checklist status coordinate label directly to: "${config.nextStatus}"`);
-    await mondayApiCall(updateParentMutation, {
-      boardId: PROJECTS_BOARD_ID,
-      itemId: projectId.toString(),
-      columnId: "color_mm3ycrm1",
-      value: { label: config.nextStatus } // FIXED: Pass raw object directly for JSON! type variables
-    });
+    const finalParentValues = { "color_mm3ycrm1": { "label": config.nextStatus } };
+    const updateParentMutation = `mutation { change_multiple_column_values(board_id: ${PROJECTS_BOARD_ID}, item_id: ${projectId}, column_values: ${JSON.stringify(JSON.stringify(finalParentValues))}) { id } }`;
+    await mondayApiCall(updateParentMutation);
 
     return res.status(200).json({ success: true, tasksAdded: operationsLogged, tier: config.tierName });
 
@@ -155,10 +130,7 @@ export default async function handler(req, res) {
   }
 }
 
-async function mondayApiCall(query, variables = null) {
-  const payload = { query };
-  if (variables) payload.variables = variables;
-
+async function mondayApiCall(query) {
   const response = await fetch(MONDAY_API_URL, {
     method: 'POST',
     headers: {
@@ -166,7 +138,7 @@ async function mondayApiCall(query, variables = null) {
       'Authorization': MONDAY_API_KEY,
       'API-Version': '2024-10'
     },
-    body: JSON.stringify(payload)
+    body: JSON.stringify({ query })
   });
 
   if (!response.ok) throw new Error(`monday.com HTTP channel rejected request with code: ${response.status}`);
