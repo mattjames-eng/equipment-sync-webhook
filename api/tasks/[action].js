@@ -1,5 +1,5 @@
 /**
- * monday.com Tiered Project Task Template Generator (GraphQL Variables Edition)
+ * monday.com Tiered Project Task Template Generator (Type-Aligned Edition)
  * * This unified dynamic endpoint handles task generation for all 4 event complexity tiers.
  * * Routes:
  * - POST /api/tasks/add-basic
@@ -19,7 +19,7 @@ const TIER_CONFIGS = {
   'add-basic': { tierName: 'Basic', nextStatus: 'Basic Added' },
   'add-standard': { tierName: 'Standard', nextStatus: 'Standard Added' },
   'add-complex': { tierName: 'Complex', nextStatus: 'Complex Added' },
-  'add-festival': { tierName: 'Festival', nextStatus: 'Festival Add' }
+  'add-festival': { tierName: 'Festival', nextStatus: 'Festival Added' } // FIXED: Sidekick's catch
 };
 
 export default async function handler(req, res) {
@@ -63,7 +63,7 @@ export default async function handler(req, res) {
 
     console.log(`🎯 Filtered out [${targetTierTasks.length}] tasks matching the [${config.tierName}] index flag.`);
 
-    // Reusable GraphQL variable mutation to update parent status safely
+    // change_multiple_column_values strictly requires the column values variable to be a native JSON! object
     const updateParentMutation = `
       mutation($boardId: ID!, $itemId: ID!, $values: JSON!) {
         change_multiple_column_values(board_id: $boardId, item_id: $itemId, column_values: $values) {
@@ -78,14 +78,14 @@ export default async function handler(req, res) {
       await mondayApiCall(updateParentMutation, {
         boardId: PROJECTS_BOARD_ID,
         itemId: projectId.toString(),
-        values: finalParentValues // Passed as a native JavaScript object map
+        values: finalParentValues
       });
-      return res.status(200).json({ success: true, tasksAdded: 0, message: `No remaining standalone tasks found for tier context. Advanced state.` });
+      return res.status(200).json({ success: true, tasksAdded: 0, message: `No remaining standalone tasks found for tier context.` });
     }
 
-    // STEP 3: Programmatically generate subitems using precise object type mapping variables
+    // STEP 3: Programmatically generate subitems using precise String! parsing for column_values
     const createSubitemMutation = `
-      mutation($parentId: ID!, $itemName: String!, $columnValues: JSON!) {
+      mutation($parentId: ID!, $itemName: String!, $columnValues: String!) {
         create_subitem(parent_item_id: $parentId, item_name: $itemName, column_values: $columnValues) {
           id
         }
@@ -110,10 +110,11 @@ export default async function handler(req, res) {
           subitemValues.color_mm3x885a = { label: priorityText };
         }
 
+        // FIXED: Stringify this variable explicitly to satisfy the String! type declaration expected by create_subitem
         await mondayApiCall(createSubitemMutation, {
           parentId: projectId.toString(),
           itemName: task.name,
-          columnValues: subitemValues // Passed as a native JavaScript object map (fixes syntax fallouts)
+          columnValues: JSON.stringify(subitemValues) 
         });
         operationsLogged++;
       } catch (rowError) {
@@ -126,7 +127,7 @@ export default async function handler(req, res) {
     await mondayApiCall(updateParentMutation, {
       boardId: PROJECTS_BOARD_ID,
       itemId: projectId.toString(),
-      values: finalParentValues // Passed as a native JavaScript object map
+      values: finalParentValues
     });
 
     return res.status(200).json({ success: true, tasksAdded: operationsLogged, tier: config.tierName });
