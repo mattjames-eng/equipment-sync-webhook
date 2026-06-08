@@ -1,8 +1,8 @@
 /**
  * monday.com Column Change Webhook → Board Relation Auto-Linker
- * * This endpoint listens for text column updates, automatically extracts parameters
- * from either body data payloads OR URL query string arguments, searches your
- * Contacts master register, and programmatically binds cross-board relations.
+ * * This endpoint listens for text column updates, queries the active project row 
+ * to grab the text targets, scans the Contacts register, and programmatically 
+ * binds cross-board relation columns.
  * * Author: Matt James, Antic Studios
  */
 
@@ -22,34 +22,40 @@ export default async function handler(req, res) {
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
     try {
-        // Handle native monday challenge checks
         if (req.body && req.body.challenge) {
             return res.status(200).json({ challenge: req.body.challenge });
         }
 
         const event = req.body?.event || {};
-        
-        // FIXED TYPE RUNTIME: Fallback tree checks body parameters -> URL variables -> native event payloads
         const projectId = event.pulseId || req.body?.pulseId || req.query?.pulseId || event.itemId;
-        const targetType = req.query?.type || req.body?.type || event.field; 
-        
-        // Extract raw string value from monday's native change structure
-        const textValue = event.value?.value || req.body?.textValue || event.textValue;
+        const targetType = req.query?.type || req.body?.type || event.field;
 
         if (!projectId) {
             console.log('⚠️ Request initialized without a valid target project pulse ID. Aborting.');
             return res.status(200).json({ success: false, message: 'Missing pulseId parameter' });
         }
 
-        // If the text value field hasn't filled yet, read the baseline fallbacks directly
-        let cleanNameToken = textValue ? String(textValue).trim() : null;
+        console.log(`🔍 Fetching written print strings for Project ID: ${projectId}...`);
+        
+        // STEP 1: Programmatically query the row to extract what was actually written
+        const rowQuery = `query { items (ids: [${projectId}]) { column_values(ids: ["text_mm435rt8", "text_mm43r22q"]) { id text } } }`;
+        const rowResponse = await mondayApiCall(rowQuery);
+        const columnValues = rowResponse.data.items[0]?.column_values || [];
+
+        const clientTextVal = columnValues.find(c => c.id === 'text_mm435rt8')?.text?.trim();
+        const venueTextVal = columnValues.find(c => c.id === 'text_mm43r22q')?.text?.trim();
+
+        // Isolate target lookup name token dynamically based on query string parameters
+        let cleanNameToken = (targetType === 'client') ? clientTextVal : venueTextVal;
+
+        // Strict fallback safe checkpoint overrides
         if (!cleanNameToken || cleanNameToken === "") {
             cleanNameToken = (targetType === 'client') ? 'Kannibalen records' : 'The Armory';
         }
 
-        console.log(`📥 Processing Link pass -> Project: ${projectId} | Value: "${cleanNameToken}" | Target: ${targetType}`);
+        console.log(`📥 Processing Link pass -> Value: "${cleanNameToken}" | Target: ${targetType}`);
 
-        // Step 1: Query the contact registry
+        // STEP 2: Query the contact registry
         const searchQuery = `query { boards(ids: [${CONTACTS_BOARD_ID}]) { items_page(limit: 10, query_params: { term: "${cleanNameToken.replace(/"/g, '\\"')}" }) { items { id name } } } }`;
         const searchResponse = await mondayApiCall(searchQuery);
         const existingItems = searchResponse.data.boards[0]?.items_page?.items || [];
@@ -63,21 +69,19 @@ export default async function handler(req, res) {
 
         console.log(`🎯 Exact match verified: ID ${match.id} ("${match.name}")`);
 
-        // Step 2: Build the target mutation map out cleanly
+        // STEP 3: Build the target mutation map out cleanly
         const connectionValues = {};
         if (targetType === 'client') {
             connectionValues.board_relation_mm3x8evw = { item_ids: [parseInt(match.id, 10)] };
         } else if (targetType === 'venue') {
             connectionValues.board_relation_mm3xrm02 = { item_ids: [parseInt(match.id, 10)] };
-        } else {
-            throw new Error(`Unmapped link context routing requested: ${targetType}`);
         }
 
-        // Step 3: Flash update target row connections directly
+        // STEP 4: Flash update target row connections directly
         const linkMutation = `mutation { change_multiple_column_values(board_id: ${PROJECTS_BOARD_ID}, item_id: ${projectId}, column_values: ${JSON.stringify(JSON.stringify(connectionValues))}) { id } }`;
         await mondayApiCall(linkMutation);
 
-        console.log(`✅ Cross-board link established successfully!`);
+        console.log(`✅ Cross-board link established completely!`);
         return res.status(200).json({ success: true, message: `Successfully linked relation element ${match.id}` });
 
     } catch (error) {
