@@ -1,8 +1,8 @@
 /**
- * monday.com Status Controller → Tiered Task Injector
+ * monday.com Status Controller → Tiered Task Template Injector (Dropdown Plural Patch)
  * * This endpoint listens to changes on the "Tasks Status" column (color_mm3ycrm1).
  * * Bypasses duplicate button clicks, enforces progression dependencies,
- * and populates tiered subitems atomically.
+ * and populates tiered subitems atomically with type-safe dropdown arrays.
  * * Author: Matt James, Antic Studios
  */
 
@@ -28,7 +28,6 @@ export default async function handler(req, res) {
     if (req.method === 'OPTIONS') return res.status(200).end();
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-    // Gracefully handle standard monday automation challenge handshakes
     if (req.body && req.body.challenge) return res.status(200).json({ challenge: req.body.challenge });
 
     const event = req.body?.event || {};
@@ -39,7 +38,6 @@ export default async function handler(req, res) {
         return res.status(200).json({ success: false, message: 'Missing parameters, skipping.' });
     }
 
-    // CHECKPOINT 1: If the label is a completion state (e.g. "Basic Added"), exit immediately to prevent loop cycles
     if (incomingLabel.includes('Added')) {
         return res.status(200).json({ success: true, message: 'Completion state loop ignored.' });
     }
@@ -52,7 +50,6 @@ export default async function handler(req, res) {
     console.log(`📥 Status Trigger Captured -> Project: ${projectId} | Action: ${incomingLabel}`);
 
     try {
-        // STEP 1: Pull current parent item state to inspect subitem existence and prerequisites
         const projectQuery = `query { items(ids: [${projectId}]) { column_values(ids: ["color_mm3ycrm1"]) { text } subitems { column_values(ids: ["dropdown_mm3xhker"]) { text } } } }`;
         const projectResponse = await mondayApiCall(projectQuery);
         const projectNode = projectResponse.data?.items?.[0];
@@ -60,7 +57,6 @@ export default async function handler(req, res) {
         const currentTrackingStatus = projectNode?.column_values?.[0]?.text;
         const currentSubitems = projectNode?.subitems || [];
 
-        // TWO BIRDS FIX: Scan existing subitems to see if this specific complexity tier has already loaded in the past
         const tierAlreadyExists = currentSubitems.some(subitem => {
             const tierText = subitem.column_values.find(col => col.id === 'dropdown_mm3xhker')?.text;
             return tierText === route.tierName;
@@ -72,20 +68,17 @@ export default async function handler(req, res) {
             return res.status(200).json({ success: true, message: 'Duplicate addition blocked cleanly.' });
         }
 
-        // CHECKPOINT 2: Enforce sequential progression dependencies
         if (route.requiredState && currentTrackingStatus !== route.requiredState) {
             console.log(`❌ Sequence Error: Prerequisite '${route.requiredState}' not satisfied.`);
             await updateParentTrackingStatus(projectId, currentTrackingStatus || "No Tasks");
             return res.status(200).json({ success: false, error: 'Sequence block handled.' });
         }
 
-        // STEP 2: Query the 142 blueprint template items sitting inside your Template Project
         console.log(`🔍 Fetching subitem matrix blueprints from template anchor record: ${TEMPLATE_PROJECT_ID}`);
         const templateQuery = `query { items(ids: [${TEMPLATE_PROJECT_ID}]) { subitems { name column_values { id text } } } }`;
         const templateResponse = await mondayApiCall(templateQuery);
         const templateSubitems = templateResponse.data?.items?.[0]?.subitems || [];
 
-        // STEP 3: Filter tasks targeting the current tier name parameter mapping
         const tasksToInject = templateSubitems.filter(subitem => {
             const tierText = subitem.column_values.find(col => col.id === 'dropdown_mm3xhker')?.text;
             return tierText === route.tierName;
@@ -93,18 +86,18 @@ export default async function handler(req, res) {
 
         console.log(`🎯 Aligned [${tasksToInject.length}] layout checklist elements matching context frame.`);
 
-        // STEP 4: Asynchronously inject elements to the active timeline grid
         let itemsAddedCount = 0;
         for (const task of tasksToInject) {
             const phaseText = task.column_values.find(col => col.id === 'dropdown_mm3x2wmx')?.text;
             const priorityText = task.column_values.find(col => col.id === 'color_mm3x885a')?.text;
 
+            // FIXED: Dropdown column types expect an array assigned to a plural "labels" key layout rule
             const subitemValues = {
                 status: { label: "Not Started" },
-                dropdown_mm3xhker: { label: route.tierName }
+                dropdown_mm3xhker: { labels: [route.tierName] }
             };
 
-            if (phaseText) subitemValues.dropdown_mm3x2wmx = { label: phaseText };
+            if (phaseText) subitemValues.dropdown_mm3x2wmx = { labels: [phaseText] };
             if (priorityText) subitemValues.color_mm3x885a = { label: priorityText };
 
             const subitemMutation = `mutation { create_subitem(parent_item_id: ${projectId}, item_name: "${task.name.replace(/"/g, '\\"')}", column_values: ${JSON.stringify(JSON.stringify(subitemValues))}) { id } }`;
@@ -112,7 +105,6 @@ export default async function handler(req, res) {
             itemsAddedCount++;
         }
 
-        // STEP 5: Finalize operation pass by locking down the milestone checkpoint label string
         await updateParentTrackingStatus(projectId, route.successLabel);
         console.log(`✅ Checklist expansion complete! Milestone updated to: ${route.successLabel}`);
         
