@@ -1,8 +1,8 @@
 /**
- * monday.com Tiered Project Task Template Generator (High-Speed Parallel Edition)
+ * monday.com Tiered Project Task Template Generator (Throttled Batch Edition)
  * * This streamlined endpoint handles task generation for the new unified checklist workflow.
- * * Routes: POST /api/tasks/load-all (or any dynamic action fallback route)
- * * Fires all 142 creation mutations concurrently to stay well under Vercel's 10s timeout limit.
+ * * Routes: POST /api/tasks/load-all
+ * * Batches requests in chunks of 25 to balance speed and slide past monday's rate limits.
  * * Author: Matt James, Antic Studios
  */
 
@@ -10,6 +10,15 @@ const MONDAY_API_URL = 'https://api.monday.com/v2';
 const MONDAY_API_KEY = process.env.MONDAY_API_KEY;
 const PROJECTS_BOARD_ID = '18415679761';
 const TEMPLATE_PROJECT_ID = '12153638858';
+
+// Helper function to segment the massive array into digestible chunks
+function chunkArray(array, size) {
+  const chunks = [];
+  for (let i = 0; i < array.length; i += size) {
+    chunks.push(array.slice(i, i + size));
+  }
+  return chunks;
+}
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -28,16 +37,18 @@ export default async function handler(req, res) {
   }
 
   try {
-    console.log(`📥 Initializing High-Speed Bulk Load for Project ID: ${projectId}`);
+    console.log(`📥 Initializing Batch-Throttled Bulk Load for Project ID: ${projectId}`);
 
     // STEP 1: Fetch ALL subitems directly from the master blueprint template project
     const templateQuery = `query($templateId: [ID!]) { items(ids: $templateId) { subitems { id name column_values { id text } } } }`;
     const templateResponse = await mondayApiCall(templateQuery, { templateId: [TEMPLATE_PROJECT_ID] });
     const allTemplateSubitems = templateResponse.data?.items?.[0]?.subitems || [];
 
-    console.log(`🎯 Retreived [${allTemplateSubitems.length}] total tasks from the template repository.`);
+    console.log(`🎯 Retrieved [${allTemplateSubitems.length}] total tasks from the template repository.`);
 
-    // STEP 2: Map tasks into a concurrent array of promises to bypass serverless timeouts
+    // STEP 2: Separate the task checklist into clean batch pools of 25 items
+    const taskBatches = chunkArray(allTemplateSubitems, 25);
+    
     const createSubitemMutation = `
       mutation($parentId: ID!, $itemName: String!, $columnValues: String!) {
         create_subitem(parent_item_id: $parentId, item_name: $itemName, column_values: $columnValues) {
@@ -46,33 +57,41 @@ export default async function handler(req, res) {
       }
     `;
 
-    const duplicatePromises = allTemplateSubitems.map(async (task) => {
-      try {
-        const phaseText = task.column_values.find(col => col.id === 'dropdown_mm3x2wmx')?.text;
-        const priorityText = task.column_values.find(col => col.id === 'color_mm3x885a')?.text;
-        const assignedTier = task.column_values.find(col => col.id === 'dropdown_mm3xhker')?.text || 'Basic';
-        
-        const subitemValues = {
-          status: { label: "Not Started" },
-          dropdown_mm3xhker: { labels: assignedTier.split(',').map(s => s.trim()) }
-        };
+    let totalOperationsLogged = 0;
 
-        if (phaseText) subitemValues.dropdown_mm3x2wmx = { labels: phaseText.split(',').map(s => s.trim()) };
-        if (priorityText) subitemValues.color_mm3x885a = { label: priorityText };
+    // Iterate through chunks synchronously, but process items inside the chunk concurrently
+    for (const batch of taskBatches) {
+      const batchPromises = batch.map(async (task) => {
+        try {
+          const phaseText = task.column_values.find(col => col.id === 'dropdown_mm3x2wmx')?.text;
+          const priorityText = task.column_values.find(col => col.id === 'color_mm3x885a')?.text;
+          const assignedTier = task.column_values.find(col => col.id === 'dropdown_mm3xhker')?.text || 'Basic';
+          
+          const subitemValues = {
+            status: { label: "Not Started" },
+            dropdown_mm3xhker: { labels: assignedTier.split(',').map(s => s.trim()) }
+          };
 
-        return await mondayApiCall(createSubitemMutation, {
-          parentId: projectId.toString(),
-          itemName: task.name,
-          columnValues: JSON.stringify(subitemValues)
-        });
-      } catch (rowError) {
-        console.error(`⚠️ Skipping layout error on item "${task.name}":`, rowError.message);
-        return null;
-      }
-    });
+          if (phaseText) subitemValues.dropdown_mm3x2wmx = { labels: phaseText.split(',').map(s => s.trim()) };
+          if (priorityText) subitemValues.color_mm3x885a = { label: priorityText };
 
-    // Execute all mutations simultaneously in parallel
-    await Promise.all(duplicatePromises);
+          await mondayApiCall(createSubitemMutation, {
+            parentId: projectId.toString(),
+            itemName: task.name,
+            columnValues: JSON.stringify(subitemValues)
+          });
+          totalOperationsLogged++;
+        } catch (rowError) {
+          console.error(`⚠️ Non-fatal item skip on "${task.name}":`, rowError.message);
+        }
+      });
+
+      // Fire the 25 batch operations concurrently
+      await Promise.all(batchPromises);
+      
+      // Take a short 150ms breather to allow monday's rate-limiter bucket to refill
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
 
     // STEP 3: Complete execution by setting parent status to advanced confirmation checkpoint
     const updateParentMutation = `
@@ -83,14 +102,14 @@ export default async function handler(req, res) {
       }
     `;
 
-    console.log(`🏁 Parallel bulk injection complete. Advancing status tracking directly to: "Tasks Loaded"`);
+    console.log(`🏁 Throttled pipeline complete. Advancing status tracking directly to: "Tasks Loaded"`);
     await mondayApiCall(updateParentMutation, {
       boardId: PROJECTS_BOARD_ID,
       itemId: projectId.toString(),
       values: { "color_mm3ycrm1": { "label": "Tasks Loaded" } }
     });
 
-    return res.status(200).json({ success: true, totalTasksLoaded: allTemplateSubitems.length });
+    return res.status(200).json({ success: true, totalTasksLoaded: totalOperationsLogged });
 
   } catch (error) {
     console.error('❌ Master Task Pipeline Execution Interrupted:', error);
