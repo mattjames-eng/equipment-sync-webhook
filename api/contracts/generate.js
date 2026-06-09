@@ -143,10 +143,18 @@ export default async function handler(req, res) {
     console.log('✅ Status updated to "Sent to Tech"');
 
     // 9. Wipe out Temporary Scratchpad Document from Google Drive folder
-    await drive.files.delete({ 
-      fileId: newDocId,
-      supportsAllDrives: true // <-- CRITICAL: Allows standard automated scratchpad cleanup in Shared Drives
-    });
+    try {
+      await drive.files.delete({ 
+        fileId: newDocId,
+        supportsAllDrives: true
+      });
+      console.log(`🗑️ Temporary document deleted: ${newDocId}`);
+    } catch (cleanupError) {
+      console.warn(`⚠️ Could not delete temporary document ${newDocId}: ${cleanupError.message}`);
+      console.warn('This is non-fatal - contract generation succeeded.');
+      // Don't throw - cleanup failure shouldn't fail the entire pipeline
+    }
+
     console.log(`🏁 Pipeline execution cleanly terminated for record: ${itemId}`);
 
     return res.status(200).json({ success: true, message: 'Contract package saved successfully.' });
