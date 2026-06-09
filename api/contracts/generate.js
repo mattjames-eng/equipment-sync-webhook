@@ -37,17 +37,22 @@ export default async function handler(req, res) {
     // 3. Extract Live Project Columns from Monday Row
     const contractData = await fetchContractData(itemId);
 
-    // 4. Duplicate the Master Google Doc Template
+    // 4. Duplicate the Master Google Doc Template inside Google Drive (With Quota Redirection)
+    if (!process.env.GOOGLE_DRIVE_FOLDER_ID) {
+      throw new Error('CRITICAL: Missing GOOGLE_DRIVE_FOLDER_ID environment variable in configuration parameters matrix.');
+    }
+
     const copyResponse = await drive.files.copy({
       fileId: process.env.CONTRACT_TEMPLATE_ID,
       requestBody: {
-        name: `Contract - ${contractData.crewMember || 'Crew'} - ${new Date().toLocaleDateString().replace(/\//g, '-')}`
+        name: `Contract - ${contractData.crewMember || 'Crew'} - ${new Date().toLocaleDateString().replace(/\//g, '-')}`,
+        parents: [process.env.GOOGLE_DRIVE_FOLDER_ID] // Redirects file ownership billing straight to your shared drive storage quota pool
       }
     });
     const newDocId = copyResponse.data.id;
-    console.log(`📄 Transient processing document instance initialized: ${newDocId}`);
+    console.log(`📄 Transient processing document instance safely initialized in shared folder: ${newDocId}`);
 
-    // 5. Format Variables & Execute Find & Replace 
+    // 5. Format Variables & Execute Find & Replace (Matching actual layout map)
     const currentFormattedDate = new Date().toLocaleDateString('en-US', {
       year: 'numeric',
       month: 'long',
@@ -120,7 +125,7 @@ export default async function handler(req, res) {
       }
     `);
 
-    // 9. Wipe out Temporary Scratchpad Document from Google Drive
+    // 9. Wipe out Temporary Scratchpad Document from Google Drive folder
     await drive.files.delete({ fileId: newDocId });
     console.log(`🏁 Pipeline execution cleanly terminated for record: ${itemId}`);
 
