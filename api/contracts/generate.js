@@ -205,6 +205,7 @@ export default async function handler(req, res) {
 }
 
 async function fetchContractData(itemId) {
+  // Updated query with BoardRelationValue fragment to get linked_items
   const query = `query { 
     items(ids: [${itemId}]) { 
       id
@@ -213,6 +214,12 @@ async function fetchContractData(itemId) {
         id 
         text 
         value
+        ... on BoardRelationValue {
+          linked_items {
+            id
+            name
+          }
+        }
       } 
     }
   }`;
@@ -233,9 +240,11 @@ async function fetchContractData(itemId) {
     }
   };
   
-  // Get crew member ID from board relation
-  const crewRelation = getColValue('board_relation_mm3yckmg');
-  const crewMemberId = crewRelation?.linkedPulseIds?.[0]?.linkedPulseId;
+  // Get crew member ID from board relation using linked_items
+  const crewRelationCol = columns.find(c => c.id === 'board_relation_mm3yckmg');
+  const crewMemberId = crewRelationCol?.linked_items?.[0]?.id;
+  
+  console.log('🔍 Crew Member ID:', crewMemberId); // Debug log
   
   // Fetch crew member data from Crew Database
   let crewData = {
@@ -247,6 +256,7 @@ async function fetchContractData(itemId) {
   
   if (crewMemberId) {
     try {
+      console.log('📞 Fetching crew data for ID:', crewMemberId);
       const crewQuery = `query { 
         items(ids: [${crewMemberId}]) { 
           name
@@ -265,10 +275,14 @@ async function fetchContractData(itemId) {
         crewData.email = crewCols.find(c => c.id === 'email_mm3yfhmg')?.text || 'TBD';
         crewData.phone = crewCols.find(c => c.id === 'phone_mm3yd44g')?.text || 'TBD';
         crewData.position = crewCols.find(c => c.id === 'dropdown_mm3yd2n8')?.text || 'Production Technician';
+        
+        console.log('✅ Crew data fetched:', crewData); // Debug log
       }
     } catch (error) {
-      console.warn('Could not fetch crew member data:', error.message);
+      console.error('❌ Could not fetch crew member data:', error.message);
     }
+  } else {
+    console.warn('⚠️ No crew member ID found in board relation');
   }
   
   // Parse dates
