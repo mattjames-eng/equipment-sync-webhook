@@ -1,5 +1,5 @@
 /**
- * monday.com Tiered Project Task Template Generator (Background Processing Edition)
+ * monday.com Tiered Project Task Template Generator (Background Processing Edition - FIXED)
  * 
  * This endpoint immediately returns 200 OK, then processes tasks in the background.
  * No timeout issues - works perfectly on Vercel free tier.
@@ -52,6 +52,7 @@ export default async function handler(req, res) {
   // Vercel will keep this running even after the response
   processTasksInBackground(projectId).catch(error => {
     console.error('❌ Background processing failed:', error);
+    console.error('❌ Error stack:', error.stack);
   });
 }
 
@@ -63,8 +64,8 @@ async function processTasksInBackground(projectId) {
     console.log(`🚀 Starting background processing for Project ID: ${projectId}`);
 
     // STEP 1: Fetch all subitems from the template
-    const templateQuery = `query($templateId: [ID!]) { 
-      items(ids: $templateId) { 
+    const templateQuery = `query($templateId: ID!) { 
+      items(ids: [$templateId]) { 
         subitems { 
           id 
           name 
@@ -76,13 +77,24 @@ async function processTasksInBackground(projectId) {
       } 
     }`;
 
-    const templateResponse = await mondayApiCall(templateQuery, { templateId: [TEMPLATE_PROJECT_ID] });
+    console.log(`🔍 Fetching template subitems from item ${TEMPLATE_PROJECT_ID}...`);
+    
+    const templateResponse = await mondayApiCall(templateQuery, { templateId: TEMPLATE_PROJECT_ID });
+    
+    console.log(`📦 Template response:`, JSON.stringify(templateResponse, null, 2));
+    
     const allTemplateSubitems = templateResponse.data?.items?.[0]?.subitems || [];
 
     console.log(`🎯 Retrieved [${allTemplateSubitems.length}] tasks from template`);
 
+    if (allTemplateSubitems.length === 0) {
+      throw new Error('No subitems found in template item');
+    }
+
     // STEP 2: Process tasks in batches of 25
     const taskBatches = chunkArray(allTemplateSubitems, 25);
+    console.log(`📊 Split into ${taskBatches.length} batches of 25 tasks each`);
+    
     const createSubitemMutation = `
       mutation($parentId: ID!, $itemName: String!, $columnValues: String!) {
         create_subitem(parent_item_id: $parentId, item_name: $itemName, column_values: $columnValues) {
@@ -92,8 +104,12 @@ async function processTasksInBackground(projectId) {
     `;
 
     let totalCreated = 0;
+    let batchNumber = 0;
 
     for (const batch of taskBatches) {
+      batchNumber++;
+      console.log(`🔄 Processing batch ${batchNumber}/${taskBatches.length} (${batch.length} tasks)...`);
+      
       const batchPromises = batch.map(async (task) => {
         try {
           const phaseText = task.column_values.find(col => col.id === 'dropdown_mm3x2wmx')?.text;
@@ -122,6 +138,7 @@ async function processTasksInBackground(projectId) {
 
       // Process batch concurrently
       await Promise.all(batchPromises);
+      console.log(`✅ Batch ${batchNumber} complete. Total created so far: ${totalCreated}`);
       
       // Small delay between batches to respect rate limits
       await new Promise((resolve) => setTimeout(resolve, 150));
@@ -143,6 +160,8 @@ async function processTasksInBackground(projectId) {
       }
     `;
 
+    console.log(`🔄 Updating status to "Tasks Loaded"...`);
+    
     await mondayApiCall(updateParentMutation, {
       boardId: PROJECTS_BOARD_ID,
       itemId: projectId.toString(),
@@ -154,6 +173,8 @@ async function processTasksInBackground(projectId) {
 
   } catch (error) {
     console.error('❌ Background processing error:', error);
+    console.error('❌ Error message:', error.message);
+    console.error('❌ Error stack:', error.stack);
     
     // Try to update status to indicate error
     try {
@@ -165,7 +186,7 @@ async function processTasksInBackground(projectId) {
             column_id: $columnId, 
             value: $value
           ) {
-            id
+          id
           }
         }
       `;
@@ -176,6 +197,8 @@ async function processTasksInBackground(projectId) {
         columnId: "color_mm3ycrm1",
         value: "No Tasks"
       });
+      
+      console.log(`🔄 Reset status to "No Tasks" due to error`);
     } catch (updateError) {
       console.error('❌ Failed to update error status:', updateError);
     }
@@ -200,7 +223,17 @@ async function mondayApiCall(query, variables = null) {
   });
 
   const data = await response.json();
-  if (!response.ok) throw new Error(`monday API rejected with HTTP ${response.status}`);
-  if (data.errors) throw new Error(`GraphQL error: ${JSON.stringify(data.errors)}`);
+  
+  if (!response.ok) {
+    console.error(`❌ monday API HTTP error: ${response.status}`);
+    console.error(`❌ Response:`, JSON.stringify(data, null, 2));
+    throw new Error(`monday API rejected with HTTP ${response.status}`);
+  }
+  
+  if (data.errors) {
+    console.error(`❌ GraphQL errors:`, JSON.stringify(data.errors, null, 2));
+    throw new Error(`GraphQL error: ${JSON.stringify(data.errors)}`);
+  }
+  
   return data;
 }
