@@ -253,12 +253,12 @@ async function fetchContractData(itemId) {
     contractId: item.id,
     crewMember: getCol('board_relation_mm3yckmg') || 'Independent Contractor',
     position: getCol('text_mm3y8w5b') || 'Production Technician',
-    crewEmail: 'TBD', // Add email column if you have it
-    crewPhone: 'TBD', // Add phone column if you have it
+    crewEmail: getCol('lookup_mm3ycr08') || 'TBD',  // ← UPDATED: Now pulls from mirror
+    crewPhone: getCol('lookup_mm3ygy4r') || 'TBD',  // ← UPDATED: Now pulls from mirror
     
     // Project Info
     projectName: getCol('board_relation_mm3yxkvs') || item.name,
-    clientName: getCol('board_relation_mm3y9301') || 'TBD',
+    clientName: getCol('lookup_mm3ygy4r') || 'TBD',
     venueName: getCol('board_relation_mm3y7kar') || 'TBD',
     
     // Dates
