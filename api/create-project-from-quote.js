@@ -1,14 +1,18 @@
 /**
  * Flex Quote → monday.com Master Atomic Sync Pipeline
- * * This endpoint handles the entire creation and relationship binding loop 
+ * 
+ * This endpoint handles the entire creation and relationship binding loop 
  * in a single operational step to bypass background automation delays.
- * * Workflow:
+ * 
+ * Workflow:
  * 1. Safely queries Flex via GET /api/search layout guidelines
  * 2. Fetches field parameters using precise comma-separated codeList entries
  * 3. Extracts clean contact UUID strings, filtering out literal key titles (FIX)
  * 4. Resolves human-readable text identities via /api/contact/{uuid}/identity
  * 5. Matches names against the monday Contacts board and links relations inline
- * * Author: Matt James, Antic Studios
+ * 
+ * Author: Matt James, Antic Studios
+ * Last Updated: June 9, 2026 - FIXED BUDGET SYNC (totalPrice field)
  */
 
 const MONDAY_API_URL = 'https://api.monday.com/v2';
@@ -52,6 +56,17 @@ function deepExtractName(obj) {
         }
     }
     return null;
+}
+
+// NEW: Extract numeric value from Flex ElementHeaderDataPoint wrapper
+function extractFlexNumericValue(obj) {
+    if (!obj) return 0;
+    if (typeof obj === 'number') return obj;
+    if (typeof obj === 'string') return parseFloat(obj) || 0;
+    if (typeof obj === 'object' && obj.data !== undefined) {
+        return typeof obj.data === 'number' ? obj.data : parseFloat(obj.data) || 0;
+    }
+    return 0;
 }
 
 // Resolves a raw contact UUID to a human-readable name string via Flex Identity Dictionary
@@ -117,8 +132,8 @@ export default async function handler(req, res) {
 
         const internalId = results[0].id || results[0].elementId;
 
-        // Fetch element sub-group matrix values via explicit parameter codes
-        const dataUrl = `${FLEX_BASE_URL}/api/element/${internalId}/header-data?codeList=elementNumber,name,clientId,venueId,eventDate,totalEstimate,notes,equipmentList`;
+        // FIXED: Use correct Flex API field codes (totalPrice instead of totalEstimate)
+        const dataUrl = `${FLEX_BASE_URL}/api/element/${internalId}/header-data?codeList=elementNumber,name,clientId,venueId,eventDate,totalPrice,notes,equipmentList`;
         const dataResponse = await fetch(dataUrl, { headers: { 'X-Auth-Token': FLEX_API_KEY, 'Accept': 'application/json' }});
         if (!dataResponse.ok) throw new Error(`Flex header data mapping path failed: ${dataResponse.status}`);
 
@@ -134,7 +149,11 @@ export default async function handler(req, res) {
 
         const quoteNumber = deepExtractName(data?.elementNumber) || String(quoteId);
         const projectName = deepExtractName(data?.name) || 'Untitled Project';
-        const totalEstimate = parseFloat(data?.totalEstimate) || 0;
+        
+        // FIXED: Extract numeric value from Flex ElementHeaderDataPoint wrapper
+        const totalEstimate = extractFlexNumericValue(data?.totalPrice);
+        console.log(`💰 BUDGET EXTRACTED: ${totalEstimate} from Flex field 'totalPrice'`);
+        
         const notesText = deepExtractName(data?.notes) || 'No Notes';
 
         console.log(`🎯 RESOLVED IDENTITY -> Client: "${clientResolvedName}" | Venue: "${venueResolvedName}"`);
@@ -173,7 +192,7 @@ export default async function handler(req, res) {
             headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_KEY },
             body: JSON.stringify({ query: createMutation })
         });
-        
+       
         const createResult = await createResponse.json();
         if (createResult.errors) throw new Error(`monday row initialization rejected: ${JSON.stringify(createResult.errors)}`);
 
