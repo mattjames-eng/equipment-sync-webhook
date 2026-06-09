@@ -233,6 +233,44 @@ async function fetchContractData(itemId) {
     }
   };
   
+  // Get crew member ID from board relation
+  const crewRelation = getColValue('board_relation_mm3yckmg');
+  const crewMemberId = crewRelation?.linkedPulseIds?.[0]?.linkedPulseId;
+  
+  // Fetch crew member data from Crew Database
+  let crewData = {
+    name: 'Independent Contractor',
+    email: 'TBD',
+    phone: 'TBD',
+    position: 'Production Technician'
+  };
+  
+  if (crewMemberId) {
+    try {
+      const crewQuery = `query { 
+        items(ids: [${crewMemberId}]) { 
+          name
+          column_values { 
+            id 
+            text 
+          } 
+        }
+      }`;
+      const crewResponse = await mondayApiCall(crewQuery);
+      const crewItem = crewResponse.data?.items?.[0];
+      
+      if (crewItem) {
+        crewData.name = crewItem.name;
+        const crewCols = crewItem.column_values || [];
+        crewData.email = crewCols.find(c => c.id === 'email_mm3yfhmg')?.text || 'TBD';
+        crewData.phone = crewCols.find(c => c.id === 'phone_mm3yd44g')?.text || 'TBD';
+        crewData.position = crewCols.find(c => c.id === 'dropdown_mm3yd2n8')?.text || 'Production Technician';
+      }
+    } catch (error) {
+      console.warn('Could not fetch crew member data:', error.message);
+    }
+  }
+  
   // Parse dates
   const startDate = getColValue('date_mm3y5whf');
   const endDate = getColValue('date_mm3yndhd');
@@ -249,16 +287,16 @@ async function fetchContractData(itemId) {
   const netPayment = (contractAmount - commissionAmount).toFixed(2);
   
   return {
-    // Basic Info
+    // Basic Info (NOW FROM CREW DATABASE)
     contractId: item.id,
-    crewMember: getCol('board_relation_mm3yckmg') || 'Independent Contractor',
-    position: getCol('text_mm3y8w5b') || 'Production Technician',
-    crewEmail: getCol('lookup_mm3ycr08') || 'TBD',
-    crewPhone: getCol('lookup_mm3ygy4r') || 'TBD',
+    crewMember: crewData.name,
+    position: crewData.position,
+    crewEmail: crewData.email,
+    crewPhone: crewData.phone,
     
     // Project Info
     projectName: getCol('board_relation_mm3yxkvs') || item.name,
-    clientName: getCol('lookup_mm3ygy4r') || 'TBD',
+    clientName: 'TBD', // Would need to fetch from Projects board via relation
     venueName: getCol('board_relation_mm3y7kar') || 'TBD',
     
     // Dates
@@ -276,11 +314,11 @@ async function fetchContractData(itemId) {
     // Details
     scopeOfWork: getCol('long_text_mm3ypebd') || 'Production services as assigned',
     contractNotes: getCol('long_text_mm3y3094') || 'None',
-    perDiem: '$50/day (if applicable)',
+    perDiem: getCol('long_text_mm3yc7q7') || '$50/day (if applicable)',
     
     // Equipment & Insurance
     companyEquipment: 'All production equipment as specified in production rider',
-    contractorEquipment: 'Personal tools and safety equipment',
+    contractorEquipment: getCol('long_text_mm3yrfaa') || 'Personal tools and safety equipment',
     insuranceRequirement: 'General liability insurance recommended but not required for day rates under $5,000',
     
     // Company Info
