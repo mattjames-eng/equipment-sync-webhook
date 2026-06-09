@@ -37,16 +37,17 @@ export default async function handler(req, res) {
     // 3. Extract Live Project Columns from Monday Row
     const contractData = await fetchContractData(itemId);
 
-    // 4. Duplicate the Master Google Doc Template inside Google Drive (With Quota Redirection)
+    // 4. Duplicate the Master Google Doc Template inside Google Drive (With Quota & Shared Drive Support)
     if (!process.env.GOOGLE_DRIVE_FOLDER_ID) {
       throw new Error('CRITICAL: Missing GOOGLE_DRIVE_FOLDER_ID environment variable in configuration parameters matrix.');
     }
 
     const copyResponse = await drive.files.copy({
       fileId: process.env.CONTRACT_TEMPLATE_ID,
+      supportsAllDrives: true, // <-- CRITICAL: Overrides default account boundary scopes for Shared Drives
       requestBody: {
         name: `Contract - ${contractData.crewMember || 'Crew'} - ${new Date().toLocaleDateString().replace(/\//g, '-')}`,
-        parents: [process.env.GOOGLE_DRIVE_FOLDER_ID] // Redirects file ownership billing straight to your shared drive storage quota pool
+        parents: [process.env.GOOGLE_DRIVE_FOLDER_ID] 
       }
     });
     const newDocId = copyResponse.data.id;
@@ -81,7 +82,8 @@ export default async function handler(req, res) {
     // 6. Compile Modified Document into an In-Memory PDF ArrayBuffer
     const pdfResponse = await drive.files.export({
       fileId: newDocId,
-      mimeType: 'application/pdf'
+      mimeType: 'application/pdf',
+      supportsAllDrives: true // <-- CRITICAL: Grants export asset pipeline visibility
     }, { responseType: 'arraybuffer' });
     
     const pdfBuffer = Buffer.from(pdfResponse.data);
@@ -113,7 +115,7 @@ export default async function handler(req, res) {
     const uploadResult = await uploadResponse.json();
     if (uploadResult.errors) throw new Error(JSON.stringify(uploadResult.errors));
 
-    // 8. Advance Column Tracker Status to "Sent to Tech"
+    // 8. Update Monday Row Status Tracker to "Sent to Tech"
     await mondayApiCall(`
       mutation {
         change_column_value(
@@ -126,7 +128,10 @@ export default async function handler(req, res) {
     `);
 
     // 9. Wipe out Temporary Scratchpad Document from Google Drive folder
-    await drive.files.delete({ fileId: newDocId });
+    await drive.files.delete({ 
+      fileId: newDocId,
+      supportsAllDrives: true // <-- CRITICAL: Allows standard automated scratchpad cleanup in Shared Drives
+    });
     console.log(`🏁 Pipeline execution cleanly terminated for record: ${itemId}`);
 
     return res.status(200).json({ success: true, message: 'Contract package saved successfully.' });
