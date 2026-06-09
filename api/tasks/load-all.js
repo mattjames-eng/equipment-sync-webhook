@@ -3,7 +3,7 @@
  * Receives button click, returns immediately, triggers background worker
  */
 
-const WORKER_WEBHOOK_URL = process.env.WORKER_WEBHOOK_URL || 'https://equipment-sync-webhook.vercel.app/api/tasks/process';
+const WORKER_WEBHOOK_URL = 'https://equipment-sync-webhook.vercel.app/api/tasks/process';
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -34,8 +34,7 @@ export default async function handler(req, res) {
   fetch(WORKER_WEBHOOK_URL, {
     method: 'POST',
     headers: {
-      'Content-Type': 'application/json',
-      'Authorization': process.env.MONDAY_API_KEY
+      'Content-Type': 'application/json'
     },
     body: JSON.stringify({ projectId: projectId })
   }).catch(error => {
