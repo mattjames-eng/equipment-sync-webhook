@@ -44,9 +44,9 @@ export default async function handler(req, res) {
 
     const copyResponse = await drive.files.copy({
       fileId: process.env.CONTRACT_TEMPLATE_ID,
-      supportsAllDrives: true, // <-- CRITICAL: Overrides default account boundary scopes for Shared Drives
+      supportsAllDrives: true,
       requestBody: {
-        name: `Contract - ${contractData.crewMember || 'Crew'} - ${new Date().toLocaleDateString().replace(/\//g, '-')}`,
+        name: `Contract - ${contractData.crewMember} - ${new Date().toLocaleDateString().replace(/\//g, '-')}`,
         parents: [process.env.GOOGLE_DRIVE_FOLDER_ID] 
       }
     });
@@ -61,10 +61,44 @@ export default async function handler(req, res) {
     });
 
     const replacements = [
+      // Basic Info
       { search: '{{date}}', replace: currentFormattedDate },
-      { search: '{{crew_member}}', replace: contractData.crewMember || 'Independent Contractor' },
-      { search: '{{position}}', replace: contractData.position || 'Production Specialist' },
-      { search: '{{final_agreed_rate}}', replace: contractData.finalAgreedRate || '0.00' }
+      { search: '{{contract_id}}', replace: contractData.contractId },
+      { search: '{{crew_member}}', replace: contractData.crewMember },
+      { search: '{{position}}', replace: contractData.position },
+      { search: '{{crew_email}}', replace: contractData.crewEmail },
+      { search: '{{crew_phone}}', replace: contractData.crewPhone },
+      
+      // Project Info
+      { search: '{{project_name}}', replace: contractData.projectName },
+      { search: '{{client_name}}', replace: contractData.clientName },
+      { search: '{{venue_name}}', replace: contractData.venueName },
+      
+      // Dates
+      { search: '{{start_date}}', replace: contractData.startDate },
+      { search: '{{end_date}}', replace: contractData.endDate },
+      
+      // Financial
+      { search: '{{contract_type}}', replace: contractData.contractType },
+      { search: '{{contract_amount}}', replace: contractData.contractAmount },
+      { search: '{{agent_commission}}', replace: contractData.agentCommission },
+      { search: '{{agent_commission_amount}}', replace: contractData.agentCommissionAmount },
+      { search: '{{final_agreed_rate}}', replace: contractData.finalAgreedRate },
+      { search: '{{payment_schedule}}', replace: contractData.paymentSchedule },
+      
+      // Details
+      { search: '{{scope_of_work}}', replace: contractData.scopeOfWork },
+      { search: '{{contract_notes}}', replace: contractData.contractNotes },
+      { search: '{{per_diem}}', replace: contractData.perDiem },
+      
+      // Equipment & Insurance
+      { search: '{{company_equipment}}', replace: contractData.companyEquipment },
+      { search: '{{contractor_equipment}}', replace: contractData.contractorEquipment },
+      { search: '{{insurance_requirement}}', replace: contractData.insuranceRequirement },
+      
+      // Company Info
+      { search: '{{company_signatory}}', replace: contractData.companySignatory },
+      { search: '{{company_signatory_title}}', replace: contractData.companySignatoryTitle }
     ];
 
     await docs.documents.batchUpdate({
@@ -83,7 +117,7 @@ export default async function handler(req, res) {
     const pdfResponse = await drive.files.export({
       fileId: newDocId,
       mimeType: 'application/pdf',
-      supportsAllDrives: true // <-- CRITICAL: Grants export asset pipeline visibility
+      supportsAllDrives: true
     }, { responseType: 'arraybuffer' });
    
     const pdfBuffer = Buffer.from(pdfResponse.data);
@@ -152,7 +186,6 @@ export default async function handler(req, res) {
     } catch (cleanupError) {
       console.warn(`⚠️ Could not delete temporary document ${newDocId}: ${cleanupError.message}`);
       console.warn('This is non-fatal - contract generation succeeded.');
-      // Don't throw - cleanup failure shouldn't fail the entire pipeline
     }
 
     console.log(`🏁 Pipeline execution cleanly terminated for record: ${itemId}`);
@@ -172,14 +205,87 @@ export default async function handler(req, res) {
 }
 
 async function fetchContractData(itemId) {
-  const query = `query { items(ids: [${itemId}]) { column_values { id text } } }`;
+  const query = `query { 
+    items(ids: [${itemId}]) { 
+      id
+      name
+      column_values { 
+        id 
+        text 
+        value
+      } 
+    }
+  }`;
+  
   const response = await mondayApiCall(query);
-  const columns = response.data?.items?.[0]?.column_values || [];
+  const item = response.data?.items?.[0];
+  const columns = item?.column_values || [];
+  
+  // Helper to get column value
+  const getCol = (id) => columns.find(c => c.id === id)?.text || '';
+  const getColValue = (id) => {
+    const col = columns.find(c => c.id === id);
+    if (!col?.value) return '';
+    try {
+      return JSON.parse(col.value);
+    } catch {
+      return col.text || '';
+    }
+  };
+  
+  // Parse dates
+  const startDate = getColValue('date_mm3y5whf');
+  const endDate = getColValue('date_mm3yndhd');
+  const formatDate = (dateObj) => {
+    if (!dateObj?.date) return 'TBD';
+    const d = new Date(dateObj.date);
+    return d.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+  };
+  
+  // Calculate commission
+  const contractAmount = parseFloat(getCol('numeric_mm3yae4w')) || 0;
+  const commissionPercent = parseFloat(getCol('numeric_mm3yywfk')) || 0;
+  const commissionAmount = (contractAmount * commissionPercent / 100).toFixed(2);
+  const netPayment = (contractAmount - commissionAmount).toFixed(2);
   
   return {
-    crewMember: columns.find(c => c.id === 'board_relation_mm3yckmg')?.text,
-    position: columns.find(c => c.id === 'text_mm3y8w5b' || c.id === 'text')?.text || 'Technician', 
-    finalAgreedRate: columns.find(c => c.id === 'formula_mm3yd43r' || c.id === 'numeric_mm3yae4w')?.text
+    // Basic Info
+    contractId: item.id,
+    crewMember: getCol('board_relation_mm3yckmg') || 'Independent Contractor',
+    position: getCol('text_mm3y8w5b') || 'Production Technician',
+    crewEmail: 'TBD', // Add email column if you have it
+    crewPhone: 'TBD', // Add phone column if you have it
+    
+    // Project Info
+    projectName: getCol('board_relation_mm3yxkvs') || item.name,
+    clientName: getCol('board_relation_mm3y9301') || 'TBD',
+    venueName: getCol('board_relation_mm3y7kar') || 'TBD',
+    
+    // Dates
+    startDate: formatDate(startDate),
+    endDate: formatDate(endDate),
+    
+    // Financial
+    contractType: getCol('dropdown_mm3yt6p2') || 'Day Rate',
+    contractAmount: contractAmount.toFixed(2),
+    agentCommission: commissionPercent.toFixed(1),
+    agentCommissionAmount: commissionAmount,
+    finalAgreedRate: netPayment,
+    paymentSchedule: getCol('long_text_mm3yypxx') || 'Net 30 upon completion',
+    
+    // Details
+    scopeOfWork: getCol('long_text_mm3ypebd') || 'Production services as assigned',
+    contractNotes: getCol('long_text_mm3y3094') || 'None',
+    perDiem: '$50/day (if applicable)',
+    
+    // Equipment & Insurance
+    companyEquipment: 'All production equipment as specified in production rider',
+    contractorEquipment: 'Personal tools and safety equipment',
+    insuranceRequirement: 'General liability insurance recommended but not required for day rates under $5,000',
+    
+    // Company Info
+    companySignatory: 'Matt James',
+    companySignatoryTitle: 'General Manager'
   };
 }
 
