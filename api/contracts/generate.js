@@ -85,14 +85,27 @@ export default async function handler(req, res) {
       mimeType: 'application/pdf',
       supportsAllDrives: true // <-- CRITICAL: Grants export asset pipeline visibility
     }, { responseType: 'arraybuffer' });
-    
+   
     const pdfBuffer = Buffer.from(pdfResponse.data);
+
+    // 6.5. Clear any existing files in the Contract Document column (PREVENTS CELL LIMIT ERROR)
+    console.log('🧹 Clearing existing contract documents...');
+    await mondayApiCall(`
+      mutation {
+        change_column_value(
+          item_id: ${itemId},
+          board_id: 18415879229,
+          column_id: "doc_mm3y4td1",
+          value: "{\\"clear_all\\": true}"
+        ) { id }
+      }
+    `);
 
     // 7. Stream PDF Buffer via Native Multipart Form-Data to monday.com File Storage
     console.log('📦 Streaming binary contract parameters to asset storage matrix...');
     const pdfBlob = new Blob([pdfBuffer], { type: 'application/pdf' });
     const uploadForm = new FormData();
-    
+   
     uploadForm.append('query', `
       mutation ($file: File!) {
         add_file_to_column(
@@ -102,7 +115,7 @@ export default async function handler(req, res) {
         ) { id }
       }
     `);
-    
+   
     const uniformFileName = `Contract_${(contractData.crewMember || 'Crew').replace(/\s+/g, '_')}.pdf`;
     uploadForm.append('variables[file]', pdfBlob, uniformFileName);
 
@@ -111,11 +124,12 @@ export default async function handler(req, res) {
       headers: { 'Authorization': process.env.MONDAY_API_KEY },
       body: uploadForm
     });
-    
+   
     const uploadResult = await uploadResponse.json();
     if (uploadResult.errors) throw new Error(JSON.stringify(uploadResult.errors));
 
     // 8. Update Monday Row Status Tracker to "Sent to Tech"
+    console.log('🔄 Updating contract status...');
     await mondayApiCall(`
       mutation {
         change_column_value(
@@ -126,6 +140,7 @@ export default async function handler(req, res) {
         ) { id }
       }
     `);
+    console.log('✅ Status updated to "Sent to Tech"');
 
     // 9. Wipe out Temporary Scratchpad Document from Google Drive folder
     await drive.files.delete({ 
@@ -138,7 +153,7 @@ export default async function handler(req, res) {
 
   } catch (error) {
     console.error('❌ Automation engine faulted:', error);
-    
+   
     // Safety Fallback: Reset status back to draft if the pipeline crashes
     try {
       await mondayApiCall(`mutation { change_column_value(item_id: ${itemId}, board_id: 18415879229, column_id: "color_mm3y7397", value: "{\\"label\\":\\"Draft\\"}") { id } }`);
