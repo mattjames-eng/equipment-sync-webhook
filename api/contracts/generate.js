@@ -130,7 +130,7 @@ export default async function handler(req, res) {
           item_id: ${itemId},
           board_id: 18415879229,
           column_id: "doc_mm3y4td1",
-          value: "{\\"clear_all\\": true}"
+          value: "{}"
         ) { id }
       }
     `);
@@ -253,8 +253,8 @@ async function fetchContractData(itemId) {
     contractId: item.id,
     crewMember: getCol('board_relation_mm3yckmg') || 'Independent Contractor',
     position: getCol('text_mm3y8w5b') || 'Production Technician',
-    crewEmail: getCol('lookup_mm3ycr08') || 'TBD',  // ← UPDATED: Now pulls from mirror
-    crewPhone: getCol('lookup_mm3ygy4r') || 'TBD',  // ← UPDATED: Now pulls from mirror
+    crewEmail: getCol('lookup_mm3ycr08') || 'TBD',
+    crewPhone: getCol('lookup_mm3ygy4r') || 'TBD',
     
     // Project Info
     projectName: getCol('board_relation_mm3yxkvs') || item.name,
