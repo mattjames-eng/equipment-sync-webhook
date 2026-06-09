@@ -35,26 +35,30 @@ export default async function handler(req, res) {
 
   try {
     // STEP 1: Fetch template subitems
-    const templateQuery = `query($templateId: ID!) { 
-      items(ids: [$templateId]) { 
-        subitems { 
-          id 
-          name 
-          column_values { 
-            id 
-            text 
-          } 
-        } 
-      } 
+    const templateQuery = `query {
+      items(ids: [${TEMPLATE_PROJECT_ID}]) {
+        subitems {
+          id
+          name
+          column_values {
+            id
+            text
+          }
+        }
+      }
     }`;
 
-    console.log(`🔍 Fetching template subitems...`);
-    const templateResponse = await mondayApiCall(templateQuery, { templateId: TEMPLATE_PROJECT_ID });
+    console.log(`🔍 Fetching template subitems from item ${TEMPLATE_PROJECT_ID}...`);
+    const templateResponse = await mondayApiCall(templateQuery);
+    
+    console.log(`📦 Template response received`);
+    
     const allTemplateSubitems = templateResponse.data?.items?.[0]?.subitems || [];
 
     console.log(`🎯 Retrieved [${allTemplateSubitems.length}] tasks from template`);
 
     if (allTemplateSubitems.length === 0) {
+      console.error('❌ No subitems found in template item');
       throw new Error('No subitems found in template');
     }
 
@@ -75,7 +79,7 @@ export default async function handler(req, res) {
 
     for (const batch of taskBatches) {
       batchNumber++;
-      console.log(`🔄 Batch ${batchNumber}/${taskBatches.length}...`);
+      console.log(`🔄 Batch ${batchNumber}/${taskBatches.length} (${batch.length} tasks)...`);
 
       const batchPromises = batch.map(async (task) => {
         try {
@@ -113,24 +117,20 @@ export default async function handler(req, res) {
 
     // STEP 3: Update status to "Tasks Loaded"
     const updateMutation = `
-      mutation($boardId: ID!, $itemId: ID!, $columnId: String!, $value: String!) {
+      mutation {
         change_simple_column_value(
-          board_id: $boardId, 
-          item_id: $itemId, 
-          column_id: $columnId, 
-          value: $value
+          board_id: ${PROJECTS_BOARD_ID},
+          item_id: ${projectId},
+          column_id: "color_mm3ycrm1",
+          value: "Tasks Loaded"
         ) {
           id
         }
       }
     `;
 
-    await mondayApiCall(updateMutation, {
-      boardId: PROJECTS_BOARD_ID,
-      itemId: projectId.toString(),
-      columnId: "color_mm3ycrm1",
-      value: "Tasks Loaded"
-    });
+    console.log(`🔄 Updating status to "Tasks Loaded"...`);
+    await mondayApiCall(updateMutation);
 
     console.log(`🏁 Worker complete for Project ID: ${projectId}`);
 
@@ -146,24 +146,20 @@ export default async function handler(req, res) {
     // Reset status on error
     try {
       const errorMutation = `
-        mutation($boardId: ID!, $itemId: ID!, $columnId: String!, $value: String!) {
+        mutation {
           change_simple_column_value(
-            board_id: $boardId, 
-            item_id: $itemId, 
-            column_id: $columnId, 
-            value: $value
+            board_id: ${PROJECTS_BOARD_ID},
+            item_id: ${projectId},
+            column_id: "color_mm3ycrm1",
+            value: "No Tasks"
           ) {
             id
           }
         }
       `;
       
-      await mondayApiCall(errorMutation, {
-        boardId: PROJECTS_BOARD_ID,
-        itemId: projectId.toString(),
-        columnId: "color_mm3ycrm1",
-        value: "No Tasks"
-      });
+      await mondayApiCall(errorMutation);
+      console.log(`🔄 Reset status to "No Tasks" due to error`);
     } catch (updateError) {
       console.error('❌ Failed to reset status:', updateError.message);
     }
