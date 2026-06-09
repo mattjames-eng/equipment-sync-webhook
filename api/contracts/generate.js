@@ -3,14 +3,18 @@ import { google } from 'googleapis';
 const MONDAY_API_URL = 'https://api.monday.com/v2';
 
 export default async function handler(req, res) {
-  // 1. Establish CORS and Webhook Handshakes
+  // 1. Establish Cross-Origin Response Headers for monday.com Webhook Handshakes
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
-  if (req.body && req.body.challenge) return res.status(200).json({ challenge: req.body.challenge });
+  
+  // Instantly handle monday's challenge verification if triggered via custom integration panel
+  if (req.body && req.body.challenge) {
+    return res.status(200).json({ challenge: req.body.challenge });
+  }
 
   const event = req.body?.event || req.body || {};
   const itemId = event.pulseId || event.itemId;
@@ -19,7 +23,7 @@ export default async function handler(req, res) {
   try {
     console.log(`📥 Initializing Document Generation Pipeline for Contract Row: ${itemId}`);
 
-    // 2. Initialize Google Authentication using Vercel Environment JSON
+    // 2. Authenticate Google APIs using Vercel Environment Variables
     const auth = new google.auth.GoogleAuth({
       credentials: JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT),
       scopes: [
@@ -30,10 +34,10 @@ export default async function handler(req, res) {
     const docs = google.docs({ version: 'v1', auth });
     const drive = google.drive({ version: 'v3', auth });
 
-    // 3. Extract live data fields from the monday.com row
+    // 3. Extract Live Project Columns from Monday Row
     const contractData = await fetchContractData(itemId);
 
-    // 4. Duplicate the Master Google Doc Template inside Google Drive
+    // 4. Duplicate the Master Google Doc Template
     const copyResponse = await drive.files.copy({
       fileId: process.env.CONTRACT_TEMPLATE_ID,
       requestBody: {
@@ -43,7 +47,7 @@ export default async function handler(req, res) {
     const newDocId = copyResponse.data.id;
     console.log(`📄 Transient processing document instance initialized: ${newDocId}`);
 
-    // 5. Generate Current Formatted Date and Build Global Document Replacements
+    // 5. Format Variables & Execute Find & Replace 
     const currentFormattedDate = new Date().toLocaleDateString('en-US', {
       year: 'numeric',
       month: 'long',
@@ -77,12 +81,11 @@ export default async function handler(req, res) {
     
     const pdfBuffer = Buffer.from(pdfResponse.data);
 
-    // 7. Stream PDF Buffer via Native Multipart Form-Data to monday.com Storage Engine
+    // 7. Stream PDF Buffer via Native Multipart Form-Data to monday.com File Storage
     console.log('📦 Streaming binary contract parameters to asset storage matrix...');
     const pdfBlob = new Blob([pdfBuffer], { type: 'application/pdf' });
     const uploadForm = new FormData();
     
-    // Pass the GraphQL file attachment query text block
     uploadForm.append('query', `
       mutation ($file: File!) {
         add_file_to_column(
@@ -105,7 +108,7 @@ export default async function handler(req, res) {
     const uploadResult = await uploadResponse.json();
     if (uploadResult.errors) throw new Error(JSON.stringify(uploadResult.errors));
 
-    // 8. Update Monday Row Status Tracker to "Sent to Tech"
+    // 8. Advance Column Tracker Status to "Sent to Tech"
     await mondayApiCall(`
       mutation {
         change_column_value(
@@ -117,7 +120,7 @@ export default async function handler(req, res) {
       }
     `);
 
-    // 9. Evaporate Temporary Scratchpad Google Doc file footprint from Drive
+    // 9. Wipe out Temporary Scratchpad Document from Google Drive
     await drive.files.delete({ fileId: newDocId });
     console.log(`🏁 Pipeline execution cleanly terminated for record: ${itemId}`);
 
@@ -126,7 +129,7 @@ export default async function handler(req, res) {
   } catch (error) {
     console.error('❌ Automation engine faulted:', error);
     
-    // Safety Fallback: Reset column tracker to draft baseline layout on execution crashes
+    // Safety Fallback: Reset status back to draft if the pipeline crashes
     try {
       await mondayApiCall(`mutation { change_column_value(item_id: ${itemId}, board_id: 18415879229, column_id: "color_mm3y7397", value: "{\\"label\\":\\"Draft\\"}") { id } }`);
     } catch (e) { console.error('Fallback update pipeline failure context:', e); }
