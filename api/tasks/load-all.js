@@ -31,15 +31,27 @@ export default async function handler(req, res) {
   });
 
   // 🚀 TRIGGER BACKGROUND WORKER (fire and forget)
+  console.log(`🔗 Calling worker at: ${WORKER_WEBHOOK_URL}`);
+  console.log(`📦 Payload: ${JSON.stringify({ projectId: projectId })}`);
+  
   fetch(WORKER_WEBHOOK_URL, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json'
     },
     body: JSON.stringify({ projectId: projectId })
-  }).catch(error => {
+  })
+  .then(response => {
+    console.log(`✅ Worker responded with status: ${response.status}`);
+    return response.text();
+  })
+  .then(text => {
+    console.log(`📄 Worker response body: ${text}`);
+  })
+  .catch(error => {
     console.error('❌ Failed to trigger worker:', error.message);
+    console.error('❌ Error stack:', error.stack);
   });
 
-  console.log(`✅ Worker triggered for Project ID: ${projectId}`);
+  console.log(`✅ Worker trigger initiated for Project ID: ${projectId}`);
 }
