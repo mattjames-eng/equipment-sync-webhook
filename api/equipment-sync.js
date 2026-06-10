@@ -1,5 +1,5 @@
-// Flex Sync Webhook - COMPLETE FIXED VERSION v2
-// Fixes: Client/Venue linking, Equipment List IDs, Budget sync, Error handling, DUPLICATE DETECTION
+// Flex Sync Webhook - COMPLETE FIXED VERSION v3
+// NEW: Writes flexElementId (UUID) to Equipment List ID column for Vibe app
 
 export default async function handler(req, res) {
   // CORS headers
@@ -166,8 +166,7 @@ export default async function handler(req, res) {
       'venueCompany',
       'venueId',
       'statusId',
-      'statusColor',
-      'equipmentListId'
+      'statusColor'
     ];
 
     const codeListParams = fieldsToFetch.map(field => `codeList=${field}`).join('&');
@@ -236,7 +235,7 @@ export default async function handler(req, res) {
     }
 
     // Step 5: Transform Flex data to monday.com format
-    const columnValues = buildColumnValues(flexHeaderData, equipmentCount, clientItemId, venueItemId);
+    const columnValues = buildColumnValues(flexHeaderData, equipmentCount, clientItemId, venueItemId, flexElementId);
 
     console.log('Updating monday.com with values:', JSON.stringify(columnValues, null, 2));
 
@@ -415,7 +414,7 @@ const getValue = (flexHeaderData, fieldName) => {
 };
 
 // Enhanced buildColumnValues with Client/Venue linking and Equipment List ID
-function buildColumnValues(flexHeaderData, equipmentCount, clientItemId, venueItemId) {
+function buildColumnValues(flexHeaderData, equipmentCount, clientItemId, venueItemId, flexElementId) {
   const columnValues = {};
 
   // Event Date (date_mm3xca9r)
@@ -437,10 +436,10 @@ function buildColumnValues(flexHeaderData, equipmentCount, clientItemId, venueIt
     columnValues.numeric_mm3xrd3e = parseFloat(actualCost);
   }
 
-  // Equipment List ID (text_mm3y7xwa)
-  const equipmentListId = getValue(flexHeaderData, 'equipmentListId');
-  if (equipmentListId) {
-    columnValues.text_mm3y7xwa = equipmentListId;
+  // 🆕 Equipment List ID (text_mm3y7xwa) - Write the UUID for Vibe app
+  if (flexElementId) {
+    columnValues.text_mm3y7xwa = flexElementId;
+    console.log(`✅ Writing Equipment List ID: ${flexElementId}`);
   }
 
   // Equipment Count (numeric_mm3zsgna)
