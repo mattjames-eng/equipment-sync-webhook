@@ -1,5 +1,5 @@
-// Flex Sync Webhook - COMPLETE VERSION v4
-// NEW: Logs full equipment data to see all available fields
+// Flex Sync Webhook - COMPLETE VERSION v5
+// FIXED: Equipment endpoint now uses codeList parameters
 
 export default async function handler(req, res) {
   // CORS headers
@@ -191,8 +191,19 @@ export default async function handler(req, res) {
     const flexHeaderData = await flexHeaderResponse.json();
     console.log('Flex header data received:', JSON.stringify(flexHeaderData, null, 2));
 
-    // Step 3: Fetch equipment list with ALL fields for testing
-    const flexEquipmentUrl = `${FLEX_BASE_URL}/api/financial-document-line-item/${flexElementId}/row-data/`;
+    // Step 3: Fetch equipment list with specific fields
+    const equipmentFields = [
+      'quantity',
+      'description',
+      'unitPrice',
+      'totalPrice',
+      'inventoryModel',
+      'category',
+      'notes'
+    ];
+
+    const equipmentCodeList = equipmentFields.map(field => `codeList=${field}`).join('&');
+    const flexEquipmentUrl = `${FLEX_BASE_URL}/api/financial-document-line-item/${flexElementId}/row-data/?${equipmentCodeList}`;
     
     let equipmentCount = 0;
     try {
@@ -220,7 +231,9 @@ export default async function handler(req, res) {
         
         console.log(`✅ Fetched ${equipmentCount} equipment items from Flex`);
       } else {
+        const errorText = await flexEquipmentResponse.text();
         console.warn(`⚠️ Equipment fetch failed with status ${flexEquipmentResponse.status}`);
+        console.warn(`⚠️ Error response: ${errorText}`);
       }
     } catch (equipError) {
       console.warn('❌ Equipment fetch error:', equipError.message);
