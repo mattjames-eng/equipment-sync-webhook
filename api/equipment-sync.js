@@ -1,5 +1,5 @@
-// Flex Sync Webhook - COMPLETE FIXED VERSION v3
-// NEW: Writes flexElementId (UUID) to Equipment List ID column for Vibe app
+// Flex Sync Webhook - COMPLETE VERSION v4
+// NEW: Logs full equipment data to see all available fields
 
 export default async function handler(req, res) {
   // CORS headers
@@ -191,8 +191,8 @@ export default async function handler(req, res) {
     const flexHeaderData = await flexHeaderResponse.json();
     console.log('Flex header data received:', JSON.stringify(flexHeaderData, null, 2));
 
-    // Step 3: Fetch equipment list count
-    const flexEquipmentUrl = `${FLEX_BASE_URL}/api/financial-document-line-item/${flexElementId}/row-data/?codeList=quantity`;
+    // Step 3: Fetch equipment list with ALL fields for testing
+    const flexEquipmentUrl = `${FLEX_BASE_URL}/api/financial-document-line-item/${flexElementId}/row-data/`;
     
     let equipmentCount = 0;
     try {
@@ -209,6 +209,15 @@ export default async function handler(req, res) {
       if (flexEquipmentResponse.ok) {
         const flexEquipmentData = await flexEquipmentResponse.json();
         equipmentCount = Array.isArray(flexEquipmentData) ? flexEquipmentData.length : 0;
+        
+        // 🆕 LOG THE FULL RESPONSE TO SEE ALL AVAILABLE FIELDS
+        console.log('📋 FULL EQUIPMENT DATA:', JSON.stringify(flexEquipmentData, null, 2));
+        
+        // 🆕 LOG JUST THE FIRST ITEM TO SEE STRUCTURE CLEARLY
+        if (Array.isArray(flexEquipmentData) && flexEquipmentData.length > 0) {
+          console.log('📦 FIRST EQUIPMENT ITEM STRUCTURE:', JSON.stringify(flexEquipmentData[0], null, 2));
+        }
+        
         console.log(`✅ Fetched ${equipmentCount} equipment items from Flex`);
       } else {
         console.warn(`⚠️ Equipment fetch failed with status ${flexEquipmentResponse.status}`);
@@ -283,7 +292,7 @@ export default async function handler(req, res) {
   }
 }
 
-// 🆕 IMPROVED: Better duplicate detection with fuzzy matching
+// Better duplicate detection with fuzzy matching
 async function findOrCreateContact(apiKey, boardId, companyName, companyType) {
   // Clean up the company name for better matching
   const cleanName = companyName.trim();
@@ -436,7 +445,7 @@ function buildColumnValues(flexHeaderData, equipmentCount, clientItemId, venueIt
     columnValues.numeric_mm3xrd3e = parseFloat(actualCost);
   }
 
-  // 🆕 Equipment List ID (text_mm3y7xwa) - Write the UUID for Vibe app
+  // Equipment List ID (text_mm3y7xwa) - Write the UUID for Vibe app
   if (flexElementId) {
     columnValues.text_mm3y7xwa = flexElementId;
     console.log(`✅ Writing Equipment List ID: ${flexElementId}`);
