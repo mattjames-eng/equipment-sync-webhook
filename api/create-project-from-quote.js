@@ -10,9 +10,11 @@
  * 3. Extracts clean contact UUID strings, filtering out literal key titles (FIX)
  * 4. Resolves human-readable text identities via /api/contact/{uuid}/identity
  * 5. Matches names against the monday Contacts board and links relations inline
+ * 6. SEARCHES for existing project by Flex number to prevent duplicates
+ * 7. Updates existing project OR creates new one atomically
  * 
  * Author: Matt James, Antic Studios
- * Last Updated: June 9, 2026 - FIXED BUDGET SYNC (totalPrice field)
+ * Last Updated: June 14, 2026 - ADDED DUPLICATE PREVENTION
  */
 
 const MONDAY_API_URL = 'https://api.monday.com/v2';
@@ -58,7 +60,7 @@ function deepExtractName(obj) {
     return null;
 }
 
-// NEW: Extract numeric value from Flex ElementHeaderDataPoint wrapper
+// Extract numeric value from Flex ElementHeaderDataPoint wrapper
 function extractFlexNumericValue(obj) {
     if (!obj) return 0;
     if (typeof obj === 'number') return obj;
@@ -109,6 +111,45 @@ async function findContactInMondayRegistry(searchText) {
     }
 }
 
+// NEW: Search for existing project by Flex quote number to prevent duplicates
+async function findExistingProjectByFlexNumber(flexNumber) {
+    if (!flexNumber) return null;
+    console.log(`🔎 Checking for existing project with Flex number: "${flexNumber}"`);
+
+    // Query the Projects board filtering by the Flex Quote Number column (text_mm3x2yr6)
+    const query = `query {
+        boards(ids: [${PROJECTS_BOARD_ID}]) {
+            items_page(limit: 10, query_params: { rules: [{ column_id: "text_mm3x2yr6", compare_value: ["${flexNumber.replace(/"/g, '\\"')}"], operator: any_of }] }) {
+                items {
+                    id
+                    name
+                }
+            }
+        }
+    }`;
+
+    try {
+        const response = await fetch(MONDAY_API_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_KEY },
+            body: JSON.stringify({ query })
+        });
+        const result = await response.json();
+        const items = result.data?.boards?.[0]?.items_page?.items || [];
+
+        if (items.length > 0) {
+            console.log(`✅ Found existing project: "${items[0].name}" (ID: ${items[0].id})`);
+            return items[0].id;
+        }
+        
+        console.log(`➕ No existing project found - will create new`);
+        return null;
+    } catch (e) {
+        console.error(`❌ Duplicate check failed:`, e);
+        return null;
+    }
+}
+
 export default async function handler(req, res) {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
@@ -132,7 +173,7 @@ export default async function handler(req, res) {
 
         const internalId = results[0].id || results[0].elementId;
 
-        // FIXED: Use correct Flex API field codes (totalPrice instead of totalEstimate)
+        // Fetch Flex quote data
         const dataUrl = `${FLEX_BASE_URL}/api/element/${internalId}/header-data?codeList=elementNumber,name,clientId,venueId,eventDate,totalPrice,notes,equipmentList`;
         const dataResponse = await fetch(dataUrl, { headers: { 'X-Auth-Token': FLEX_API_KEY, 'Accept': 'application/json' }});
         if (!dataResponse.ok) throw new Error(`Flex header data mapping path failed: ${dataResponse.status}`);
@@ -150,7 +191,6 @@ export default async function handler(req, res) {
         const quoteNumber = deepExtractName(data?.elementNumber) || String(quoteId);
         const projectName = deepExtractName(data?.name) || 'Untitled Project';
         
-        // FIXED: Extract numeric value from Flex ElementHeaderDataPoint wrapper
         const totalEstimate = extractFlexNumericValue(data?.totalPrice);
         console.log(`💰 BUDGET EXTRACTED: ${totalEstimate} from Flex field 'totalPrice'`);
         
@@ -162,7 +202,10 @@ export default async function handler(req, res) {
         const matchedClientId = await findContactInMondayRegistry(clientResolvedName);
         const matchedVenueId = await findContactInMondayRegistry(venueResolvedName);
 
-        // STEP 4: Build the unified row mapping data frame object
+        // STEP 4: Check for existing project by Flex number (DUPLICATE PREVENTION)
+        const existingProjectId = await findExistingProjectByFlexNumber(quoteNumber);
+
+        // STEP 5: Build the unified row mapping data frame object
         const columnValues = {
             text_mm3x2yr6: quoteNumber,
             text_mm435rt8: clientResolvedName, // Prints real text to backup column
@@ -185,19 +228,63 @@ export default async function handler(req, res) {
             if (dateMatch) columnValues.date_mm3xca9r = { date: dateMatch[1] };
         }
 
-        // STEP 5: Push the fully linked row directly to production board views
-        const createMutation = `mutation { create_item(board_id: ${PROJECTS_BOARD_ID}, item_name: "${projectName.replace(/"/g, '\\"')}", column_values: ${JSON.stringify(JSON.stringify(columnValues))}) { id } }`;
-        const createResponse = await fetch(MONDAY_API_URL, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_KEY },
-            body: JSON.stringify({ query: createMutation })
-        });
-       
-        const createResult = await createResponse.json();
-        if (createResult.errors) throw new Error(`monday row initialization rejected: ${JSON.stringify(createResult.errors)}`);
+        let resultItemId;
+        let operationType;
 
-        console.log(`🎉 SUCCESS: Master atomic initialization complete for item ID: ${createResult.data.create_item.id}`);
-        return res.status(200).json({ success: true, projectId: createResult.data.create_item.id });
+        // STEP 6: Update existing OR create new project
+        if (existingProjectId) {
+            // UPDATE EXISTING PROJECT
+            console.log(`🔄 Updating existing project ID: ${existingProjectId}`);
+            
+            const updateMutation = `mutation {
+                change_multiple_column_values(
+                    item_id: ${existingProjectId},
+                    board_id: ${PROJECTS_BOARD_ID},
+                    column_values: ${JSON.stringify(JSON.stringify(columnValues))}
+                ) {
+                    id
+                    name
+                }
+            }`;
+
+            const updateResponse = await fetch(MONDAY_API_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_KEY },
+                body: JSON.stringify({ query: updateMutation })
+            });
+            
+            const updateResult = await updateResponse.json();
+            if (updateResult.errors) throw new Error(`monday row update rejected: ${JSON.stringify(updateResult.errors)}`);
+
+            resultItemId = updateResult.data.change_multiple_column_values.id;
+            operationType = 'UPDATED';
+            console.log(`✅ SUCCESS: Project updated - ID: ${resultItemId}`);
+
+        } else {
+            // CREATE NEW PROJECT
+            console.log(`➕ Creating new project: "${projectName}"`);
+            
+            const createMutation = `mutation { create_item(board_id: ${PROJECTS_BOARD_ID}, item_name: "${projectName.replace(/"/g, '\\"')}", column_values: ${JSON.stringify(JSON.stringify(columnValues))}) { id } }`;
+            const createResponse = await fetch(MONDAY_API_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_KEY },
+                body: JSON.stringify({ query: createMutation })
+            });
+            
+            const createResult = await createResponse.json();
+            if (createResult.errors) throw new Error(`monday row initialization rejected: ${JSON.stringify(createResult.errors)}`);
+
+            resultItemId = createResult.data.create_item.id;
+            operationType = 'CREATED';
+            console.log(`✅ SUCCESS: New project created - ID: ${resultItemId}`);
+        }
+
+        return res.status(200).json({ 
+            success: true, 
+            projectId: resultItemId,
+            operation: operationType,
+            flexNumber: quoteNumber
+        });
 
     } catch (error) {
         console.error('❌ Sync Pipeline Dropout:', error);
