@@ -1,8 +1,10 @@
 /**
- * Flex Quote → monday.com Master Atomic Sync Pipeline
+ * Flex Quote → monday.com Master Atomic Sync Pipeline + Google Drive Folder Creation
  * 
  * This endpoint handles the entire creation and relationship binding loop 
  * in a single operational step to bypass background automation delays.
+ * 
+ * NEW: Creates Google Drive folder structure for each project
  * 
  * Workflow:
  * 1. Safely queries Flex via GET /api/search layout guidelines
@@ -12,9 +14,10 @@
  * 5. Matches names against the monday Contacts board and links relations inline
  * 6. SEARCHES for existing project by Flex number to prevent duplicates
  * 7. Updates existing project OR creates new one atomically
+ * 8. Creates Google Drive folder structure from template
  * 
  * Author: Matt James, Antic Studios
- * Last Updated: June 14, 2026 - FIXED NESTED DATA EXTRACTION
+ * Last Updated: June 14, 2026 - ADDED GOOGLE DRIVE INTEGRATION
  */
 
 const MONDAY_API_URL = 'https://api.monday.com/v2';
@@ -26,6 +29,9 @@ const FLEX_API_KEY = process.env.FLEX_API_KEY_QUOTES || process.env.FLEX_API_KEY
 const PROJECTS_BOARD_ID = '18415679761';
 const CONTACTS_BOARD_ID = '18415573401';
 const PM_DEFAULT_ID = '102097223'; 
+
+// NEW: Google Drive folder creation endpoint
+const GOOGLE_APPS_SCRIPT_URL = process.env.GOOGLE_APPS_SCRIPT_URL || null;
 
 // Precision utility to extract true 36-character UUID tokens from nested Flex metadata structures
 function extractContactUuid(obj) {
@@ -127,7 +133,6 @@ async function findExistingProjectByFlexNumber(flexNumber) {
     if (!flexNumber) return null;
     console.log(`🔎 Checking for existing project with Flex number: "${flexNumber}"`);
 
-    // Query the Projects board filtering by the Flex Quote Number column (text_mm3x2yr6)
     const query = `query {
         items_page_by_column_values(
             limit: 10,
@@ -153,9 +158,6 @@ async function findExistingProjectByFlexNumber(flexNumber) {
             body: JSON.stringify({ query })
         });
         const result = await response.json();
-        
-        console.log(`🔍 Duplicate check response:`, JSON.stringify(result, null, 2));
-        
         const items = result.data?.items_page_by_column_values?.items || [];
 
         if (items.length > 0) {
@@ -167,6 +169,43 @@ async function findExistingProjectByFlexNumber(flexNumber) {
         return null;
     } catch (e) {
         console.error(`❌ Duplicate check failed:`, e);
+        return null;
+    }
+}
+
+// NEW: Create Google Drive folder structure for project
+async function createProjectFolder(projectName, projectId, clientName, eventDate, pmEmail) {
+    if (!GOOGLE_APPS_SCRIPT_URL) {
+        console.log(`⚠️ Google Apps Script URL not configured - skipping folder creation`);
+        return null;
+    }
+
+    try {
+        console.log(`📁 Creating Google Drive folder for: ${projectName}`);
+        
+        const response = await fetch(GOOGLE_APPS_SCRIPT_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                projectName: projectName,
+                projectId: projectId,
+                clientName: clientName,
+                eventDate: eventDate,
+                pmEmail: pmEmail
+            })
+        });
+
+        const result = await response.json();
+        
+        if (result.success) {
+            console.log(`✅ Google Drive folder created: ${result.folderUrl}`);
+            return result;
+        } else {
+            console.error(`❌ Google Drive folder creation failed: ${result.error}`);
+            return null;
+        }
+    } catch (e) {
+        console.error(`❌ Google Drive API error:`, e);
         return null;
     }
 }
@@ -200,32 +239,21 @@ export default async function handler(req, res) {
         if (!dataResponse.ok) throw new Error(`Flex header data mapping path failed: ${dataResponse.status}`);
 
         const data = await dataResponse.json();
-        
-        console.log(`📦 RAW FLEX DATA:`, JSON.stringify(data, null, 2));
 
         // STEP 1: Precision isolate the real wrapped 36-character UUID strings
         const clientUuid = extractContactUuid(data?.clientId);
         const venueUuid = extractContactUuid(data?.venueId);
-        
-        console.log(`🔑 Extracted UUIDs -> Client: "${clientUuid}" | Venue: "${venueUuid}"`);
 
         // STEP 2: Resolve true corporate titles from the isolated system addresses
-        // First try to extract display names directly from Flex data as fallback
         const clientFallback = deepExtractName(data?.clientId) || '';
         const venueFallback = deepExtractName(data?.venueId) || '';
-        
-        console.log(`📝 Fallback names -> Client: "${clientFallback}" | Venue: "${venueFallback}"`);
         
         const clientResolvedName = await fetchContactNameFromFlex(clientUuid, clientFallback);
         const venueResolvedName = await fetchContactNameFromFlex(venueUuid, venueFallback);
 
         const quoteNumber = deepExtractName(data?.elementNumber) || String(quoteId);
         const projectName = deepExtractName(data?.name) || 'Untitled Project';
-        
         const totalEstimate = extractFlexNumericValue(data?.totalPrice);
-        console.log(`💰 BUDGET EXTRACTED: ${totalEstimate} from Flex field 'totalPrice'`);
-        console.log(`💰 RAW totalPrice data:`, JSON.stringify(data?.totalPrice, null, 2));
-        
         const notesText = deepExtractName(data?.notes) || 'No Notes';
 
         console.log(`🎯 RESOLVED IDENTITY -> Client: "${clientResolvedName}" | Venue: "${venueResolvedName}"`);
@@ -240,8 +268,8 @@ export default async function handler(req, res) {
         // STEP 5: Build the unified row mapping data frame object
         const columnValues = {
             text_mm3x2yr6: quoteNumber,
-            text_mm435rt8: clientResolvedName, // Prints real text to backup column
-            text_mm43r22q: venueResolvedName,  // Prints real text to backup column
+            text_mm435rt8: clientResolvedName,
+            text_mm43r22q: venueResolvedName,
             multiple_person_mm3xmbb2: { personsAndTeams: [{ id: parseInt(PM_DEFAULT_ID, 10), kind: 'person' }] },
             numeric_mm3xzncg: totalEstimate,
             long_text_mm3xfve1: notesText,
@@ -262,12 +290,12 @@ export default async function handler(req, res) {
 
         let resultItemId;
         let operationType;
+        let driveFolder = null;
 
         // STEP 6: Update existing OR create new project
         if (existingProjectId) {
             // UPDATE EXISTING PROJECT
             console.log(`🔄 Updating existing project ID: ${existingProjectId}`);
-            console.log(`📦 Column values to update:`, JSON.stringify(columnValues, null, 2));
             
             const updateMutation = `mutation {
                 change_multiple_column_values(
@@ -280,8 +308,6 @@ export default async function handler(req, res) {
                 }
             }`;
 
-            console.log(`🔧 Update mutation:`, updateMutation);
-
             const updateResponse = await fetch(MONDAY_API_URL, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_KEY },
@@ -289,8 +315,6 @@ export default async function handler(req, res) {
             });
             
             const updateResult = await updateResponse.json();
-            console.log(`📥 Update response:`, JSON.stringify(updateResult, null, 2));
-            
             if (updateResult.errors) throw new Error(`monday row update rejected: ${JSON.stringify(updateResult.errors)}`);
 
             resultItemId = updateResult.data.change_multiple_column_values.id;
@@ -314,13 +338,27 @@ export default async function handler(req, res) {
             resultItemId = createResult.data.create_item.id;
             operationType = 'CREATED';
             console.log(`✅ SUCCESS: New project created - ID: ${resultItemId}`);
+
+            // STEP 7: Create Google Drive folder for NEW projects only
+            const eventDateStr = columnValues.date_mm3xca9r?.date || '';
+            driveFolder = await createProjectFolder(
+                projectName,
+                resultItemId,
+                clientResolvedName,
+                eventDateStr,
+                'matt.james@anticstudios.com' // Replace with actual PM email lookup
+            );
         }
 
         return res.status(200).json({ 
             success: true, 
             projectId: resultItemId,
             operation: operationType,
-            flexNumber: quoteNumber
+            flexNumber: quoteNumber,
+            driveFolder: driveFolder ? {
+                folderId: driveFolder.folderId,
+                folderUrl: driveFolder.folderUrl
+            } : null
         });
 
     } catch (error) {
