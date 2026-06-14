@@ -14,7 +14,7 @@
  * 7. Updates existing project OR creates new one atomically
  * 
  * Author: Matt James, Antic Studios
- * Last Updated: June 14, 2026 - ADDED DUPLICATE PREVENTION + ENHANCED DEBUG
+ * Last Updated: June 14, 2026 - FIXED NESTED DATA EXTRACTION
  */
 
 const MONDAY_API_URL = 'https://api.monday.com/v2';
@@ -32,8 +32,13 @@ function extractContactUuid(obj) {
     if (!obj) return null;
     if (typeof obj === 'string' && obj.trim().length === 36) return obj.trim();
     if (typeof obj === 'object') {
+        // NEW: Handle nested data.id structure from Flex API
+        if (obj.data && typeof obj.data === 'object' && obj.data.id) {
+            return obj.data.id.trim();
+        }
         if (obj.data && typeof obj.data === 'string' && obj.data.trim().length === 36) return obj.data.trim();
         if (obj.value && typeof obj.value === 'string' && obj.value.trim().length === 36) return obj.value.trim();
+        if (obj.id && typeof obj.id === 'string' && obj.id.trim().length === 36) return obj.id.trim();
         for (const key in obj) {
             if (typeof obj[key] === 'string' && obj[key].trim().length === 36) return obj[key].trim();
         }
@@ -47,7 +52,13 @@ function deepExtractName(obj) {
     if (typeof obj === 'string') return obj.trim();
     if (Array.isArray(obj)) return deepExtractName(obj[0]);
     if (typeof obj === 'object') {
+        // NEW: Handle nested data.name or data.preferredDisplayString structure from Flex API
+        if (obj.data && typeof obj.data === 'object') {
+            if (obj.data.preferredDisplayString) return String(obj.data.preferredDisplayString).trim();
+            if (obj.data.name) return String(obj.data.name).trim();
+        }
         if (obj.displayString) return String(obj.displayString).trim();
+        if (obj.preferredDisplayString) return String(obj.preferredDisplayString).trim();
         if (obj.name) return String(obj.name).trim();
         if (obj.value) return String(obj.value).trim();
         if (obj.text) return String(obj.text).trim();
