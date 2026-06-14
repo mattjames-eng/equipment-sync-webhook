@@ -185,8 +185,12 @@ export default async function handler(req, res) {
         const venueUuid = extractContactUuid(data?.venueId);
 
         // STEP 2: Resolve true corporate titles from the isolated system addresses
-        const clientResolvedName = await fetchContactNameFromFlex(clientUuid, 'Kannibalen records');
-        const venueResolvedName = await fetchContactNameFromFlex(venueUuid, 'The Armory');
+        // First try to extract display names directly from Flex data as fallback
+        const clientFallback = deepExtractName(data?.clientId) || '';
+        const venueFallback = deepExtractName(data?.venueId) || '';
+        
+        const clientResolvedName = await fetchContactNameFromFlex(clientUuid, clientFallback);
+        const venueResolvedName = await fetchContactNameFromFlex(venueUuid, venueFallback);
 
         const quoteNumber = deepExtractName(data?.elementNumber) || String(quoteId);
         const projectName = deepExtractName(data?.name) || 'Untitled Project';
