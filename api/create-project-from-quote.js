@@ -14,7 +14,7 @@
  * 7. Updates existing project OR creates new one atomically
  * 
  * Author: Matt James, Antic Studios
- * Last Updated: June 14, 2026 - ADDED DUPLICATE PREVENTION + DEBUG LOGGING
+ * Last Updated: June 14, 2026 - ADDED DUPLICATE PREVENTION + ENHANCED DEBUG
  */
 
 const MONDAY_API_URL = 'https://api.monday.com/v2';
@@ -189,15 +189,21 @@ export default async function handler(req, res) {
         if (!dataResponse.ok) throw new Error(`Flex header data mapping path failed: ${dataResponse.status}`);
 
         const data = await dataResponse.json();
+        
+        console.log(`📦 RAW FLEX DATA:`, JSON.stringify(data, null, 2));
 
         // STEP 1: Precision isolate the real wrapped 36-character UUID strings
         const clientUuid = extractContactUuid(data?.clientId);
         const venueUuid = extractContactUuid(data?.venueId);
+        
+        console.log(`🔑 Extracted UUIDs -> Client: "${clientUuid}" | Venue: "${venueUuid}"`);
 
         // STEP 2: Resolve true corporate titles from the isolated system addresses
         // First try to extract display names directly from Flex data as fallback
         const clientFallback = deepExtractName(data?.clientId) || '';
         const venueFallback = deepExtractName(data?.venueId) || '';
+        
+        console.log(`📝 Fallback names -> Client: "${clientFallback}" | Venue: "${venueFallback}"`);
         
         const clientResolvedName = await fetchContactNameFromFlex(clientUuid, clientFallback);
         const venueResolvedName = await fetchContactNameFromFlex(venueUuid, venueFallback);
@@ -207,6 +213,7 @@ export default async function handler(req, res) {
         
         const totalEstimate = extractFlexNumericValue(data?.totalPrice);
         console.log(`💰 BUDGET EXTRACTED: ${totalEstimate} from Flex field 'totalPrice'`);
+        console.log(`💰 RAW totalPrice data:`, JSON.stringify(data?.totalPrice, null, 2));
         
         const notesText = deepExtractName(data?.notes) || 'No Notes';
 
