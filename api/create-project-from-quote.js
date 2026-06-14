@@ -14,7 +14,7 @@
  * 7. Updates existing project OR creates new one atomically
  * 
  * Author: Matt James, Antic Studios
- * Last Updated: June 14, 2026 - ADDED DUPLICATE PREVENTION
+ * Last Updated: June 14, 2026 - ADDED DUPLICATE PREVENTION + DEBUG LOGGING
  */
 
 const MONDAY_API_URL = 'https://api.monday.com/v2';
@@ -118,12 +118,19 @@ async function findExistingProjectByFlexNumber(flexNumber) {
 
     // Query the Projects board filtering by the Flex Quote Number column (text_mm3x2yr6)
     const query = `query {
-        boards(ids: [${PROJECTS_BOARD_ID}]) {
-            items_page(limit: 10, query_params: { rules: [{ column_id: "text_mm3x2yr6", compare_value: ["${flexNumber.replace(/"/g, '\\"')}"], operator: any_of }] }) {
-                items {
-                    id
-                    name
+        items_page_by_column_values(
+            limit: 10,
+            board_id: ${PROJECTS_BOARD_ID},
+            columns: [
+                {
+                    column_id: "text_mm3x2yr6",
+                    column_values: ["${flexNumber.replace(/"/g, '\\"')}"]
                 }
+            ]
+        ) {
+            items {
+                id
+                name
             }
         }
     }`;
@@ -135,7 +142,10 @@ async function findExistingProjectByFlexNumber(flexNumber) {
             body: JSON.stringify({ query })
         });
         const result = await response.json();
-        const items = result.data?.boards?.[0]?.items_page?.items || [];
+        
+        console.log(`🔍 Duplicate check response:`, JSON.stringify(result, null, 2));
+        
+        const items = result.data?.items_page_by_column_values?.items || [];
 
         if (items.length > 0) {
             console.log(`✅ Found existing project: "${items[0].name}" (ID: ${items[0].id})`);
@@ -239,6 +249,7 @@ export default async function handler(req, res) {
         if (existingProjectId) {
             // UPDATE EXISTING PROJECT
             console.log(`🔄 Updating existing project ID: ${existingProjectId}`);
+            console.log(`📦 Column values to update:`, JSON.stringify(columnValues, null, 2));
             
             const updateMutation = `mutation {
                 change_multiple_column_values(
@@ -251,6 +262,8 @@ export default async function handler(req, res) {
                 }
             }`;
 
+            console.log(`🔧 Update mutation:`, updateMutation);
+
             const updateResponse = await fetch(MONDAY_API_URL, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_KEY },
@@ -258,6 +271,8 @@ export default async function handler(req, res) {
             });
             
             const updateResult = await updateResponse.json();
+            console.log(`📥 Update response:`, JSON.stringify(updateResult, null, 2));
+            
             if (updateResult.errors) throw new Error(`monday row update rejected: ${JSON.stringify(updateResult.errors)}`);
 
             resultItemId = updateResult.data.change_multiple_column_values.id;
