@@ -266,28 +266,88 @@ export default async function handler(req, res) {
         const internalId = quoteUUID || resultArray[0].id || resultArray[0].elementId;
         console.log(`\n🔗 Internal ID for header-data fetch: ${internalId}`);
 
-        // ===== STEP 1.6: FALLBACK — Event Folder UUID via element endpoint =====
-        if (!eventFolderUUID) {
-            try {
-                console.log(`🔍 Fetching element to find parentElementId (Event Folder UUID)...`);
-                const elemRes = await fetch(`${FLEX_BASE_URL}/api/element/${internalId}`, {
-                    headers: { 'X-Auth-Token': FLEX_API_KEY }
-                });
-                if (elemRes.ok) {
-                    const elemData = await elemRes.json();
-                    eventFolderUUID = elemData.parentElementId || elemData?.data?.parentElementId || null;
-                    if (eventFolderUUID) {
-                        console.log(`✅ Event Folder UUID from element fetch: ${eventFolderUUID}`);
-                    } else {
-                        console.warn('⚠️ No parentElementId found — quote may be top-level');
-                    }
-                } else {
-                    console.warn(`⚠️ Element fetch returned ${elemRes.status}`);
-                }
-            } catch (e) {
-                console.warn('⚠️ Element fallback fetch failed:', e.message);
+       // ===== STEP 1.6: FALLBACK — Event Folder UUID =====
+// FIX: /api/element returns 405 for financial docs. Use /api/financial-document instead.
+if (!eventFolderUUID) {
+    try {
+        console.log(`🔍 Fetching financial-document to find parent Event Folder UUID...`);
+        const fdRes = await fetch(`${FLEX_BASE_URL}/api/financial-document/${internalId}`, {
+            headers: { 'X-Auth-Token': FLEX_API_KEY, 'Accept': 'application/json' }
+        });
+        console.log(`  financial-document status: ${fdRes.status}`);
+        if (fdRes.ok) {
+            const fdData = await fdRes.json();
+            // Log the full response so we can see the exact shape
+            console.log('📄 financial-document response:', JSON.stringify(fdData, null, 2));
+            
+            // Try every known field name Flex uses for the parent
+            eventFolderUUID = fdData.parentElementId
+                           || fdData.parentId
+                           || fdData.element?.id
+                           || fdData.elementFolder?.id
+                           || fdData.folder?.id
+                           || null;
+            
+            if (eventFolderUUID) {
+                console.log(`✅ Event Folder UUID from financial-document: ${eventFolderUUID}`);
+            } else {
+                console.warn('⚠️ parentElementId not found — top-level keys were:', Object.keys(fdData));
             }
+        } else {
+            console.warn(`⚠️ financial-document endpoint returned ${fdRes.status}`);
         }
+    } catch (e) {
+        console.warn('⚠️ financial-document fetch failed:', e.message);
+    }
+}
+
+// ===== STEP 1.7: FALLBACK — Equipment List UUID =====
+// FIX: Equipment list is a SIBLING of the quote, not a child.
+// Both live under the Event Folder — so we need eventFolderUUID first,
+// then scan its children for the equipment list.
+if (!equipmentListUUID) {
+    const scanId = eventFolderUUID || internalId;
+    const label  = eventFolderUUID ? 'event folder' : 'quote (fallback)';
+    console.log(`🔍 Scanning equipment lists under ${label}: ${scanId}`);
+
+    // Try every known Flex endpoint + param name combo
+    const urlsToTry = [
+        `${FLEX_BASE_URL}/api/equipment-list?elementId=${scanId}&page=0&size=10`,
+        `${FLEX_BASE_URL}/api/equipment-list?parentElementId=${scanId}&page=0&size=10`,
+        `${FLEX_BASE_URL}/api/pull-sheet?elementId=${scanId}&page=0&size=10`,
+        `${FLEX_BASE_URL}/api/pull-sheet?parentElementId=${scanId}&page=0&size=10`,
+        `${FLEX_BASE_URL}/api/element/${scanId}/equipment-list`,
+        `${FLEX_BASE_URL}/api/element/${scanId}/pull-sheet`,
+    ];
+
+    for (const url of urlsToTry) {
+        try {
+            const eqRes = await fetch(url, {
+                headers: { 'X-Auth-Token': FLEX_API_KEY, 'Accept': 'application/json' }
+            });
+            console.log(`  [${eqRes.status}] ${url}`);
+            if (eqRes.ok) {
+                const eqData  = await eqRes.json();
+                // Log so we can see the exact shape
+                console.log('📋 Equipment list response:', JSON.stringify(eqData, null, 2));
+                const eqItems = Array.isArray(eqData) ? eqData : (eqData.content || eqData.data || []);
+                if (eqItems.length > 0) {
+                    equipmentListUUID = eqItems[0].id;
+                    console.log(`✅ Equipment List UUID: ${equipmentListUUID}`);
+                    break;
+                } else {
+                    console.warn('  ↳ Returned 200 but no items in result');
+                }
+            }
+        } catch (e) {
+            console.warn(`  ↳ Fetch error: ${e.message}`);
+        }
+    }
+
+    if (!equipmentListUUID) {
+        console.warn('⚠️ All equipment list endpoint attempts exhausted — UUID not found');
+    }
+}
 
         // ===== STEP 1.7: FALLBACK — Equipment List UUID via filter endpoint =====
         if (!equipmentListUUID) {
