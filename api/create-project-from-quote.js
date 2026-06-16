@@ -297,38 +297,70 @@ export default async function handler(req, res) {
         const internalId = quoteUUID || resultArray[0].id || resultArray[0].elementId;
         console.log(`\n🔗 Internal ID for header-data fetch: ${internalId}`);
 
-        // ===== STEP 1.6: FALLBACK — Event Folder UUID =====
-        // FIX: /api/element returns 405 for financial docs. Use /api/financial-document instead.
-        if (!eventFolderUUID) {
+         // ===== STEP 1.6: FALLBACK — Event Folder + Equipment List via Name Search =====
+        // Flex search only returned the quote (financial-document) for the quote number.
+        // The event folder and equipment list are siblings under that folder and won't
+        // appear in a barcode search. Strategy: strip the quote-specific suffix from the
+        // quote name and search Flex by the base event name. This should surface the
+        // event folder (and possibly the equipment list) as separate result entries.
+        // We run this block whenever either UUID is still missing, since one search
+        // can potentially fill both gaps at once.
+        if (!eventFolderUUID || !equipmentListUUID) {
             try {
-                console.log(`🔍 Fetching financial-document to find parent Event Folder UUID...`);
-                const fdRes = await fetch(`${FLEX_BASE_URL}/api/financial-document/${internalId}`, {
-                    headers: { 'X-Auth-Token': FLEX_API_KEY, 'Accept': 'application/json' }
-                });
-                console.log(`  financial-document status: ${fdRes.status}`);
-                if (fdRes.ok) {
-                    const fdData = await fdRes.json();
-                    // Log full response so we can see the exact shape if UUID is still missing
-                    console.log('📄 financial-document response:', JSON.stringify(fdData, null, 2));
+                // e.g. "Hoofbeat 2026 - Video Walls" → try "Hoofbeat 2026" first, then full name
+                const rawQuoteName  = resultArray[0]?.name || '';
+                const dashIndex     = rawQuoteName.lastIndexOf(' - ');
+                const strippedName  = dashIndex !== -1 ? rawQuoteName.substring(0, dashIndex).trim() : '';
+                const searchTerms   = [];
+                if (strippedName) searchTerms.push(strippedName);
+                if (rawQuoteName && rawQuoteName !== strippedName) searchTerms.push(rawQuoteName);
 
-                    // Try every known field name Flex uses for the parent folder
-                    eventFolderUUID = fdData.parentElementId
-                                   || fdData.parentId
-                                   || fdData.element?.id
-                                   || fdData.elementFolder?.id
-                                   || fdData.folder?.id
-                                   || null;
+                console.log(`\n🔍 STEP 1.6 — Searching for event folder by name. Terms to try: ${JSON.stringify(searchTerms)}`);
 
-                    if (eventFolderUUID) {
-                        console.log(`✅ Event Folder UUID from financial-document: ${eventFolderUUID}`);
-                    } else {
-                        console.warn('⚠️ parentElementId not found in financial-document — top-level keys were:', Object.keys(fdData));
+                for (const term of searchTerms) {
+                    if (eventFolderUUID && equipmentListUUID) break;
+
+                    console.log(`  🔍 Name search: "${term}"`);
+                    const nameSearchUrl = `${FLEX_BASE_URL}/api/search?searchText=${encodeURIComponent(term)}&searchTypes=all&includeClosed=true`;
+                    const nameSearchRes = await fetch(nameSearchUrl, {
+                        headers: { 'X-Auth-Token': FLEX_API_KEY, 'Accept': 'application/json' }
+                    });
+                    console.log(`  Name search status: ${nameSearchRes.status}`);
+
+                    if (!nameSearchRes.ok) {
+                        console.warn(`  ⚠️ Name search returned ${nameSearchRes.status} — skipping term`);
+                        continue;
                     }
-                } else {
-                    console.warn(`⚠️ financial-document endpoint returned ${fdRes.status}`);
+
+                    const nameSearchData = await nameSearchRes.json();
+                    console.log(`📁 Name search results for "${term}":`, JSON.stringify(nameSearchData, null, 2));
+
+                    const nameResults = Array.isArray(nameSearchData)
+                        ? nameSearchData
+                        : (nameSearchData.data || nameSearchData.content || nameSearchData.elements || []);
+
+                    for (const r of nameResults) {
+                        const domain = (r.domainId || r.domain || r.searchType || r.type || '').toLowerCase();
+                        const id     = r.id || r.elementId || r.uuid;
+                        const rName  = r.name || r.displayName || '(no name)';
+                        console.log(`    📦 domain="${domain}" | id=${id} | name="${rName}"`);
+
+                        if (!equipmentListUUID && ['equipment-list', 'pull-sheet', 'pullsheet'].includes(domain)) {
+                            equipmentListUUID = id;
+                            console.log(`    📋 → Equipment List UUID (from name search): ${id}`);
+
+                        } else if (!eventFolderUUID && ['project', 'event-folder', 'event_folder', 'folder', 'element'].includes(domain)) {
+                            eventFolderUUID = id;
+                            console.log(`    📁 → Event Folder UUID (from name search): ${id}`);
+                        }
+                    }
                 }
+
+                if (!eventFolderUUID)   console.warn('⚠️ Event Folder UUID still not found after name search');
+                if (!equipmentListUUID) console.warn('⚠️ Equipment List UUID still not found after name search');
+
             } catch (e) {
-                console.warn('⚠️ financial-document fetch failed:', e.message);
+                console.warn('⚠️ Step 1.6 name search failed:', e.message);
             }
         }
 
