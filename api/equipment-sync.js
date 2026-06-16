@@ -1,577 +1,492 @@
-// Flex Sync Webhook - COMPLETE VERSION v5
-// FIXED: Equipment endpoint now uses codeList parameters
+// ================================================================
+// Flex → monday.com Sync Webhook
+// Vercel Serverless Function
+//
+// Updated: June 16, 2026
+//
+// COLUMN MAP (Projects board 18415679761):
+//   text_mm466djv  → Event Folder UUID   (top-level parent in Flex)
+//   text_mm4cwasc  → Quote UUID          (financial document / quote)
+//   text_mm3y7xwa  → Equipment List UUID (pullsheet child document)
+//   text_mm3x2yr6  → Flex Project #      (e.g. "26-0112")
+//   text_mm435rt8  → Client Name (from Flex)
+//   text_mm43r22q  → Venue Name (from Flex)
+// ================================================================
 
-export default async function handler(req, res) {
-  // CORS headers
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+// ===== ENVIRONMENT VARIABLES =====
+const FLEX_API_KEY      = process.env.FLEX_API_KEY;
+const FLEX_BASE_URL     = process.env.FLEX_BASE_URL     || 'https://anticstudios.flexrentalsolutions.com/f5';
+const MONDAY_API_KEY    = process.env.MONDAY_API_KEY;
+const PROJECTS_BOARD_ID = process.env.PROJECTS_BOARD_ID || '18415679761';
+const CONTACTS_BOARD_ID = process.env.CONTACTS_BOARD_ID || '18415573401';
 
-  // Handle OPTIONS preflight
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end();
+// ================================================================
+// HELPER: Safely extract a value from a nested Flex response object
+// ================================================================
+function getValue(obj, key) {
+  if (!obj) return null;
+  const val = obj[key];
+  if (val !== undefined && val !== null) {
+    if (typeof val === 'object') return val.preferredDisplayString || val.id || null;
+    return val;
+  }
+  if (obj.data)   return getValue(obj.data,   key);
+  if (obj.result) return getValue(obj.result, key);
+  return null;
+}
+
+// ================================================================
+// HELPER: Post a GraphQL mutation/query to monday.com
+// ================================================================
+async function mondayMutation(query) {
+  const res = await fetch('https://api.monday.com/v2', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_KEY },
+    body:    JSON.stringify({ query })
+  });
+  return res.json();
+}
+
+// ================================================================
+// HELPER: Update Portal Status + optional error text on the item
+// ================================================================
+async function updateMondayStatus(itemId, boardId, statusLabel, errorText = '') {
+  const cols = { color_mm43kvp3: { label: statusLabel } };
+  if (errorText) cols.text_mm3zvvqk = errorText.substring(0, 500);
+  try {
+    await mondayMutation(`
+      mutation {
+        change_multiple_column_values(
+          board_id: ${boardId},
+          item_id: ${itemId},
+          column_values: ${JSON.stringify(JSON.stringify(cols))}
+        ) { id }
+      }
+    `);
+  } catch (e) {
+    console.error('⚠️ Failed to update monday status:', e.message);
+  }
+}
+
+// ================================================================
+// HELPER: Search Contacts & Companies board by name.
+// Returns the monday.com item ID or null.
+// ================================================================
+async function findContactInMonday(name) {
+  if (!name) return null;
+  const cleanName = name.replace(/"/g, '\\"');
+  try {
+    const result = await mondayMutation(`
+      query {
+        items_page_by_column_values(
+          limit: 5,
+          board_id: ${CONTACTS_BOARD_ID},
+          columns: [{ column_id: "name", column_values: ["${cleanName}"] }]
+        ) { items { id name } }
+      }
+    `);
+    return result?.data?.items_page_by_column_values?.items?.[0]?.id || null;
+  } catch (e) {
+    console.warn(`Contact lookup failed for "${name}":`, e.message);
+    return null;
+  }
+}
+
+// ================================================================
+// HELPER: Build the column_values object for the monday.com update.
+// Each UUID goes to its dedicated column — no mixing.
+// ================================================================
+function buildColumnValues(flexHeaderData, equipmentCount, clientItemId, venueItemId, quoteUUID, eventFolderUUID, equipmentListUUID) {
+  const cols = {};
+
+  // ----- Event Date -----
+  const eventDate = getValue(flexHeaderData, 'eventDate') || getValue(flexHeaderData, 'showStartDate');
+  if (eventDate) cols.date_mm3xca9r = { date: eventDate.split('T')[0] };
+
+  // ----- Prep / Load-In Date -----
+  const prepDate = getValue(flexHeaderData, 'prepDate') || getValue(flexHeaderData, 'loadInDate');
+  if (prepDate) cols.date_mm4at0qc = { date: prepDate.split('T')[0] };
+
+  // ----- Return Date -----
+  const returnDate = getValue(flexHeaderData, 'returnDate') || getValue(flexHeaderData, 'loadOutDate');
+  if (returnDate) cols.date_mm4a7fn6 = { date: returnDate.split('T')[0] };
+
+  // ----- Estimated Budget -----
+  const budget = getValue(flexHeaderData, 'budgetedRevenue') || getValue(flexHeaderData, 'resolvedBudgetedRevenue');
+  if (budget && parseFloat(budget) > 0) cols.numeric_mm3xzncg = parseFloat(budget);
+
+  // ----- Actual Spend -----
+  const actual = getValue(flexHeaderData, 'actualRevenue') || getValue(flexHeaderData, 'resolvedActualRevenue');
+  if (actual && parseFloat(actual) > 0) cols.numeric_mm3xrd3e = parseFloat(actual);
+
+  // ======================================================
+  //   THE THREE FLEX UUIDs — each goes to its own column
+  // ======================================================
+
+  // 1. Event Folder UUID — top-level parent project in Flex
+  if (eventFolderUUID) {
+    cols.text_mm466djv = eventFolderUUID;
+    console.log(`✅ Event Folder UUID  → text_mm466djv : ${eventFolderUUID}`);
+  } else {
+    console.warn('⚠️ No Event Folder UUID — text_mm466djv not written');
   }
 
-  // Only accept POST requests
+  // 2. Quote UUID — the financial document / quote element
+  if (quoteUUID) {
+    cols.text_mm4cwasc = quoteUUID;
+    console.log(`✅ Quote UUID         → text_mm4cwasc  : ${quoteUUID}`);
+  }
+
+  // 3. Equipment List UUID — the pullsheet child document
+  if (equipmentListUUID) {
+    cols.text_mm3y7xwa = equipmentListUUID;
+    console.log(`✅ Equip List UUID    → text_mm3y7xwa  : ${equipmentListUUID}`);
+  } else {
+    console.warn('⚠️ No Equipment List UUID — text_mm3y7xwa not written');
+  }
+
+  // ======================================================
+
+  // ----- Equipment Count -----
+  cols.numeric_mm3zsgna = equipmentCount || 0;
+
+  // ----- Last Equipment Sync -----
+  cols.date_mm3z1vqz = { date: new Date().toISOString().split('T')[0] };
+
+  // ----- Client board relation -----
+  if (clientItemId) cols.board_relation_mm3x8evw = { item_ids: [parseInt(clientItemId)] };
+
+  // ----- Venue/Location board relation -----
+  if (venueItemId)  cols.board_relation_mm3xrm02 = { item_ids: [parseInt(venueItemId)] };
+
+  return cols;
+}
+
+// ================================================================
+// MAIN HANDLER
+// ================================================================
+export default async function handler(req, res) {
+
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  try {
-    const body = req.body;
+  console.log('\n======================================');
+  console.log('📨 Flex Sync Webhook Received');
+  console.log('Payload:', JSON.stringify(req.body, null, 2));
+  console.log('======================================\n');
 
-    // ===== MONDAY.COM CHALLENGE VERIFICATION =====
-    if (body.challenge) {
-      console.log('Received monday.com challenge:', body.challenge);
-      return res.status(200).json({ challenge: body.challenge });
-    }
+  const payload = req.body;
 
-    // ===== NORMAL WEBHOOK PROCESSING =====
-    console.log('Received webhook payload:', JSON.stringify(body, null, 2));
+  // ===== STEP 1: Extract item ID, board ID, and quote number =====
+  const itemId  = payload?.event?.pulseId   ||
+                  payload?.event?.itemId     ||
+                  payload?.pulseId           ||
+                  payload?.itemId;
 
-    // Extract itemId and boardId from the payload
-    const itemId = body.itemId || body.event?.pulseId;
-    const boardId = body.boardId || '18415679761';
+  const boardId = payload?.event?.boardId   ||
+                  payload?.boardId           ||
+                  PROJECTS_BOARD_ID;
 
-    if (!itemId) {
-      console.error('No itemId found in payload');
-      return res.status(400).json({ error: 'Missing itemId' });
-    }
+  if (!itemId) {
+    console.error('❌ No item ID in webhook payload');
+    return res.status(400).json({ error: 'No item ID provided' });
+  }
 
-    console.log(`Processing full sync for item ${itemId} on board ${boardId}`);
+  const flexQuoteNumber = (
+    payload?.event?.value?.value         ||
+    payload?.event?.columnValue?.value   ||
+    payload?.columnValue                 ||
+    payload?.flexQuoteNumber             ||
+    ''
+  ).trim();
 
-    // Get environment variables
-    const FLEX_API_KEY = process.env.FLEX_API_KEY;
-    const MONDAY_API_KEY = process.env.MONDAY_API_KEY;
-    const FLEX_BASE_URL = process.env.FLEX_BASE_URL || 'https://your-flex-instance.com/f5';
-    const CONTACTS_BOARD_ID = '18415573401'; // Contacts & Companies board
+  if (!flexQuoteNumber) {
+    console.log('ℹ️  No Flex quote number — skipping sync');
+    return res.status(200).json({ message: 'No quote number, nothing to sync' });
+  }
 
-    if (!FLEX_API_KEY || !MONDAY_API_KEY) {
-      console.error('Missing API keys in environment variables');
-      return res.status(500).json({ error: 'Server configuration error' });
-    }
+  console.log(`🔗 Quote: "${flexQuoteNumber}" | Item: ${itemId} | Board: ${boardId}`);
 
-    // Step 1: Get the Flex Project # from monday.com item
-    const mondayQuery = `
-      query {
-        items(ids: [${itemId}]) {
-          id
-          name
-          column_values(ids: ["text_mm3x2yr6"]) {
-            id
-            text
-          }
-        }
-      }
-    `;
+  // ===== STEP 1.5: LOOK UP ALL THREE UUIDs FROM FLEX =====
+  let quoteUUID         = null;
+  let eventFolderUUID   = null;
+  let equipmentListUUID = null;
 
-    const mondayResponse = await fetch('https://api.monday.com/v2', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': MONDAY_API_KEY,
-        'API-Version': '2024-10'
-      },
-      body: JSON.stringify({ query: mondayQuery })
+  const looksLikeQuoteNumber = flexQuoteNumber.includes('-') && flexQuoteNumber.length < 20;
+
+  if (looksLikeQuoteNumber) {
+    const searchUrl = `${FLEX_BASE_URL}/api/search?searchText=${encodeURIComponent(flexQuoteNumber)}&searchTypes=all&maxResults=25&includeDeleted=false&includeClosed=true`;
+    console.log(`🔍 Searching Flex: ${searchUrl}`);
+
+    const searchRes = await fetch(searchUrl, {
+      headers: { 'X-Auth-Token': FLEX_API_KEY, 'Content-Type': 'application/json' }
     });
 
-    const mondayData = await mondayResponse.json();
-    
-    if (mondayData.errors) {
-      console.error('Monday.com API error:', mondayData.errors);
-      throw new Error('Failed to fetch item from monday.com');
+    if (!searchRes.ok) {
+      const msg = `Flex search HTTP ${searchRes.status}`;
+      console.error(`❌ ${msg}`);
+      await updateMondayStatus(itemId, boardId, 'Failed', msg);
+      return res.status(500).json({ error: msg });
     }
 
-    const item = mondayData.data.items[0];
-    const flexQuoteNumber = item.column_values.find(col => col.id === 'text_mm3x2yr6')?.text;
+    const searchData = await searchRes.json();
+    console.log('🔍 Raw Flex search response:', JSON.stringify(searchData, null, 2));
 
-    if (!flexQuoteNumber) {
-      console.error('No Flex Project # found on item');
-      await updateMondayStatus(itemId, boardId, MONDAY_API_KEY, 'Sync Error', 'No Flex Project # found');
-      return res.status(400).json({ error: 'No Flex Project # found on item' });
+    // Normalize to flat array regardless of response shape
+    let results = [];
+    if (Array.isArray(searchData))            results = searchData;
+    else if (searchData.results)              results = searchData.results;
+    else if (Array.isArray(searchData.data))  results = searchData.data;
+    else if (searchData.data)                 results = [searchData.data];
+
+    if (results.length === 0) {
+      const msg = `Quote "${flexQuoteNumber}" not found in Flex`;
+      console.error(`❌ ${msg}`);
+      await updateMondayStatus(itemId, boardId, 'Failed', msg);
+      return res.status(404).json({ error: msg });
     }
 
-    console.log(`Found Flex Quote #: ${flexQuoteNumber}`);
+    // Classify each result by domainId
+    for (const result of results) {
+      const domain = (result.domainId || result.domain || result.type || '').toLowerCase();
+      const id     = result.id || result.elementId || result.uuid;
+      const name   = result.name || result.displayName || '(no name)';
+      console.log(`  📦 domain="${domain}" | id=${id} | name="${name}"`);
 
-    // ===== STEP 1.5: AUTO-LOOKUP UUID FROM QUOTE NUMBER =====
-    let flexElementId = flexQuoteNumber;
+      if (['equipment-list', 'pull-sheet', 'pullsheet'].includes(domain)) {
+        equipmentListUUID = id;
+        console.log(`  📋 → Equipment List UUID: ${id}`);
 
-    // If it looks like a quote number (contains hyphen like "26-0112"), search for the UUID
-    if (flexQuoteNumber.includes('-') && flexQuoteNumber.length < 20) {
-      console.log(`Looking up internal UUID for quote: ${flexQuoteNumber}`);
-      
-      const searchUrl = `${FLEX_BASE_URL}/api/search?searchText=${encodeURIComponent(flexQuoteNumber)}&searchTypes=all&maxResults=25&includeDeleted=false&includeClosed=true`;
-      console.log(`Searching Flex: ${searchUrl}`);
+      } else if (['project', 'event-folder', 'event_folder', 'folder'].includes(domain)) {
+        eventFolderUUID = id;
+        console.log(`  📁 → Event Folder UUID: ${id}`);
 
-      const searchResponse = await fetch(searchUrl, {
-        method: 'GET',
-        headers: {
-          'X-Auth-Token': FLEX_API_KEY,
-          'Content-Type': 'application/json'
-        }
-      });
+      } else if (['quote', 'financial-document', 'financial_document', 'financialdocument'].includes(domain)) {
+        quoteUUID = id;
+        console.log(`  📄 → Quote UUID: ${id}`);
 
-      if (!searchResponse.ok) {
-        console.error(`Search API error: ${searchResponse.status} ${searchResponse.statusText}`);
-        await updateMondayStatus(itemId, boardId, MONDAY_API_KEY, 'Sync Error', `Failed to search Flex: ${searchResponse.status}`);
-        return res.status(500).json({ error: 'Search lookup failed' });
-      }
-
-      const searchData = await searchResponse.json();
-      console.log('Search results:', JSON.stringify(searchData, null, 2));
-
-      // Flex search returns results in different possible structures
-      let results = [];
-      if (Array.isArray(searchData)) {
-        results = searchData;
-      } else if (searchData.results) {
-        results = searchData.results;
-      } else if (searchData.data) {
-        results = Array.isArray(searchData.data) ? searchData.data : [searchData.data];
-      }
-
-      if (!results || results.length === 0) {
-        console.error('Quote number not found in Flex');
-        await updateMondayStatus(itemId, boardId, MONDAY_API_KEY, 'Sync Error', `Quote ${flexQuoteNumber} not found in Flex`);
-        return res.status(404).json({ error: 'Quote not found' });
-      }
-
-      // Extract the internal UUID from the first search result
-      const firstResult = results[0];
-      flexElementId = firstResult.id || firstResult.elementId || firstResult.uuid || firstResult.element_id || firstResult.elementUuid;
-
-      if (!flexElementId) {
-        console.error('Could not extract UUID from search results:', firstResult);
-        await updateMondayStatus(itemId, boardId, MONDAY_API_KEY, 'Sync Error', 'Could not find element ID in search results');
-        return res.status(500).json({ error: 'UUID extraction failed' });
-      }
-
-      console.log(`✅ Successfully mapped ${flexQuoteNumber} to UUID: ${flexElementId}`);
-    } else {
-      console.log(`Using provided UUID directly: ${flexElementId}`);
-    }
-
-    // Step 2: Fetch FULL project data from Flex API using Header Data endpoint
-    const fieldsToFetch = [
-      'name',
-      'eventDate',
-      'plannedStartDate',
-      'plannedEndDate',
-      'totalPrice',
-      'budgetedRevenue',
-      'actualCost',
-      'actualRevenue',
-      'clientCompany',
-      'clientId',
-      'venueCompany',
-      'venueId',
-      'statusId',
-      'statusColor'
-    ];
-
-    const codeListParams = fieldsToFetch.map(field => `codeList=${field}`).join('&');
-    const flexHeaderUrl = `${FLEX_BASE_URL}/api/element/${flexElementId}/header-data?${codeListParams}`;
-
-    console.log(`Fetching from Flex: ${flexHeaderUrl}`);
-
-    const flexHeaderResponse = await fetch(flexHeaderUrl, {
-      method: 'GET',
-      headers: {
-        'X-Auth-Token': FLEX_API_KEY,
-        'Content-Type': 'application/json'
-      }
-    });
-
-    if (!flexHeaderResponse.ok) {
-      console.error(`Flex API error: ${flexHeaderResponse.status} ${flexHeaderResponse.statusText}`);
-      await updateMondayStatus(itemId, boardId, MONDAY_API_KEY, 'Sync Error', `Flex API error: ${flexHeaderResponse.status}`);
-      return res.status(500).json({ error: 'Failed to fetch from Flex API' });
-    }
-
-    const flexHeaderData = await flexHeaderResponse.json();
-    console.log('Flex header data received:', JSON.stringify(flexHeaderData, null, 2));
-
-    // Step 3: Fetch equipment list with specific fields
-    const equipmentFields = [
-      'quantity',
-      'description',
-      'unitPrice',
-      'totalPrice',
-      'inventoryModel',
-      'category',
-      'notes'
-    ];
-
-    const equipmentCodeList = equipmentFields.map(field => `codeList=${field}`).join('&');
-    const flexEquipmentUrl = `${FLEX_BASE_URL}/api/financial-document-line-item/${flexElementId}/row-data/?${equipmentCodeList}`;
-    
-    let equipmentCount = 0;
-    try {
-      console.log(`Fetching equipment from: ${flexEquipmentUrl}`);
-      
-      const flexEquipmentResponse = await fetch(flexEquipmentUrl, {
-        method: 'GET',
-        headers: {
-          'X-Auth-Token': FLEX_API_KEY,
-          'Content-Type': 'application/json'
-        }
-      });
-
-      if (flexEquipmentResponse.ok) {
-        const flexEquipmentData = await flexEquipmentResponse.json();
-        equipmentCount = Array.isArray(flexEquipmentData) ? flexEquipmentData.length : 0;
-        
-        // 🆕 LOG THE FULL RESPONSE TO SEE ALL AVAILABLE FIELDS
-        console.log('📋 FULL EQUIPMENT DATA:', JSON.stringify(flexEquipmentData, null, 2));
-        
-        // 🆕 LOG JUST THE FIRST ITEM TO SEE STRUCTURE CLEARLY
-        if (Array.isArray(flexEquipmentData) && flexEquipmentData.length > 0) {
-          console.log('📦 FIRST EQUIPMENT ITEM STRUCTURE:', JSON.stringify(flexEquipmentData[0], null, 2));
-        }
-        
-        console.log(`✅ Fetched ${equipmentCount} equipment items from Flex`);
       } else {
-        const errorText = await flexEquipmentResponse.text();
-        console.warn(`⚠️ Equipment fetch failed with status ${flexEquipmentResponse.status}`);
-        console.warn(`⚠️ Error response: ${errorText}`);
-      }
-    } catch (equipError) {
-      console.warn('❌ Equipment fetch error:', equipError.message);
-    }
-
-    // Step 4: Create/Link Client and Venue in Contacts & Companies board
-    const clientName = getValue(flexHeaderData, 'clientCompany');
-    const venueName = getValue(flexHeaderData, 'venueCompany');
-    
-    let clientItemId = null;
-    let venueItemId = null;
-
-    if (clientName) {
-      clientItemId = await findOrCreateContact(MONDAY_API_KEY, CONTACTS_BOARD_ID, clientName, 'Client');
-      console.log(`✅ Client linked: ${clientName} (ID: ${clientItemId})`);
-    }
-
-    if (venueName) {
-      venueItemId = await findOrCreateContact(MONDAY_API_KEY, CONTACTS_BOARD_ID, venueName, 'Venue');
-      console.log(`✅ Venue linked: ${venueName} (ID: ${venueItemId})`);
-    }
-
-    // Step 5: Transform Flex data to monday.com format
-    const columnValues = buildColumnValues(flexHeaderData, equipmentCount, clientItemId, venueItemId, flexElementId);
-
-    console.log('Updating monday.com with values:', JSON.stringify(columnValues, null, 2));
-
-    // Step 6: Update ALL monday.com columns at once
-    await updateMondayColumns(itemId, boardId, MONDAY_API_KEY, columnValues);
-
-    // Step 7: Update status to Synced
-    await updateMondayStatus(itemId, boardId, MONDAY_API_KEY, 'Synced', null);
-
-    return res.status(200).json({
-      success: true,
-      itemId,
-      flexQuoteNumber,
-      flexElementId,
-      syncedFields: Object.keys(columnValues),
-      equipmentCount,
-      clientLinked: !!clientItemId,
-      venueLinked: !!venueItemId,
-      message: 'Full project sync completed successfully'
-    });
-
-  } catch (error) {
-    console.error('Webhook error:', error);
-    
-    // Try to update monday.com status to error
-    try {
-      const itemId = req.body.itemId || req.body.event?.pulseId;
-      if (itemId) {
-        await updateMondayStatus(
-          itemId,
-          '18415679761',
-          process.env.MONDAY_API_KEY,
-          'Sync Error',
-          error.message
-        );
-      }
-    } catch (updateError) {
-      console.error('Failed to update error status:', updateError);
-    }
-
-    return res.status(500).json({
-      error: 'Internal server error',
-      message: error.message
-    });
-  }
-}
-
-// Better duplicate detection with fuzzy matching
-async function findOrCreateContact(apiKey, boardId, companyName, companyType) {
-  // Clean up the company name for better matching
-  const cleanName = companyName.trim();
-  
-  // Step 1: Search for existing contacts - fetch ALL to check properly
-  const searchQuery = `
-    query {
-      boards(ids: [${boardId}]) {
-        items_page(limit: 500) {
-          items {
-            id
-            name
-            column_values(ids: ["dropdown_mm3vm6jh"]) {
-              id
-              text
-            }
-          }
+        console.log(`  ❓ → Unrecognized domain "${domain}"`);
+        if (!quoteUUID) {
+          quoteUUID = id;
+          console.log(`  📄 → Quote UUID (fallback): ${id}`);
         }
       }
     }
-  `;
 
-  const searchResponse = await fetch('https://api.monday.com/v2', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': apiKey,
-      'API-Version': '2024-10'
-    },
-    body: JSON.stringify({ query: searchQuery })
-  });
-
-  const searchData = await searchResponse.json();
-  
-  if (searchData.errors) {
-    console.error('Error searching for contact:', searchData.errors);
-    return null;
-  }
-
-  const existingItems = searchData.data?.boards?.[0]?.items_page?.items || [];
-  
-  // Step 2: Check for exact match (case-insensitive)
-  const exactMatch = existingItems.find(item => 
-    item.name.toLowerCase().trim() === cleanName.toLowerCase()
-  );
-  
-  if (exactMatch) {
-    console.log(`✅ Found existing contact (exact match): ${cleanName} (ID: ${exactMatch.id})`);
-    return parseInt(exactMatch.id);
-  }
-
-  // Step 3: Check for fuzzy match (very similar names - removes punctuation/spaces)
-  const fuzzyMatch = existingItems.find(item => {
-    const itemNameClean = item.name.toLowerCase().trim().replace(/[^a-z0-9]/g, '');
-    const searchNameClean = cleanName.toLowerCase().trim().replace(/[^a-z0-9]/g, '');
-    return itemNameClean === searchNameClean;
-  });
-
-  if (fuzzyMatch) {
-    console.log(`✅ Found existing contact (fuzzy match): ${cleanName} → ${fuzzyMatch.name} (ID: ${fuzzyMatch.id})`);
-    return parseInt(fuzzyMatch.id);
-  }
-
-  // Step 4: Check if a contact with this name AND type already exists
-  const typeMatch = existingItems.find(item => {
-    const nameMatches = item.name.toLowerCase().trim() === cleanName.toLowerCase();
-    const typeColumn = item.column_values.find(col => col.id === 'dropdown_mm3vm6jh');
-    const typeMatches = typeColumn && typeColumn.text === companyType;
-    return nameMatches && typeMatches;
-  });
-
-  if (typeMatch) {
-    console.log(`✅ Found existing contact with matching type: ${cleanName} (ID: ${typeMatch.id})`);
-    return parseInt(typeMatch.id);
-  }
-
-  // Step 5: Create new contact only if no match found
-  console.log(`🆕 Creating new contact: ${cleanName} (Type: ${companyType})`);
-  
-  const createMutation = `
-    mutation {
-      create_item(
-        board_id: ${boardId},
-        item_name: "${cleanName.replace(/"/g, '\\"')}",
-        column_values: ${JSON.stringify(JSON.stringify({
-          dropdown_mm3vm6jh: { labels: [companyType] }
-        }))}
-      ) {
-        id
-      }
+    if (!quoteUUID) {
+      const msg = 'Could not extract any UUID from Flex search results';
+      console.error(`❌ ${msg}`);
+      await updateMondayStatus(itemId, boardId, 'Failed', msg);
+      return res.status(500).json({ error: msg });
     }
-  `;
 
-  const createResponse = await fetch('https://api.monday.com/v2', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': apiKey,
-      'API-Version': '2024-10'
-    },
-    body: JSON.stringify({ query: createMutation })
-  });
-
-  const createData = await createResponse.json();
-  
-  if (createData.errors) {
-    console.error('Error creating contact:', createData.errors);
-    return null;
-  }
-
-  const newItemId = parseInt(createData.data.create_item.id);
-  console.log(`✅ Created new contact: ${cleanName} (ID: ${newItemId})`);
-  return newItemId;
-}
-
-// Helper to safely extract data value from Flex response
-const getValue = (flexHeaderData, fieldName) => {
-  const field = flexHeaderData[fieldName];
-  if (!field || !field.data) return null;
-  
-  // If data is an object with a "name" property, return the name
-  if (typeof field.data === 'object' && field.data.name) {
-    return field.data.name;
-  }
-  
-  // Otherwise return data directly
-  return field.data;
-};
-
-// Enhanced buildColumnValues with Client/Venue linking and Equipment List ID
-function buildColumnValues(flexHeaderData, equipmentCount, clientItemId, venueItemId, flexElementId) {
-  const columnValues = {};
-
-  // Event Date (date_mm3xca9r)
-  const eventDate = getValue(flexHeaderData, 'eventDate');
-  if (eventDate) {
-    const dateOnly = eventDate.split('T')[0];
-    columnValues.date_mm3xca9r = { date: dateOnly };
-  }
-
-  // Estimated Budget (numeric_mm3xzncg)
-  const totalPrice = getValue(flexHeaderData, 'totalPrice') || getValue(flexHeaderData, 'budgetedRevenue');
-  if (totalPrice && totalPrice > 0) {
-    columnValues.numeric_mm3xzncg = parseFloat(totalPrice);
-  }
-
-  // Actual Spend (numeric_mm3xrd3e)
-  const actualCost = getValue(flexHeaderData, 'actualCost');
-  if (actualCost && actualCost > 0) {
-    columnValues.numeric_mm3xrd3e = parseFloat(actualCost);
-  }
-
-  // Equipment List ID (text_mm3y7xwa) - Write the UUID for Vibe app
-  if (flexElementId) {
-    columnValues.text_mm3y7xwa = flexElementId;
-    console.log(`✅ Writing Equipment List ID: ${flexElementId}`);
-  }
-
-  // Equipment Count (numeric_mm3zsgna)
-  columnValues.numeric_mm3zsgna = equipmentCount;
-
-  // Last Equipment Sync (date_mm3z1vqz)
-  columnValues.date_mm3z1vqz = { date: new Date().toISOString().split('T')[0] };
-
-  // Client board relation (board_relation_mm3x8evw)
-  if (clientItemId) {
-    columnValues.board_relation_mm3x8evw = { item_ids: [clientItemId] };
-  }
-
-  // Venue board relation (board_relation_mm3xrm02)
-  if (venueItemId) {
-    columnValues.board_relation_mm3xrm02 = { item_ids: [venueItemId] };
-  }
-
-  // Keep client/venue in Budget Notes as backup
-  const clientCompany = getValue(flexHeaderData, 'clientCompany');
-  const venueCompany = getValue(flexHeaderData, 'venueCompany');
-  
-  let notesText = '';
-  if (clientCompany) {
-    notesText += `Client: ${clientCompany}\n`;
-  }
-  if (venueCompany) {
-    notesText += `Venue: ${venueCompany}`;
-  }
-  
-  if (notesText) {
-    columnValues.long_text_mm3x7d7 = notesText;
-  }
-
-  return columnValues;
-}
-
-// Helper function to update monday.com columns
-async function updateMondayColumns(itemId, boardId, apiKey, columnValues) {
-  const mutation = `
-    mutation {
-      change_multiple_column_values(
-        item_id: ${itemId},
-        board_id: ${boardId},
-        column_values: ${JSON.stringify(JSON.stringify(columnValues))}
-      ) {
-        id
-      }
-    }
-  `;
-
-  const response = await fetch('https://api.monday.com/v2', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': apiKey,
-      'API-Version': '2024-10'
-    },
-    body: JSON.stringify({ query: mutation })
-  });
-
-  const data = await response.json();
-  if (data.errors) {
-    console.error('Error updating columns:', data.errors);
-    throw new Error('Failed to update monday.com columns');
-  }
-  
-  return data;
-}
-
-// Helper function to update sync status
-async function updateMondayStatus(itemId, boardId, apiKey, status, errorMessage) {
-  const columnValues = {
-    color_mm3y3bxj: { label: status }
-  };
-
-  // If there's an error, write it. If not, clear the column!
-  if (errorMessage) {
-    columnValues.text_mm3zvvqk = errorMessage;
   } else {
-    columnValues.text_mm3zvvqk = "";
+    // Already looks like a UUID — use it directly
+    quoteUUID = flexQuoteNumber;
+    console.log(`Using value directly as Quote UUID: ${quoteUUID}`);
   }
 
-  const mutation = `
-    mutation {
-      change_multiple_column_values(
-        item_id: ${itemId},
-        board_id: ${boardId},
-        column_values: ${JSON.stringify(JSON.stringify(columnValues))}
-      ) {
-        id
-      }
-    }
-  `;
+  // ===== STEP 2: Fetch header data from Flex =====
+  const headerUrl = `${FLEX_BASE_URL}/api/element/${quoteUUID}/header-data`;
+  console.log(`\n📡 Fetching header data: ${headerUrl}`);
 
-  const response = await fetch('https://api.monday.com/v2', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': apiKey,
-      'API-Version': '2024-10'
-    },
-    body: JSON.stringify({ query: mutation })
+  const headerRes = await fetch(headerUrl, {
+    headers: { 'X-Auth-Token': FLEX_API_KEY, 'Content-Type': 'application/json' }
   });
 
-  const data = await response.json();
-  if (data.errors) {
-    console.error('Error updating status:', data.errors);
-    throw new Error('Failed to update monday.com status');
+  if (!headerRes.ok) {
+    const msg = `Flex header-data HTTP ${headerRes.status}`;
+    console.error(`❌ ${msg}`);
+    await updateMondayStatus(itemId, boardId, 'Failed', msg);
+    return res.status(500).json({ error: msg });
   }
-  
-  return data;
+
+  const flexHeaderData = await headerRes.json();
+  console.log('📋 Flex header data:', JSON.stringify(flexHeaderData, null, 2));
+
+  // ===== STEP 2.5: FALLBACK UUID LOOKUPS =====
+
+  // Fallback A: Event Folder UUID — try header data first, then fetch element directly
+  if (!eventFolderUUID) {
+    eventFolderUUID = flexHeaderData.parentElementId ||
+                      flexHeaderData?.data?.parentElementId ||
+                      null;
+    if (eventFolderUUID) {
+      console.log(`✅ Event Folder UUID from header data: ${eventFolderUUID}`);
+    } else {
+      try {
+        console.log(`🔍 Fetching element to get parentElementId...`);
+        const elemRes = await fetch(`${FLEX_BASE_URL}/api/element/${quoteUUID}`, {
+          headers: { 'X-Auth-Token': FLEX_API_KEY }
+        });
+        if (elemRes.ok) {
+          const elemData = await elemRes.json();
+          console.log('Element data:', JSON.stringify(elemData, null, 2));
+          eventFolderUUID = elemData.parentElementId || elemData?.data?.parentElementId || null;
+          if (eventFolderUUID) {
+            console.log(`✅ Event Folder UUID from element fetch: ${eventFolderUUID}`);
+          } else {
+            console.warn('⚠️ No parentElementId — quote may be top-level');
+          }
+        } else {
+          console.warn(`⚠️ Element fetch returned ${elemRes.status}`);
+        }
+      } catch (e) {
+        console.warn('⚠️ Element fallback fetch failed:', e.message);
+      }
+    }
+  }
+
+  // Fallback B: Equipment List UUID — query Flex equipment-list endpoint by parentElementId
+  if (!equipmentListUUID) {
+    try {
+      const eqUrl = `${FLEX_BASE_URL}/api/equipment-list?parentElementId=${quoteUUID}&page=0&size=10`;
+      console.log(`🔍 Searching for equipment list: ${eqUrl}`);
+      const eqRes = await fetch(eqUrl, { headers: { 'X-Auth-Token': FLEX_API_KEY } });
+      if (eqRes.ok) {
+        const eqData = await eqRes.json();
+        console.log('Equipment list response:', JSON.stringify(eqData, null, 2));
+        const items = Array.isArray(eqData) ? eqData : (eqData.content || []);
+        if (items.length > 0) {
+          equipmentListUUID = items[0].id;
+          console.log(`✅ Equipment List UUID from filter: ${equipmentListUUID}`);
+        } else {
+          console.warn('⚠️ No equipment lists found as children of this quote');
+        }
+      } else {
+        console.warn(`⚠️ Equipment list filter returned ${eqRes.status}`);
+      }
+    } catch (e) {
+      console.warn('⚠️ Equipment list fallback fetch failed:', e.message);
+    }
+  }
+
+  // Summary log
+  console.log('\n📊 FINAL UUID SUMMARY:');
+  console.log(`  📁 Event Folder : ${eventFolderUUID   || '❌ NOT FOUND'}`);
+  console.log(`  📄 Quote        : ${quoteUUID}`);
+  console.log(`  📋 Equip List   : ${equipmentListUUID  || '❌ NOT FOUND'}`);
+
+  // ===== STEP 3: Extract client and venue names from Flex =====
+  const clientName =
+    flexHeaderData?.data?.client?.preferredDisplayString ||
+    getValue(flexHeaderData, 'clientName')               ||
+    getValue(flexHeaderData, 'clientId')                 ||
+    null;
+
+  const venueName =
+    flexHeaderData?.data?.venue?.preferredDisplayString  ||
+    getValue(flexHeaderData, 'venueName')                ||
+    getValue(flexHeaderData, 'venueId')                  ||
+    null;
+
+  console.log(`\n👤 Client: ${clientName || '(none)'}`);
+  console.log(`📍 Venue:  ${venueName  || '(none)'}`);
+
+  // Write raw text names to monday.com immediately (for display and PM manual linking)
+  if (clientName || venueName) {
+    const nameVals = {};
+    if (clientName) nameVals.text_mm435rt8 = clientName;
+    if (venueName)  nameVals.text_mm43r22q = venueName;
+    try {
+      await mondayMutation(`
+        mutation {
+          change_multiple_column_values(
+            board_id: ${boardId},
+            item_id: ${itemId},
+            column_values: ${JSON.stringify(JSON.stringify(nameVals))}
+          ) { id }
+        }
+      `);
+      console.log('✅ Client/Venue text fields written');
+    } catch (e) {
+      console.warn('⚠️ Could not write client/venue text fields:', e.message);
+    }
+  }
+
+  // ===== STEP 4: Resolve Client and Venue to monday.com item IDs =====
+  const [clientItemId, venueItemId] = await Promise.all([
+    findContactInMonday(clientName),
+    findContactInMonday(venueName)
+  ]);
+  console.log(`🔗 Client monday ID: ${clientItemId || 'NOT FOUND'}`);
+  console.log(`🔗 Venue monday ID:  ${venueItemId  || 'NOT FOUND'}`);
+
+  // ===== STEP 5: Count equipment line items from Flex =====
+  let equipmentCount = 0;
+  if (equipmentListUUID) {
+    try {
+      const countUrl = `${FLEX_BASE_URL}/api/eqlist-line-item/nodes-by-ids?equipmentListId=${equipmentListUUID}`;
+      const countRes = await fetch(countUrl, { headers: { 'X-Auth-Token': FLEX_API_KEY } });
+      if (countRes.ok) {
+        const countData  = await countRes.json();
+        const allNodes   = Array.isArray(countData) ? countData : [];
+        // Count only leaf nodes (actual items, not group headers)
+        equipmentCount = allNodes.filter(node => node.leaf === true || node.group === false).length;
+        console.log(`📦 Equipment items: ${equipmentCount}`);
+      } else {
+        console.warn(`⚠️ Equipment count returned ${countRes.status}`);
+      }
+    } catch (e) {
+      console.warn('⚠️ Equipment count fetch failed:', e.message);
+    }
+  }
+
+  // ===== STEP 6: Build column values =====
+  const columnValues = buildColumnValues(
+    flexHeaderData,
+    equipmentCount,
+    clientItemId,
+    venueItemId,
+    quoteUUID,
+    eventFolderUUID,
+    equipmentListUUID
+  );
+  console.log('\n📝 Writing to monday.com:', JSON.stringify(columnValues, null, 2));
+
+  // ===== STEP 7: Write all columns to monday.com =====
+  const updateResult = await mondayMutation(`
+    mutation {
+      change_multiple_column_values(
+        board_id: ${boardId},
+        item_id: ${itemId},
+        column_values: ${JSON.stringify(JSON.stringify(columnValues))}
+      ) { id name }
+    }
+  `);
+
+  console.log('monday.com result:', JSON.stringify(updateResult, null, 2));
+
+  if (updateResult.errors) {
+    const errMsg = updateResult.errors[0]?.message || 'Unknown monday error';
+    console.error('❌ monday.com update failed:', errMsg);
+    await updateMondayStatus(itemId, boardId, 'Failed', errMsg);
+    return res.status(500).json({ error: 'monday.com update failed', details: updateResult.errors });
+  }
+
+  // ===== STEP 8: Mark success =====
+  await updateMondayStatus(itemId, boardId, 'Success');
+  console.log('\n✅ Sync complete!\n');
+
+  // ===== RETURN FULL DEBUG RESPONSE =====
+  return res.status(200).json({
+    success: true,
+    message: 'Flex → monday.com sync complete',
+    itemId,
+    boardId,
+    flexQuoteNumber,
+    uuids: {
+      eventFolder:   { column: 'text_mm466djv',  value: eventFolderUUID   || null },
+      quote:         { column: 'text_mm4cwasc',   value: quoteUUID },
+      equipmentList: { column: 'text_mm3y7xwa',   value: equipmentListUUID || null }
+    },
+    contacts: {
+      client: { name: clientName, mondayItemId: clientItemId || null },
+      venue:  { name: venueName,  mondayItemId: venueItemId  || null }
+    },
+    equipment:      { count: equipmentCount },
+    columnsWritten: Object.keys(columnValues)
+  });
 }
