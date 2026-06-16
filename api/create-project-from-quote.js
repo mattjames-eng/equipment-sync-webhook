@@ -19,10 +19,12 @@
  * 9. Creates Google Drive folder structure from template
  * 
  * Author: Matt James, Antic Studios
- * Last Updated: June 16, 2026 - v2: Fixed Event Folder + Equipment List UUID fallback endpoints
- *   - Event Folder: switched from broken /api/element (405) to /api/financial-document
- *   - Equipment List: equipment list is a SIBLING of the quote (both under event folder),
- *     not a child — now scans under eventFolderUUID with 6 fallback URL patterns
+ * Last Updated: June 16, 2026 - v3: Replaced broken API fallbacks with name-based second search
+ *   - Step 1.6: strips quote suffix from name ("Hoofbeat 2026 - Video Walls" → "Hoofbeat 2026"),
+ *     fires a second Flex search, and classifies ALL results — can find both Event Folder
+ *     AND Equipment List UUID in a single call
+ *   - Step 1.7: retained as last-resort equipment list scan using folder UUID if 1.6 found
+ *     the folder but not the equipment list
  */
 
 const MONDAY_API_URL = 'https://api.monday.com/v2';
@@ -257,8 +259,6 @@ export default async function handler(req, res) {
         if (!results || results.length === 0) throw new Error(`Quote identity reference "${quoteId}" not found in system.`);
 
         // ===== STEP 1.5: CLASSIFY ALL SEARCH RESULTS → EXTRACT THE THREE UUIDs =====
-        // Previously, only results[0].id was grabbed and the rest were dropped.
-        // Now we classify every result by domainId so each UUID lands in the right column.
         let quoteUUID         = null;
         let eventFolderUUID   = null;
         let equipmentListUUID = null;
@@ -275,7 +275,7 @@ export default async function handler(req, res) {
                 equipmentListUUID = id;
                 console.log(`  📋 → Equipment List UUID: ${id}`);
 
-            } else if (['project', 'event-folder', 'event_folder', 'folder'].includes(domain)) {
+            } else if (['project', 'event-folder', 'event_folder', 'folder', 'simple-project-element'].includes(domain)) {
                 eventFolderUUID = id;
                 console.log(`  📁 → Event Folder UUID: ${id}`);
 
@@ -292,22 +292,12 @@ export default async function handler(req, res) {
             }
         }
 
-        // internalId = the UUID we use to fetch header-data.
-        // Prefer the explicit quoteUUID; fall back to first result as before.
         const internalId = quoteUUID || resultArray[0].id || resultArray[0].elementId;
         console.log(`\n🔗 Internal ID for header-data fetch: ${internalId}`);
 
-         // ===== STEP 1.6: FALLBACK — Event Folder + Equipment List via Name Search =====
-        // Flex search only returned the quote (financial-document) for the quote number.
-        // The event folder and equipment list are siblings under that folder and won't
-        // appear in a barcode search. Strategy: strip the quote-specific suffix from the
-        // quote name and search Flex by the base event name. This should surface the
-        // event folder (and possibly the equipment list) as separate result entries.
-        // We run this block whenever either UUID is still missing, since one search
-        // can potentially fill both gaps at once.
+        // ===== STEP 1.6: FALLBACK — Event Folder + Equipment List via Name Search =====
         if (!eventFolderUUID || !equipmentListUUID) {
             try {
-                // e.g. "Hoofbeat 2026 - Video Walls" → try "Hoofbeat 2026" first, then full name
                 const rawQuoteName  = resultArray[0]?.name || '';
                 const dashIndex     = rawQuoteName.lastIndexOf(' - ');
                 const strippedName  = dashIndex !== -1 ? rawQuoteName.substring(0, dashIndex).trim() : '';
@@ -349,7 +339,7 @@ export default async function handler(req, res) {
                             equipmentListUUID = id;
                             console.log(`    📋 → Equipment List UUID (from name search): ${id}`);
 
-                        } else if (!eventFolderUUID && ['project', 'event-folder', 'event_folder', 'folder', 'element'].includes(domain)) {
+                        } else if (!eventFolderUUID && ['project', 'event-folder', 'event_folder', 'folder', 'element', 'simple-project-element'].includes(domain)) {
                             eventFolderUUID = id;
                             console.log(`    📁 → Event Folder UUID (from name search): ${id}`);
                         }
@@ -364,10 +354,7 @@ export default async function handler(req, res) {
             }
         }
 
-        // ===== STEP 1.7: FALLBACK — Equipment List UUID =====
-        // FIX: Equipment list is a SIBLING of the quote (both are children of the event folder).
-        // Searching under the quote UUID always 404s. We need the folder UUID first,
-        // then scan its children. Try 6 URL/param combos so we catch whatever Flex accepts.
+        // ===== STEP 1.7: LAST RESORT — Equipment List UUID via direct endpoint scan =====
         if (!equipmentListUUID) {
             const scanId = eventFolderUUID || internalId;
             const label  = eventFolderUUID ? 'event folder' : 'quote (fallback — no folder UUID yet)';
@@ -390,13 +377,12 @@ export default async function handler(req, res) {
                     console.log(`  [${eqRes.status}] ${url}`);
                     if (eqRes.ok) {
                         const eqData  = await eqRes.json();
-                        // Log full response so we can see the exact shape
                         console.log('📋 Equipment list response:', JSON.stringify(eqData, null, 2));
                         const eqItems = Array.isArray(eqData) ? eqData : (eqData.content || eqData.data || []);
                         if (eqItems.length > 0) {
                             equipmentListUUID = eqItems[0].id;
                             console.log(`✅ Equipment List UUID: ${equipmentListUUID}`);
-                            break; // stop trying once we have it
+                            break;
                         } else {
                             console.warn('  ↳ Returned 200 but zero items in result');
                         }
@@ -427,7 +413,6 @@ export default async function handler(req, res) {
         const data = await dataResponse.json();
         console.log('📋 Flex header data:', JSON.stringify(data, null, 2));
 
-        // If the header data carries a parentElementId and we still don't have eventFolderUUID, grab it now
         if (!eventFolderUUID) {
             eventFolderUUID = data.parentElementId || data?.data?.parentElementId || null;
             if (eventFolderUUID) console.log(`✅ Event Folder UUID from header data: ${eventFolderUUID}`);
@@ -437,7 +422,7 @@ export default async function handler(req, res) {
         const clientUuid = extractContactUuid(data?.clientId);
         const venueUuid  = extractContactUuid(data?.venueId);
 
-        // ===== STEP 4: Resolve true corporate titles from the isolated system addresses =====
+        // ===== STEP 4: Resolve true corporate titles =====
         const clientFallback = deepExtractName(data?.clientId) || '';
         const venueFallback  = deepExtractName(data?.venueId)  || '';
 
@@ -460,7 +445,6 @@ export default async function handler(req, res) {
 
         // ===== STEP 6: Build the unified row mapping data frame object =====
         const columnValues = {
-            // Core project fields
             text_mm3x2yr6:             quoteNumber,
             text_mm435rt8:             clientResolvedName,
             text_mm43r22q:             venueResolvedName,
@@ -472,17 +456,15 @@ export default async function handler(req, res) {
             date_mm3z1vqz:             { date: new Date().toISOString().split('T')[0] },
             color_mm3y3bxj:            { label: "Synced" },
 
-            // ✅ THE THREE FLEX UUIDs — written at creation time
+            // ✅ THE THREE FLEX UUIDs
             ...(eventFolderUUID   && { text_mm466djv: eventFolderUUID }),
             ...(quoteUUID         && { text_mm4cwasc: quoteUUID }),
             ...(equipmentListUUID && { text_mm3y7xwa: equipmentListUUID }),
         };
 
-        // Board relations
         if (matchedClientId) columnValues.board_relation_mm3x8evw = { item_ids: [parseInt(matchedClientId, 10)] };
         if (matchedVenueId)  columnValues.board_relation_mm3xrm02 = { item_ids: [parseInt(matchedVenueId,  10)] };
 
-        // Event date
         if (data?.eventDate) {
             const dateStr   = deepExtractName(data.eventDate);
             const dateMatch = dateStr ? dateStr.match(/(\d{4}-\d{2}-\d{2})/) : null;
@@ -491,7 +473,6 @@ export default async function handler(req, res) {
 
         console.log('\n📝 Column values to write:', JSON.stringify(columnValues, null, 2));
 
-        // Log UUID write status
         console.log('\n📊 FINAL UUID WRITE STATUS:');
         console.log(`  📁 Event Folder → text_mm466djv : ${eventFolderUUID   || '❌ NOT WRITTEN'}`);
         console.log(`  📄 Quote        → text_mm4cwasc  : ${quoteUUID         || '❌ NOT WRITTEN'}`);
@@ -503,7 +484,6 @@ export default async function handler(req, res) {
 
         // ===== STEP 7: Update existing OR create new project =====
         if (existingProjectId) {
-            // UPDATE EXISTING PROJECT
             console.log(`🔄 Updating existing project ID: ${existingProjectId}`);
 
             const updateMutation = `mutation {
@@ -531,7 +511,6 @@ export default async function handler(req, res) {
             console.log(`✅ SUCCESS: Project updated - ID: ${resultItemId}`);
 
         } else {
-            // CREATE NEW PROJECT
             console.log(`➕ Creating new project: "${projectName}"`);
 
             const createMutation = `mutation { create_item(board_id: ${PROJECTS_BOARD_ID}, item_name: "${projectName.replace(/"/g, '\\"')}", column_values: ${JSON.stringify(JSON.stringify(columnValues))}) { id } }`;
@@ -548,7 +527,6 @@ export default async function handler(req, res) {
             operationType = 'CREATED';
             console.log(`✅ SUCCESS: New project created - ID: ${resultItemId}`);
 
-            // STEP 8: Create Google Drive folder for NEW projects only
             const eventDateStr = columnValues.date_mm3xca9r?.date || '';
             driveFolder = await createProjectFolder(
                 projectName,
