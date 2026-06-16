@@ -193,7 +193,8 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'No item ID provided' });
   }
 
-  const flexQuoteNumber = (
+  // Extract quote number from payload first
+  let flexQuoteNumber = (
     payload?.event?.value?.value         ||
     payload?.event?.columnValue?.value   ||
     payload?.columnValue                 ||
@@ -201,9 +202,36 @@ export default async function handler(req, res) {
     ''
   ).trim();
 
+  // If the payload didn't include the quote number (e.g. a status column triggered
+  // the webhook instead of the Flex Quote # text column), fall back to querying
+  // monday.com directly to get the current value of that column on this item.
   if (!flexQuoteNumber) {
-    console.log('ℹ️  No Flex quote number — skipping sync');
-    return res.status(200).json({ message: 'No quote number, nothing to sync' });
+    console.log('ℹ️  No quote number in payload — querying monday.com for item column value...');
+    try {
+      const itemQuery = await mondayMutation(`
+        query {
+          items(ids: [${itemId}]) {
+            column_values(ids: ["text_mm3x2yr6"]) {
+              id
+              text
+              value
+            }
+          }
+        }
+      `);
+      const colVal = itemQuery?.data?.items?.[0]?.column_values?.[0];
+      const fetched = (colVal?.text || colVal?.value || '').replace(/"/g, '').trim();
+      if (fetched) {
+        console.log(`✅ Quote number fetched from item: "${fetched}"`);
+        flexQuoteNumber = fetched;
+      } else {
+        console.log('ℹ️  Item has no Flex Quote # — skipping sync');
+        return res.status(200).json({ message: 'No quote number on item, nothing to sync' });
+      }
+    } catch (e) {
+      console.error('❌ Failed to fetch quote number from monday.com:', e.message);
+      return res.status(500).json({ error: 'Could not retrieve quote number from item' });
+    }
   }
 
   console.log(`🔗 Quote: "${flexQuoteNumber}" | Item: ${itemId} | Board: ${boardId}`);
