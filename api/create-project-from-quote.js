@@ -19,7 +19,10 @@
  * 9. Creates Google Drive folder structure from template
  * 
  * Author: Matt James, Antic Studios
- * Last Updated: June 16, 2026 - ADDED UUID COLUMN WRITES AT CREATION TIME
+ * Last Updated: June 16, 2026 - v2: Fixed Event Folder + Equipment List UUID fallback endpoints
+ *   - Event Folder: switched from broken /api/element (405) to /api/financial-document
+ *   - Equipment List: equipment list is a SIBLING of the quote (both under event folder),
+ *     not a child — now scans under eventFolderUUID with 6 fallback URL patterns
  */
 
 const MONDAY_API_URL = 'https://api.monday.com/v2';
@@ -36,6 +39,7 @@ const GOOGLE_APPS_SCRIPT_URL = process.env.GOOGLE_APPS_SCRIPT_URL || null;
 
 // ================================================================
 // HELPER: Precision utility to extract true 36-character UUID tokens
+// from nested Flex metadata structures
 // ================================================================
 function extractContactUuid(obj) {
     if (!obj) return null;
@@ -92,7 +96,8 @@ function extractFlexNumericValue(obj) {
 }
 
 // ================================================================
-// HELPER: Resolve contact UUID → human-readable name via Flex Identity
+// HELPER: Resolves a raw contact UUID to a human-readable name string
+// via Flex Identity Dictionary
 // ================================================================
 async function fetchContactNameFromFlex(uuid, fallbackDefault) {
     if (!uuid) return fallbackDefault;
@@ -111,7 +116,7 @@ async function fetchContactNameFromFlex(uuid, fallbackDefault) {
 }
 
 // ================================================================
-// HELPER: Scan monday Contacts registry board
+// HELPER: Scan monday Contacts registry board directly
 // ================================================================
 async function findContactInMondayRegistry(searchText) {
     if (!searchText || searchText.trim() === '' || searchText.includes('Unknown')) return null;
@@ -137,7 +142,7 @@ async function findContactInMondayRegistry(searchText) {
 }
 
 // ================================================================
-// HELPER: Search for existing project by Flex quote number (duplicate prevention)
+// HELPER: Search for existing project by Flex quote number to prevent duplicates
 // ================================================================
 async function findExistingProjectByFlexNumber(flexNumber) {
     if (!flexNumber) return null;
@@ -147,8 +152,18 @@ async function findExistingProjectByFlexNumber(flexNumber) {
         items_page_by_column_values(
             limit: 10,
             board_id: ${PROJECTS_BOARD_ID},
-            columns: [{ column_id: "text_mm3x2yr6", column_values: ["${flexNumber.replace(/"/g, '\\"')}"] }]
-        ) { items { id name } }
+            columns: [
+                {
+                    column_id: "text_mm3x2yr6",
+                    column_values: ["${flexNumber.replace(/"/g, '\\"')}"]
+                }
+            ]
+        ) {
+            items {
+                id
+                name
+            }
+        }
     }`;
 
     try {
@@ -159,10 +174,12 @@ async function findExistingProjectByFlexNumber(flexNumber) {
         });
         const result = await response.json();
         const items = result.data?.items_page_by_column_values?.items || [];
+
         if (items.length > 0) {
             console.log(`✅ Found existing project: "${items[0].name}" (ID: ${items[0].id})`);
             return items[0].id;
         }
+
         console.log(`➕ No existing project found - will create new`);
         return null;
     } catch (e) {
@@ -179,14 +196,24 @@ async function createProjectFolder(projectName, projectId, clientName, eventDate
         console.log(`⚠️ Google Apps Script URL not configured - skipping folder creation`);
         return null;
     }
+
     try {
         console.log(`📁 Creating Google Drive folder for: ${projectName}`);
+
         const response = await fetch(GOOGLE_APPS_SCRIPT_URL, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ projectName, projectId, clientName, eventDate, pmEmail })
+            body: JSON.stringify({
+                projectName,
+                projectId,
+                clientName,
+                eventDate,
+                pmEmail
+            })
         });
+
         const result = await response.json();
+
         if (result.success) {
             console.log(`✅ Google Drive folder created: ${result.folderUrl}`);
             return result;
@@ -230,8 +257,8 @@ export default async function handler(req, res) {
         if (!results || results.length === 0) throw new Error(`Quote identity reference "${quoteId}" not found in system.`);
 
         // ===== STEP 1.5: CLASSIFY ALL SEARCH RESULTS → EXTRACT THE THREE UUIDs =====
-        // THE BUG WAS HERE: previously only results[0].id was grabbed and the rest were dropped.
-        // Now we walk every result and classify by domainId so each UUID lands in the right column.
+        // Previously, only results[0].id was grabbed and the rest were dropped.
+        // Now we classify every result by domainId so each UUID lands in the right column.
         let quoteUUID         = null;
         let eventFolderUUID   = null;
         let equipmentListUUID = null;
@@ -247,12 +274,15 @@ export default async function handler(req, res) {
             if (['equipment-list', 'pull-sheet', 'pullsheet'].includes(domain)) {
                 equipmentListUUID = id;
                 console.log(`  📋 → Equipment List UUID: ${id}`);
+
             } else if (['project', 'event-folder', 'event_folder', 'folder'].includes(domain)) {
                 eventFolderUUID = id;
                 console.log(`  📁 → Event Folder UUID: ${id}`);
+
             } else if (['quote', 'financial-document', 'financial_document', 'financialdocument'].includes(domain)) {
                 quoteUUID = id;
                 console.log(`  📄 → Quote UUID: ${id}`);
+
             } else {
                 console.log(`  ❓ → Unrecognized domain "${domain}" — holding as fallback`);
                 if (!quoteUUID) {
@@ -262,116 +292,94 @@ export default async function handler(req, res) {
             }
         }
 
-        // internalId used for header-data fetch — prefer explicit quoteUUID
+        // internalId = the UUID we use to fetch header-data.
+        // Prefer the explicit quoteUUID; fall back to first result as before.
         const internalId = quoteUUID || resultArray[0].id || resultArray[0].elementId;
         console.log(`\n🔗 Internal ID for header-data fetch: ${internalId}`);
 
-       // ===== STEP 1.6: FALLBACK — Event Folder UUID =====
-// FIX: /api/element returns 405 for financial docs. Use /api/financial-document instead.
-if (!eventFolderUUID) {
-    try {
-        console.log(`🔍 Fetching financial-document to find parent Event Folder UUID...`);
-        const fdRes = await fetch(`${FLEX_BASE_URL}/api/financial-document/${internalId}`, {
-            headers: { 'X-Auth-Token': FLEX_API_KEY, 'Accept': 'application/json' }
-        });
-        console.log(`  financial-document status: ${fdRes.status}`);
-        if (fdRes.ok) {
-            const fdData = await fdRes.json();
-            // Log the full response so we can see the exact shape
-            console.log('📄 financial-document response:', JSON.stringify(fdData, null, 2));
-            
-            // Try every known field name Flex uses for the parent
-            eventFolderUUID = fdData.parentElementId
-                           || fdData.parentId
-                           || fdData.element?.id
-                           || fdData.elementFolder?.id
-                           || fdData.folder?.id
-                           || null;
-            
-            if (eventFolderUUID) {
-                console.log(`✅ Event Folder UUID from financial-document: ${eventFolderUUID}`);
-            } else {
-                console.warn('⚠️ parentElementId not found — top-level keys were:', Object.keys(fdData));
-            }
-        } else {
-            console.warn(`⚠️ financial-document endpoint returned ${fdRes.status}`);
-        }
-    } catch (e) {
-        console.warn('⚠️ financial-document fetch failed:', e.message);
-    }
-}
-
-// ===== STEP 1.7: FALLBACK — Equipment List UUID =====
-// FIX: Equipment list is a SIBLING of the quote, not a child.
-// Both live under the Event Folder — so we need eventFolderUUID first,
-// then scan its children for the equipment list.
-if (!equipmentListUUID) {
-    const scanId = eventFolderUUID || internalId;
-    const label  = eventFolderUUID ? 'event folder' : 'quote (fallback)';
-    console.log(`🔍 Scanning equipment lists under ${label}: ${scanId}`);
-
-    // Try every known Flex endpoint + param name combo
-    const urlsToTry = [
-        `${FLEX_BASE_URL}/api/equipment-list?elementId=${scanId}&page=0&size=10`,
-        `${FLEX_BASE_URL}/api/equipment-list?parentElementId=${scanId}&page=0&size=10`,
-        `${FLEX_BASE_URL}/api/pull-sheet?elementId=${scanId}&page=0&size=10`,
-        `${FLEX_BASE_URL}/api/pull-sheet?parentElementId=${scanId}&page=0&size=10`,
-        `${FLEX_BASE_URL}/api/element/${scanId}/equipment-list`,
-        `${FLEX_BASE_URL}/api/element/${scanId}/pull-sheet`,
-    ];
-
-    for (const url of urlsToTry) {
-        try {
-            const eqRes = await fetch(url, {
-                headers: { 'X-Auth-Token': FLEX_API_KEY, 'Accept': 'application/json' }
-            });
-            console.log(`  [${eqRes.status}] ${url}`);
-            if (eqRes.ok) {
-                const eqData  = await eqRes.json();
-                // Log so we can see the exact shape
-                console.log('📋 Equipment list response:', JSON.stringify(eqData, null, 2));
-                const eqItems = Array.isArray(eqData) ? eqData : (eqData.content || eqData.data || []);
-                if (eqItems.length > 0) {
-                    equipmentListUUID = eqItems[0].id;
-                    console.log(`✅ Equipment List UUID: ${equipmentListUUID}`);
-                    break;
-                } else {
-                    console.warn('  ↳ Returned 200 but no items in result');
-                }
-            }
-        } catch (e) {
-            console.warn(`  ↳ Fetch error: ${e.message}`);
-        }
-    }
-
-    if (!equipmentListUUID) {
-        console.warn('⚠️ All equipment list endpoint attempts exhausted — UUID not found');
-    }
-}
-
-        // ===== STEP 1.7: FALLBACK — Equipment List UUID via filter endpoint =====
-        if (!equipmentListUUID) {
+        // ===== STEP 1.6: FALLBACK — Event Folder UUID =====
+        // FIX: /api/element returns 405 for financial docs. Use /api/financial-document instead.
+        if (!eventFolderUUID) {
             try {
-                const eqUrl = `${FLEX_BASE_URL}/api/equipment-list?parentElementId=${internalId}&page=0&size=10`;
-                console.log(`🔍 Searching for equipment list: ${eqUrl}`);
-                const eqRes = await fetch(eqUrl, { headers: { 'X-Auth-Token': FLEX_API_KEY } });
-                if (eqRes.ok) {
-                    const eqData  = await eqRes.json();
-                    const eqItems = Array.isArray(eqData) ? eqData : (eqData.content || []);
-                    if (eqItems.length > 0) {
-                        equipmentListUUID = eqItems[0].id;
-                        console.log(`✅ Equipment List UUID from filter: ${equipmentListUUID}`);
+                console.log(`🔍 Fetching financial-document to find parent Event Folder UUID...`);
+                const fdRes = await fetch(`${FLEX_BASE_URL}/api/financial-document/${internalId}`, {
+                    headers: { 'X-Auth-Token': FLEX_API_KEY, 'Accept': 'application/json' }
+                });
+                console.log(`  financial-document status: ${fdRes.status}`);
+                if (fdRes.ok) {
+                    const fdData = await fdRes.json();
+                    // Log full response so we can see the exact shape if UUID is still missing
+                    console.log('📄 financial-document response:', JSON.stringify(fdData, null, 2));
+
+                    // Try every known field name Flex uses for the parent folder
+                    eventFolderUUID = fdData.parentElementId
+                                   || fdData.parentId
+                                   || fdData.element?.id
+                                   || fdData.elementFolder?.id
+                                   || fdData.folder?.id
+                                   || null;
+
+                    if (eventFolderUUID) {
+                        console.log(`✅ Event Folder UUID from financial-document: ${eventFolderUUID}`);
                     } else {
-                        console.warn('⚠️ No equipment lists found as children of this quote');
+                        console.warn('⚠️ parentElementId not found in financial-document — top-level keys were:', Object.keys(fdData));
                     }
                 } else {
-                    console.warn(`⚠️ Equipment list filter returned ${eqRes.status}`);
+                    console.warn(`⚠️ financial-document endpoint returned ${fdRes.status}`);
                 }
             } catch (e) {
-                console.warn('⚠️ Equipment list fallback fetch failed:', e.message);
+                console.warn('⚠️ financial-document fetch failed:', e.message);
             }
         }
 
+        // ===== STEP 1.7: FALLBACK — Equipment List UUID =====
+        // FIX: Equipment list is a SIBLING of the quote (both are children of the event folder).
+        // Searching under the quote UUID always 404s. We need the folder UUID first,
+        // then scan its children. Try 6 URL/param combos so we catch whatever Flex accepts.
+        if (!equipmentListUUID) {
+            const scanId = eventFolderUUID || internalId;
+            const label  = eventFolderUUID ? 'event folder' : 'quote (fallback — no folder UUID yet)';
+            console.log(`🔍 Scanning equipment lists under ${label}: ${scanId}`);
+
+            const urlsToTry = [
+                `${FLEX_BASE_URL}/api/equipment-list?elementId=${scanId}&page=0&size=10`,
+                `${FLEX_BASE_URL}/api/equipment-list?parentElementId=${scanId}&page=0&size=10`,
+                `${FLEX_BASE_URL}/api/pull-sheet?elementId=${scanId}&page=0&size=10`,
+                `${FLEX_BASE_URL}/api/pull-sheet?parentElementId=${scanId}&page=0&size=10`,
+                `${FLEX_BASE_URL}/api/element/${scanId}/equipment-list`,
+                `${FLEX_BASE_URL}/api/element/${scanId}/pull-sheet`,
+            ];
+
+            for (const url of urlsToTry) {
+                try {
+                    const eqRes = await fetch(url, {
+                        headers: { 'X-Auth-Token': FLEX_API_KEY, 'Accept': 'application/json' }
+                    });
+                    console.log(`  [${eqRes.status}] ${url}`);
+                    if (eqRes.ok) {
+                        const eqData  = await eqRes.json();
+                        // Log full response so we can see the exact shape
+                        console.log('📋 Equipment list response:', JSON.stringify(eqData, null, 2));
+                        const eqItems = Array.isArray(eqData) ? eqData : (eqData.content || eqData.data || []);
+                        if (eqItems.length > 0) {
+                            equipmentListUUID = eqItems[0].id;
+                            console.log(`✅ Equipment List UUID: ${equipmentListUUID}`);
+                            break; // stop trying once we have it
+                        } else {
+                            console.warn('  ↳ Returned 200 but zero items in result');
+                        }
+                    }
+                } catch (e) {
+                    console.warn(`  ↳ Fetch error on ${url}: ${e.message}`);
+                }
+            }
+
+            if (!equipmentListUUID) {
+                console.warn('⚠️ All equipment list endpoint attempts exhausted — UUID not found this run');
+            }
+        }
+
+        // Log what we have so far
         console.log('\n📊 UUID SUMMARY (pre-header-data):');
         console.log(`  📁 Event Folder : ${eventFolderUUID   || '❌ NOT FOUND'}`);
         console.log(`  📄 Quote        : ${quoteUUID         || '❌ NOT FOUND'}`);
@@ -387,59 +395,62 @@ if (!equipmentListUUID) {
         const data = await dataResponse.json();
         console.log('📋 Flex header data:', JSON.stringify(data, null, 2));
 
-        // Last chance to grab eventFolderUUID from header data
+        // If the header data carries a parentElementId and we still don't have eventFolderUUID, grab it now
         if (!eventFolderUUID) {
             eventFolderUUID = data.parentElementId || data?.data?.parentElementId || null;
             if (eventFolderUUID) console.log(`✅ Event Folder UUID from header data: ${eventFolderUUID}`);
         }
 
-        // ===== STEP 3: Extract contact UUIDs =====
+        // ===== STEP 3: Precision isolate the real wrapped 36-character UUID strings =====
         const clientUuid = extractContactUuid(data?.clientId);
         const venueUuid  = extractContactUuid(data?.venueId);
 
-        // ===== STEP 4: Resolve names =====
-        const clientFallback     = deepExtractName(data?.clientId) || '';
-        const venueFallback      = deepExtractName(data?.venueId)  || '';
+        // ===== STEP 4: Resolve true corporate titles from the isolated system addresses =====
+        const clientFallback = deepExtractName(data?.clientId) || '';
+        const venueFallback  = deepExtractName(data?.venueId)  || '';
+
         const clientResolvedName = await fetchContactNameFromFlex(clientUuid, clientFallback);
         const venueResolvedName  = await fetchContactNameFromFlex(venueUuid,  venueFallback);
 
-        const quoteNumber   = deepExtractName(data?.elementNumber) || String(quoteId);
-        const projectName   = deepExtractName(data?.name)          || 'Untitled Project';
-        const totalEstimate = extractFlexNumericValue(data?.totalPrice);
-        const notesText     = deepExtractName(data?.notes)         || 'No Notes';
+        const quoteNumber    = deepExtractName(data?.elementNumber) || String(quoteId);
+        const projectName    = deepExtractName(data?.name)          || 'Untitled Project';
+        const totalEstimate  = extractFlexNumericValue(data?.totalPrice);
+        const notesText      = deepExtractName(data?.notes)         || 'No Notes';
 
         console.log(`🎯 RESOLVED IDENTITY -> Client: "${clientResolvedName}" | Venue: "${venueResolvedName}"`);
 
-        // ===== STEP 5: Contacts lookup + duplicate check (parallel) =====
+        // ===== STEP 5: Scan monday registry + duplicate check =====
         const [matchedClientId, matchedVenueId, existingProjectId] = await Promise.all([
             findContactInMondayRegistry(clientResolvedName),
             findContactInMondayRegistry(venueResolvedName),
             findExistingProjectByFlexNumber(quoteNumber)
         ]);
 
-        // ===== STEP 6: Build column values =====
+        // ===== STEP 6: Build the unified row mapping data frame object =====
         const columnValues = {
             // Core project fields
-            text_mm3x2yr6:            quoteNumber,
-            text_mm435rt8:            clientResolvedName,
-            text_mm43r22q:            venueResolvedName,
-            multiple_person_mm3xmbb2: { personsAndTeams: [{ id: parseInt(PM_DEFAULT_ID, 10), kind: 'person' }] },
-            numeric_mm3xzncg:         totalEstimate,
-            long_text_mm3xfve1:       notesText,
-            color_mm3x4534:           { label: "Design" },
-            color_mm3xhnjc:           { label: "Medium" },
-            date_mm3z1vqz:            { date: new Date().toISOString().split('T')[0] },
-            color_mm3y3bxj:           { label: "Synced" },
+            text_mm3x2yr6:             quoteNumber,
+            text_mm435rt8:             clientResolvedName,
+            text_mm43r22q:             venueResolvedName,
+            multiple_person_mm3xmbb2:  { personsAndTeams: [{ id: parseInt(PM_DEFAULT_ID, 10), kind: 'person' }] },
+            numeric_mm3xzncg:          totalEstimate,
+            long_text_mm3xfve1:        notesText,
+            color_mm3x4534:            { label: "Design" },
+            color_mm3xhnjc:            { label: "Medium" },
+            date_mm3z1vqz:             { date: new Date().toISOString().split('T')[0] },
+            color_mm3y3bxj:            { label: "Synced" },
 
-            // ✅ THE THREE FLEX UUIDs — NOW WRITTEN AT CREATION TIME
+            // ✅ THE THREE FLEX UUIDs — written at creation time
             ...(eventFolderUUID   && { text_mm466djv: eventFolderUUID }),
             ...(quoteUUID         && { text_mm4cwasc: quoteUUID }),
             ...(equipmentListUUID && { text_mm3y7xwa: equipmentListUUID }),
         };
 
+        // Board relations
         if (matchedClientId) columnValues.board_relation_mm3x8evw = { item_ids: [parseInt(matchedClientId, 10)] };
         if (matchedVenueId)  columnValues.board_relation_mm3xrm02 = { item_ids: [parseInt(matchedVenueId,  10)] };
 
+        // Event date
         if (data?.eventDate) {
             const dateStr   = deepExtractName(data.eventDate);
             const dateMatch = dateStr ? dateStr.match(/(\d{4}-\d{2}-\d{2})/) : null;
@@ -447,6 +458,8 @@ if (!equipmentListUUID) {
         }
 
         console.log('\n📝 Column values to write:', JSON.stringify(columnValues, null, 2));
+
+        // Log UUID write status
         console.log('\n📊 FINAL UUID WRITE STATUS:');
         console.log(`  📁 Event Folder → text_mm466djv : ${eventFolderUUID   || '❌ NOT WRITTEN'}`);
         console.log(`  📄 Quote        → text_mm4cwasc  : ${quoteUUID         || '❌ NOT WRITTEN'}`);
@@ -458,6 +471,7 @@ if (!equipmentListUUID) {
 
         // ===== STEP 7: Update existing OR create new project =====
         if (existingProjectId) {
+            // UPDATE EXISTING PROJECT
             console.log(`🔄 Updating existing project ID: ${existingProjectId}`);
 
             const updateMutation = `mutation {
@@ -465,7 +479,10 @@ if (!equipmentListUUID) {
                     item_id: ${existingProjectId},
                     board_id: ${PROJECTS_BOARD_ID},
                     column_values: ${JSON.stringify(JSON.stringify(columnValues))}
-                ) { id name }
+                ) {
+                    id
+                    name
+                }
             }`;
 
             const updateResponse = await fetch(MONDAY_API_URL, {
@@ -482,6 +499,7 @@ if (!equipmentListUUID) {
             console.log(`✅ SUCCESS: Project updated - ID: ${resultItemId}`);
 
         } else {
+            // CREATE NEW PROJECT
             console.log(`➕ Creating new project: "${projectName}"`);
 
             const createMutation = `mutation { create_item(board_id: ${PROJECTS_BOARD_ID}, item_name: "${projectName.replace(/"/g, '\\"')}", column_values: ${JSON.stringify(JSON.stringify(columnValues))}) { id } }`;
@@ -498,7 +516,7 @@ if (!equipmentListUUID) {
             operationType = 'CREATED';
             console.log(`✅ SUCCESS: New project created - ID: ${resultItemId}`);
 
-            // Google Drive folder — new projects only
+            // STEP 8: Create Google Drive folder for NEW projects only
             const eventDateStr = columnValues.date_mm3xca9r?.date || '';
             driveFolder = await createProjectFolder(
                 projectName,
@@ -511,8 +529,8 @@ if (!equipmentListUUID) {
 
         return res.status(200).json({
             success: true,
-            projectId:  resultItemId,
-            operation:  operationType,
+            projectId: resultItemId,
+            operation: operationType,
             flexNumber: quoteNumber,
             uuids: {
                 eventFolder:   { column: 'text_mm466djv', value: eventFolderUUID   || null },
