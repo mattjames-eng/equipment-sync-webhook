@@ -18,8 +18,8 @@ const CONTACTS_COMPANIES_BOARD_ID = '18415573401';
 // Column IDs
 const BOL_STATUS_COLUMN = 'color_mm4dx241';
 
-// Google Docs BOL Template ID (you'll need to create this and add the ID here)
-const BOL_TEMPLATE_ID = 'YOUR_GOOGLE_DOC_TEMPLATE_ID_HERE';
+// Google Docs BOL Template ID
+const BOL_TEMPLATE_ID = '1queGcWsRgc8b8cBBlwdNnEDE-MVpSFIZ0iMPD33JLJE';
 
 /**
  * Main handler for BOL generation webhook
