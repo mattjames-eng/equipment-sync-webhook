@@ -59,7 +59,28 @@ module.exports = async (req, res) => {
   }
   
   try {
-    const { boardId, itemId, columnValues } = body;
+    // Extract data from Monday's webhook format
+    const event = body.event;
+    
+    if (!event) {
+      return res.status(400).json({ error: 'Missing event data in webhook payload' });
+    }
+    
+    const itemId = event.pulseId;
+    const boardId = event.boardId;
+    const columnId = event.columnId;
+    const statusLabel = event.value?.label?.text || event.value?.label;
+    
+    console.log(`Item ID: ${itemId}, Status: ${statusLabel}`);
+    
+    // Only process if status changed to "Generate"
+    if (statusLabel !== 'Generate') {
+      console.log(`Status is "${statusLabel}", not "Generate". Skipping.`);
+      return res.status(200).json({ 
+        message: 'Status not "Generate", skipping',
+        status: statusLabel
+      });
+    }
 
     if (!itemId) {
       return res.status(400).json({ error: 'Missing itemId in webhook payload' });
