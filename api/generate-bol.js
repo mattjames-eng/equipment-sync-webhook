@@ -1,0 +1,467 @@
+const { google } = require('googleapis');
+const fetch = require('node-fetch');
+
+// Monday.com API configuration
+const MONDAY_API_URL = 'https://api.monday.com/v2';
+const MONDAY_API_TOKEN = process.env.MONDAY_API_TOKEN;
+
+// Google API configuration
+const GOOGLE_CREDENTIALS = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_KEY);
+const SCOPES = ['https://www.googleapis.com/auth/documents', 'https://www.googleapis.com/auth/drive'];
+
+// Board IDs
+const ROUTE_STOPS_BOARD_ID = '18415570592';
+const PROJECTS_BOARD_ID = '18415679761';
+const CREW_DATABASE_BOARD_ID = '18415879010';
+const CONTACTS_COMPANIES_BOARD_ID = '18415573401';
+
+// Column IDs
+const BOL_STATUS_COLUMN = 'color_mm4dx241';
+
+// Google Docs BOL Template ID (you'll need to create this and add the ID here)
+const BOL_TEMPLATE_ID = 'YOUR_GOOGLE_DOC_TEMPLATE_ID_HERE';
+
+/**
+ * Main handler for BOL generation webhook
+ */
+module.exports = async (req, res) => {
+  console.log('BOL Generation webhook triggered');
+  
+  try {
+    const { boardId, itemId, columnValues } = req.body;
+
+    if (!itemId) {
+      return res.status(400).json({ error: 'Missing itemId in webhook payload' });
+    }
+
+    console.log(`Processing BOL for Route Stop item: ${itemId}`);
+
+    // Step 1: Fetch full route stop data from Monday
+    const routeStopData = await fetchRouteStopData(itemId);
+    console.log('Route stop data fetched:', routeStopData);
+
+    // Step 2: Fetch related data (driver, carrier, location, project/Flex #)
+    const enrichedData = await enrichRouteStopData(routeStopData);
+    console.log('Enriched data:', enrichedData);
+
+    // Step 3: Generate BOL from Google Docs template
+    const pdfUrl = await generateBOLFromTemplate(enrichedData);
+    console.log('BOL PDF generated:', pdfUrl);
+
+    // Step 4: Upload PDF to Monday.com file column
+    await uploadBOLToMonday(itemId, pdfUrl, enrichedData.routeStopName);
+
+    // Step 5: Update status to "Complete"
+    await updateBOLStatus(itemId, 'Complete');
+
+    return res.status(200).json({ 
+      success: true, 
+      message: 'BOL generated successfully',
+      itemId,
+      pdfUrl
+    });
+
+  } catch (error) {
+    console.error('Error generating BOL:', error);
+    return res.status(500).json({ 
+      error: 'Failed to generate BOL', 
+      details: error.message 
+    });
+  }
+};
+
+/**
+ * Fetch route stop data from Monday.com
+ */
+async function fetchRouteStopData(itemId) {
+  const query = `
+    query {
+      items(ids: [${itemId}]) {
+        id
+        name
+        column_values {
+          id
+          value
+          text
+        }
+      }
+    }
+  `;
+
+  const response = await fetch(MONDAY_API_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': MONDAY_API_TOKEN
+    },
+    body: JSON.stringify({ query })
+  });
+
+  const data = await response.json();
+  
+  if (data.errors) {
+    throw new Error(`Monday API error: ${JSON.stringify(data.errors)}`);
+  }
+
+  const item = data.data.items[0];
+  
+  // Parse column values into a usable object
+  const columnData = {};
+  item.column_values.forEach(col => {
+    columnData[col.id] = {
+      value: col.value ? JSON.parse(col.value) : null,
+      text: col.text
+    };
+  });
+
+  return {
+    itemId: item.id,
+    routeStopName: item.name,
+    columns: columnData
+  };
+}
+
+/**
+ * Enrich route stop data with related information from other boards
+ */
+async function enrichRouteStopData(routeStopData) {
+  const enriched = {
+    routeStopName: routeStopData.routeStopName,
+    itemId: routeStopData.itemId,
+    date: routeStopData.columns.date_mm3v2kz1?.text || '',
+    time: routeStopData.columns.hour_mm3ws9gq?.text || '',
+    weight: routeStopData.columns.numeric_mm3v2r3c?.text || '',
+    truckSpace: routeStopData.columns.dropdown_mm3wk0ey?.text || '',
+    driver: null,
+    carrier: null,
+    location: null,
+    flexNumber: null
+  };
+
+  // Fetch Driver info (from Crew Database)
+  const driverRelation = routeStopData.columns.board_relation_mm3va52r?.value;
+  if (driverRelation && driverRelation.linkedPulseIds && driverRelation.linkedPulseIds.length > 0) {
+    enriched.driver = await fetchCrewMemberData(driverRelation.linkedPulseIds[0].linkedPulseId);
+  }
+
+  // Fetch Carrier info (from Contacts & Companies)
+  const carrierRelation = routeStopData.columns.board_relation_mm49kxqr?.value;
+  if (carrierRelation && carrierRelation.linkedPulseIds && carrierRelation.linkedPulseIds.length > 0) {
+    enriched.carrier = await fetchContactData(carrierRelation.linkedPulseIds[0].linkedPulseId);
+  }
+
+  // Fetch Location info (from Contacts & Companies)
+  const locationRelation = routeStopData.columns.board_relation_mm3vn6yb?.value;
+  if (locationRelation && locationRelation.linkedPulseIds && locationRelation.linkedPulseIds.length > 0) {
+    enriched.location = await fetchContactData(locationRelation.linkedPulseIds[0].linkedPulseId);
+  }
+
+  // Fetch Project and Flex # (from Projects board)
+  const projectRelation = routeStopData.columns.board_relation_mm46qc4d?.value;
+  if (projectRelation && projectRelation.linkedPulseIds && projectRelation.linkedPulseIds.length > 0) {
+    const projectData = await fetchProjectData(projectRelation.linkedPulseIds[0].linkedPulseId);
+    enriched.flexNumber = projectData.flexNumber;
+    enriched.projectName = projectData.projectName;
+  }
+
+  return enriched;
+}
+
+/**
+ * Fetch crew member data from Crew Database
+ */
+async function fetchCrewMemberData(crewId) {
+  const query = `
+    query {
+      items(ids: [${crewId}]) {
+        id
+        name
+        column_values {
+          id
+          value
+          text
+        }
+      }
+    }
+  `;
+
+  const response = await fetch(MONDAY_API_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': MONDAY_API_TOKEN
+    },
+    body: JSON.stringify({ query })
+  });
+
+  const data = await response.json();
+  const item = data.data.items[0];
+
+  // Extract relevant crew data - adjust column IDs as needed
+  const phoneCol = item.column_values.find(c => c.id === 'phone' || c.text?.includes('phone'));
+  const emailCol = item.column_values.find(c => c.id === 'email' || c.text?.includes('email'));
+  const licenseCol = item.column_values.find(c => c.text?.toLowerCase().includes('license'));
+
+  return {
+    name: item.name,
+    phone: phoneCol?.text || '',
+    email: emailCol?.text || '',
+    license: licenseCol?.text || ''
+  };
+}
+
+/**
+ * Fetch contact/company data from Contacts & Companies board
+ */
+async function fetchContactData(contactId) {
+  const query = `
+    query {
+      items(ids: [${contactId}]) {
+        id
+        name
+        column_values {
+          id
+          value
+          text
+        }
+      }
+    }
+  `;
+
+  const response = await fetch(MONDAY_API_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': MONDAY_API_TOKEN
+    },
+    body: JSON.stringify({ query })
+  });
+
+  const data = await response.json();
+  const item = data.data.items[0];
+
+  // Extract address - column ID: long_text_mm3vkzc6
+  const addressCol = item.column_values.find(c => c.id === 'long_text_mm3vkzc6');
+  const phoneCol = item.column_values.find(c => c.id === 'phone' || c.text?.includes('phone'));
+
+  return {
+    name: item.name,
+    address: addressCol?.text || '',
+    phone: phoneCol?.text || ''
+  };
+}
+
+/**
+ * Fetch project data and Flex # from Projects board
+ */
+async function fetchProjectData(projectId) {
+  const query = `
+    query {
+      items(ids: [${projectId}]) {
+        id
+        name
+        column_values {
+          id
+          value
+          text
+        }
+      }
+    }
+  `;
+
+  const response = await fetch(MONDAY_API_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': MONDAY_API_TOKEN
+    },
+    body: JSON.stringify({ query })
+  });
+
+  const data = await response.json();
+  const item = data.data.items[0];
+
+  // Extract Flex Project # - column ID: text_mm3x2yr6
+  const flexCol = item.column_values.find(c => c.id === 'text_mm3x2yr6');
+
+  return {
+    projectName: item.name,
+    flexNumber: flexCol?.text || 'N/A'
+  };
+}
+
+/**
+ * Generate BOL from Google Docs template
+ */
+async function generateBOLFromTemplate(data) {
+  // Authenticate with Google
+  const auth = new google.auth.GoogleAuth({
+    credentials: GOOGLE_CREDENTIALS,
+    scopes: SCOPES
+  });
+
+  const authClient = await auth.getClient();
+  const docs = google.docs({ version: 'v1', auth: authClient });
+  const drive = google.drive({ version: 'v3', auth: authClient });
+
+  // Copy the template
+  const copyResponse = await drive.files.copy({
+    fileId: BOL_TEMPLATE_ID,
+    requestBody: {
+      name: `BOL - ${data.routeStopName} - ${data.date}`
+    }
+  });
+
+  const newDocId = copyResponse.data.id;
+  console.log('Created BOL document copy:', newDocId);
+
+  // Prepare replacement data
+  const replacements = {
+    '{{ROUTE_STOP_NAME}}': data.routeStopName || '',
+    '{{DATE}}': data.date || '',
+    '{{TIME}}': data.time || '',
+    '{{FLEX_NUMBER}}': data.flexNumber || 'N/A',
+    '{{PROJECT_NAME}}': data.projectName || '',
+    '{{DRIVER_NAME}}': data.driver?.name || 'N/A',
+    '{{DRIVER_PHONE}}': data.driver?.phone || '',
+    '{{DRIVER_EMAIL}}': data.driver?.email || '',
+    '{{DRIVER_LICENSE}}': data.driver?.license || '',
+    '{{CARRIER_NAME}}': data.carrier?.name || 'N/A',
+    '{{CARRIER_PHONE}}': data.carrier?.phone || '',
+    '{{LOCATION_NAME}}': data.location?.name || '',
+    '{{LOCATION_ADDRESS}}': data.location?.address || '',
+    '{{WEIGHT}}': data.weight || '',
+    '{{TRUCK_SPACE}}': data.truckSpace || ''
+  };
+
+  // Build batch update requests for all replacements
+  const requests = [];
+  for (const [placeholder, value] of Object.entries(replacements)) {
+    requests.push({
+      replaceAllText: {
+        containsText: {
+          text: placeholder,
+          matchCase: true
+        },
+        replaceText: value
+      }
+    });
+  }
+
+  // Execute all replacements
+  await docs.documents.batchUpdate({
+    documentId: newDocId,
+    requestBody: {
+      requests: requests
+    }
+  });
+
+  console.log('BOL document populated with data');
+
+  // Export as PDF
+  const pdfResponse = await drive.files.export({
+    fileId: newDocId,
+    mimeType: 'application/pdf'
+  }, {
+    responseType: 'arraybuffer'
+  });
+
+  // Upload PDF to a temporary location or return base64
+  const pdfBuffer = Buffer.from(pdfResponse.data);
+  const pdfBase64 = pdfBuffer.toString('base64');
+
+  // Make the file publicly accessible (or use a signed URL)
+  await drive.permissions.create({
+    fileId: newDocId,
+    requestBody: {
+      role: 'reader',
+      type: 'anyone'
+    }
+  });
+
+  const fileUrl = `https://drive.google.com/uc?export=download&id=${newDocId}`;
+
+  return {
+    url: fileUrl,
+    base64: pdfBase64,
+    docId: newDocId
+  };
+}
+
+/**
+ * Upload BOL PDF to Monday.com file column
+ */
+async function uploadBOLToMonday(itemId, pdfData, routeStopName) {
+  // Step 1: Get upload URL from Monday
+  const getUrlQuery = `
+    mutation {
+      add_file_to_column(
+        item_id: ${itemId},
+        column_id: "file",
+        file: {
+          name: "BOL_${routeStopName.replace(/[^a-zA-Z0-9]/g, '_')}.pdf",
+          url: "${pdfData.url}"
+        }
+      ) {
+        id
+      }
+    }
+  `;
+
+  const response = await fetch(MONDAY_API_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': MONDAY_API_TOKEN
+    },
+    body: JSON.stringify({ query: getUrlQuery })
+  });
+
+  const data = await response.json();
+  
+  if (data.errors) {
+    throw new Error(`Failed to upload BOL to Monday: ${JSON.stringify(data.errors)}`);
+  }
+
+  console.log('BOL uploaded to Monday.com');
+  return data;
+}
+
+/**
+ * Update BOL Generation Status column
+ */
+async function updateBOLStatus(itemId, status) {
+  const statusValue = status === 'Complete' ? '{"index": 2}' : '{"index": 0}';
+  
+  const mutation = `
+    mutation {
+      change_column_value(
+        item_id: ${itemId},
+        board_id: ${ROUTE_STOPS_BOARD_ID},
+        column_id: "${BOL_STATUS_COLUMN}",
+        value: "${statusValue.replace(/"/g, '\\"')}"
+      ) {
+        id
+      }
+    }
+  `;
+
+  const response = await fetch(MONDAY_API_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': MONDAY_API_TOKEN
+    },
+    body: JSON.stringify({ query: mutation })
+  });
+
+  const data = await response.json();
+  
+  if (data.errors) {
+    console.error('Failed to update BOL status:', data.errors);
+  } else {
+    console.log(`BOL status updated to: ${status}`);
+  }
+
+  return data;
+}
