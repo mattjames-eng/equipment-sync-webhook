@@ -431,7 +431,7 @@ async function uploadBOLToMonday(itemId, pdfData, routeStopName) {
     mutation {
       add_file_to_column(
         item_id: ${itemId},
-        column_id: "file",
+        column_id: "file_mm4dpv3q",
         file: {
           name: "BOL_${routeStopName.replace(/[^a-zA-Z0-9]/g, '_')}.pdf",
           url: "${pdfData.url}"
