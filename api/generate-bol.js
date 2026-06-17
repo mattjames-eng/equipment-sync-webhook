@@ -1,6 +1,13 @@
 const { google } = require('googleapis');
 const fetch = require('node-fetch');
 
+// Vercel body parser configuration
+export const config = {
+  api: {
+    bodyParser: true,
+  },
+};
+
 // Monday.com API configuration
 const MONDAY_API_URL = 'https://api.monday.com/v2';
 const MONDAY_API_TOKEN = process.env.MONDAY_API_TOKEN;
@@ -27,8 +34,23 @@ const BOL_TEMPLATE_ID = '1queGcWsRgc8b8cBBlwdNnEDE-MVpSFIZ0iMPD33JLJE';
 module.exports = async (req, res) => {
   console.log('BOL Generation webhook triggered');
   
+  // Handle Monday webhook validation (GET requests)
+  if (req.method === 'GET') {
+    return res.status(200).json({ status: 'ok' });
+  }
+  
+  // Parse body if it's not already parsed
+  let body = req.body;
+  if (typeof body === 'string') {
+    try {
+      body = JSON.parse(body);
+    } catch (e) {
+      return res.status(400).json({ error: 'Invalid JSON in request body' });
+    }
+  }
+  
   try {
-    const { boardId, itemId, columnValues } = req.body;
+    const { boardId, itemId, columnValues } = body;
 
     if (!itemId) {
       return res.status(400).json({ error: 'Missing itemId in webhook payload' });
@@ -45,11 +67,11 @@ module.exports = async (req, res) => {
     console.log('Enriched data:', enrichedData);
 
     // Step 3: Generate BOL from Google Docs template
-    const pdfUrl = await generateBOLFromTemplate(enrichedData);
-    console.log('BOL PDF generated:', pdfUrl);
+    const pdfData = await generateBOLFromTemplate(enrichedData);
+    console.log('BOL PDF generated:', pdfData);
 
     // Step 4: Upload PDF to Monday.com file column
-    await uploadBOLToMonday(itemId, pdfUrl, enrichedData.routeStopName);
+    await uploadBOLToMonday(itemId, pdfData, enrichedData.routeStopName);
 
     // Step 5: Update status to "Complete"
     await updateBOLStatus(itemId, 'Complete');
@@ -58,7 +80,7 @@ module.exports = async (req, res) => {
       success: true, 
       message: 'BOL generated successfully',
       itemId,
-      pdfUrl
+      docId: pdfData.docId
     });
 
   } catch (error) {
@@ -135,7 +157,8 @@ async function enrichRouteStopData(routeStopData) {
     driver: null,
     carrier: null,
     location: null,
-    flexNumber: null
+    flexNumber: null,
+    projectName: null
   };
 
   // Fetch Driver info (from Crew Database)
@@ -180,6 +203,7 @@ async function fetchCrewMemberData(crewId) {
           id
           value
           text
+          type
         }
       }
     }
@@ -197,10 +221,10 @@ async function fetchCrewMemberData(crewId) {
   const data = await response.json();
   const item = data.data.items[0];
 
-  // Extract relevant crew data - adjust column IDs as needed
-  const phoneCol = item.column_values.find(c => c.id === 'phone' || c.text?.includes('phone'));
-  const emailCol = item.column_values.find(c => c.id === 'email' || c.text?.includes('email'));
-  const licenseCol = item.column_values.find(c => c.text?.toLowerCase().includes('license'));
+  // Extract relevant crew data - look for phone, email, license columns
+  const phoneCol = item.column_values.find(c => c.type === 'phone');
+  const emailCol = item.column_values.find(c => c.type === 'email');
+  const licenseCol = item.column_values.find(c => c.id.includes('license') || c.text?.toLowerCase().includes('license'));
 
   return {
     name: item.name,
@@ -223,6 +247,7 @@ async function fetchContactData(contactId) {
           id
           value
           text
+          type
         }
       }
     }
@@ -242,7 +267,7 @@ async function fetchContactData(contactId) {
 
   // Extract address - column ID: long_text_mm3vkzc6
   const addressCol = item.column_values.find(c => c.id === 'long_text_mm3vkzc6');
-  const phoneCol = item.column_values.find(c => c.id === 'phone' || c.text?.includes('phone'));
+  const phoneCol = item.column_values.find(c => c.type === 'phone');
 
   return {
     name: item.name,
