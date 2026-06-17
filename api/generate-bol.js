@@ -359,13 +359,14 @@ async function generateBOLFromTemplate(data) {
   const docs = google.docs({ version: 'v1', auth: authClient });
   const drive = google.drive({ version: 'v3', auth: authClient });
 
-  // Copy the template
-  const copyResponse = await drive.files.copy({
-    fileId: BOL_TEMPLATE_ID,
-    requestBody: {
-      name: `BOL - ${data.routeStopName} - ${data.date}`
-    }
-  });
+  // Copy the template into your specified folder
+const copyResponse = await drive.files.copy({
+  fileId: BOL_TEMPLATE_ID,
+  requestBody: {
+    name: `BOL - ${data.routeStopName} - ${data.date}`,
+    parents: ['1tHeg8lfNY2mv-1rhLHLen5AFGugmzYaN']
+  }
+});
 
   const newDocId = copyResponse.data.id;
   console.log('Created BOL document copy:', newDocId);
