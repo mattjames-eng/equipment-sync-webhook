@@ -359,14 +359,13 @@ async function generateBOLFromTemplate(data) {
   const docs = google.docs({ version: 'v1', auth: authClient });
   const drive = google.drive({ version: 'v3', auth: authClient });
 
-  // Copy the template into your specified folder
-const copyResponse = await drive.files.copy({
-  fileId: BOL_TEMPLATE_ID,
-  requestBody: {
-    name: `BOL - ${data.routeStopName} - ${data.date}`,
-    parents: ['1tHeg8lfNY2mv-1rhLHLen5AFGugmzYaN']
-  }
-});
+  // Copy the template
+  const copyResponse = await drive.files.copy({
+    fileId: BOL_TEMPLATE_ID,
+    requestBody: {
+      name: `BOL - ${data.routeStopName} - ${data.date}`
+    }
+  });
 
   const newDocId = copyResponse.data.id;
   console.log('Created BOL document copy:', newDocId);
@@ -436,6 +435,16 @@ const copyResponse = await drive.files.copy({
   });
 
   const fileUrl = `https://drive.google.com/uc?export=download&id=${newDocId}`;
+
+  // Delete the Google Doc after PDF generation to save storage
+  try {
+    await drive.files.delete({
+      fileId: newDocId
+    });
+    console.log('✅ Google Doc deleted after PDF generation');
+  } catch (deleteError) {
+    console.warn('⚠️ Failed to delete Google Doc:', deleteError.message);
+  }
 
   return {
     url: fileUrl,
