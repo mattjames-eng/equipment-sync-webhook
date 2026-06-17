@@ -359,7 +359,7 @@ async function generateBOLFromTemplate(data) {
   const docs = google.docs({ version: 'v1', auth: authClient });
   const drive = google.drive({ version: 'v3', auth: authClient });
 
-  // Copy the template
+  // Copy the template (NO parents line)
   const copyResponse = await drive.files.copy({
     fileId: BOL_TEMPLATE_ID,
     requestBody: {
@@ -421,11 +421,11 @@ async function generateBOLFromTemplate(data) {
     responseType: 'arraybuffer'
   });
 
-  // Upload PDF to a temporary location or return base64
+  // Convert to base64
   const pdfBuffer = Buffer.from(pdfResponse.data);
   const pdfBase64 = pdfBuffer.toString('base64');
 
-  // Make the file publicly accessible (or use a signed URL)
+  // Make the file publicly accessible temporarily
   await drive.permissions.create({
     fileId: newDocId,
     requestBody: {
@@ -457,7 +457,6 @@ async function generateBOLFromTemplate(data) {
  * Upload BOL PDF to Monday.com file column
  */
 async function uploadBOLToMonday(itemId, pdfData, routeStopName) {
-  // Step 1: Get upload URL from Monday
   const getUrlQuery = `
     mutation {
       add_file_to_column(
