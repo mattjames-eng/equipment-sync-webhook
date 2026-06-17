@@ -33,8 +33,17 @@ const BOL_TEMPLATE_ID = '1queGcWsRgc8b8cBBlwdNnEDE-MVpSFIZ0iMPD33JLJE';
  */
 module.exports = async (req, res) => {
   console.log('BOL Generation webhook triggered');
+  console.log('Method:', req.method);
+  console.log('Query params:', req.query);
+  console.log('Body:', req.body);
   
-  // Handle Monday webhook validation (GET requests)
+  // Handle Monday webhook challenge validation
+  if (req.method === 'POST' && req.body && req.body.challenge) {
+    console.log('Responding to Monday challenge:', req.body.challenge);
+    return res.status(200).json({ challenge: req.body.challenge });
+  }
+  
+  // Handle GET requests for basic validation
   if (req.method === 'GET') {
     return res.status(200).json({ status: 'ok' });
   }
