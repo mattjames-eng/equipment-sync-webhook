@@ -225,62 +225,120 @@ async function fetchRouteDetails(routeId) {
  * Fetch all Route Stops for a given route
  */
 async function fetchRouteStops(routeId) {
-  // Use items_page_by_column_values to filter by the Route connection
-  // This is more reliable than boards().items_page() for board relation columns
-  const stopsQuery = `
+  // Step 1: Get all item IDs from Route Stops board
+  const idsQuery = `
     query {
-      items_page_by_column_values(
-        board_id: ${ROUTE_STOPS_BOARD_ID},
-        columns: [
-          {
-            column_id: "${ROUTE_STOPS_ROUTE_COLUMN}",
-            column_values: ["${routeId}"]
-          }
-        ],
-        limit: 500
-      ) {
-        items {
-          id
-          name
-          column_values {
+      boards(ids: [${ROUTE_STOPS_BOARD_ID}]) {
+        items_page(limit: 500) {
+          items {
             id
-            value
-            text
           }
         }
       }
     }
   `;
 
-  const stopsResponse = await fetch(MONDAY_API_URL, {
+  const idsResponse = await fetch(MONDAY_API_URL, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'Authorization': MONDAY_API_TOKEN
     },
-    body: JSON.stringify({ query: stopsQuery })
+    body: JSON.stringify({ query: idsQuery })
   });
 
-  const stopsData = await stopsResponse.json();
+  const idsData = await idsResponse.json();
   
-  if (stopsData.errors) {
-    throw new Error(`Monday API error fetching stops: ${JSON.stringify(stopsData.errors)}`);
+  if (idsData.errors) {
+    throw new Error(`Monday API error fetching item IDs: ${JSON.stringify(idsData.errors)}`);
   }
 
-  const allItems = stopsData.data.items_page_by_column_values.items;
-  
-  console.log(`Found ${allItems.length} route stops connected to Route ${routeId}`);
+  const itemIds = idsData.data.boards[0].items_page.items.map(item => item.id);
+  console.log(`Found ${itemIds.length} total items on Route Stops board`);
 
-  // Log first item's columns for debugging
-  if (allItems.length > 0) {
-    console.log('Sample item columns:', JSON.stringify(allItems[0].column_values.map(c => ({ id: c.id, value: c.value, text: c.text })), null, 2));
+  if (itemIds.length === 0) {
+    return [];
+  }
+
+  // Step 2: Query those items directly to get full column data (including relations)
+  const itemsQuery = `
+    query {
+      items(ids: [${itemIds.join(', ')}]) {
+        id
+        name
+        column_values {
+          id
+          value
+          text
+        }
+      }
+    }
+  `;
+
+  const itemsResponse = await fetch(MONDAY_API_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': MONDAY_API_TOKEN
+    },
+    body: JSON.stringify({ query: itemsQuery })
+  });
+
+  const itemsData = await itemsResponse.json();
+  
+  if (itemsData.errors) {
+    throw new Error(`Monday API error fetching items: ${JSON.stringify(itemsData.errors)}`);
+  }
+
+  const allItems = itemsData.data.items;
+  
+  console.log(`Fetched full data for ${allItems.length} items`);
+
+  // Step 3: Filter items that are connected to this route
+  const filteredItems = allItems.filter(item => {
+    const routeColumn = item.column_values.find(col => col.id === ROUTE_STOPS_ROUTE_COLUMN);
+    if (!routeColumn || !routeColumn.value) {
+      return false;
+    }
+    
+    try {
+      const parsedValue = JSON.parse(routeColumn.value);
+      
+      // Format 1: linkedPulseIds array
+      if (parsedValue.linkedPulseIds) {
+        return parsedValue.linkedPulseIds.some(link => 
+          link.linkedPulseId.toString() === routeId.toString()
+        );
+      }
+      
+      // Format 2: Direct array of linked items
+      if (Array.isArray(parsedValue)) {
+        return parsedValue.some(link => 
+          link.id && link.id.toString() === routeId.toString()
+        );
+      }
+      
+      return false;
+    } catch (e) {
+      console.error(`Error parsing route column for item ${item.id}:`, e);
+      return false;
+    }
+  });
+
+  console.log(`Found ${filteredItems.length} route stops connected to Route ${routeId}`);
+
+  // Log first item's route column for debugging
+  if (filteredItems.length > 0) {
+    const firstItem = filteredItems[0];
+    const routeCol = firstItem.column_values.find(c => c.id === ROUTE_STOPS_ROUTE_COLUMN);
+    console.log('Sample route column value:', routeCol?.value);
   }
 
   // Helper function to extract linked item ID from board relation column
   const getLinkedId = (columnValue) => {
     if (!columnValue) return null;
     
-    // Format 1: linkedPulseIds array (from items_page_by_column_values)
+    // Format 1: linkedPulseIds array
     if (columnValue.linkedPulseIds && columnValue.linkedPulseIds.length > 0) {
       return columnValue.linkedPulseIds[0].linkedPulseId;
     }
@@ -294,7 +352,7 @@ async function fetchRouteStops(routeId) {
   };
 
   // Parse column values for each stop
-  return allItems.map(item => {
+  return filteredItems.map(item => {
     const columnData = {};
     item.column_values.forEach(col => {
       columnData[col.id] = {
