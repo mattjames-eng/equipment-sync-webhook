@@ -297,27 +297,51 @@ async function fetchRouteStops(routeId) {
   // Step 3: Filter items that are connected to this route
   const filteredItems = allItems.filter(item => {
     const routeColumn = item.column_values.find(col => col.id === ROUTE_STOPS_ROUTE_COLUMN);
-    if (!routeColumn || !routeColumn.value) {
+    
+    console.log(`\n--- Checking item ${item.id} (${item.name}) ---`);
+    console.log('Route column found:', !!routeColumn);
+    
+    if (!routeColumn) {
+      console.log('No route column found');
+      return false;
+    }
+    
+    console.log('Route column value (raw):', routeColumn.value);
+    console.log('Route column text:', routeColumn.text);
+    
+    if (!routeColumn.value) {
+      console.log('Route column value is null/empty');
       return false;
     }
     
     try {
       const parsedValue = JSON.parse(routeColumn.value);
+      console.log('Parsed value:', JSON.stringify(parsedValue, null, 2));
+      console.log('Looking for routeId:', routeId);
       
       // Format 1: linkedPulseIds array
       if (parsedValue.linkedPulseIds) {
-        return parsedValue.linkedPulseIds.some(link => 
-          link.linkedPulseId.toString() === routeId.toString()
-        );
+        console.log('Format 1: linkedPulseIds array detected');
+        const match = parsedValue.linkedPulseIds.some(link => {
+          console.log(`  Comparing ${link.linkedPulseId} === ${routeId}`);
+          return link.linkedPulseId.toString() === routeId.toString();
+        });
+        console.log('Match result:', match);
+        return match;
       }
       
       // Format 2: Direct array of linked items
       if (Array.isArray(parsedValue)) {
-        return parsedValue.some(link => 
-          link.id && link.id.toString() === routeId.toString()
-        );
+        console.log('Format 2: Direct array detected');
+        const match = parsedValue.some(link => {
+          console.log(`  Comparing ${link.id} === ${routeId}`);
+          return link.id && link.id.toString() === routeId.toString();
+        });
+        console.log('Match result:', match);
+        return match;
       }
       
+      console.log('No recognized format found');
       return false;
     } catch (e) {
       console.error(`Error parsing route column for item ${item.id}:`, e);
