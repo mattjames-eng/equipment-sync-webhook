@@ -196,20 +196,19 @@ async function fetchRouteDetails(routeId) {
  * Fetch all Route Stops for a given route
  */
 async function fetchRouteStops(routeId) {
+  // First, get all items from Route Stops board
   const stopsQuery = `
     query {
-      items_page_by_column_values(
-        board_id: ${ROUTE_STOPS_BOARD_ID},
-        columns: [{column_id: "${ROUTE_STOPS_ROUTE_COLUMN}", column_values: ["${routeId}"]}]
-        limit: 100
-      ) {
-        items {
-          id
-          name
-          column_values {
+      boards(ids: [${ROUTE_STOPS_BOARD_ID}]) {
+        items_page(limit: 500) {
+          items {
             id
-            value
-            text
+            name
+            column_values {
+              id
+              value
+              text
+            }
           }
         }
       }
@@ -231,10 +230,24 @@ async function fetchRouteStops(routeId) {
     throw new Error(`Monday API error fetching stops: ${JSON.stringify(stopsData.errors)}`);
   }
 
-  const items = stopsData.data.items_page_by_column_values.items;
+  const allItems = stopsData.data.boards[0].items_page.items;
+
+  // Filter items that are connected to this route
+  const filteredItems = allItems.filter(item => {
+    const routeColumn = item.column_values.find(col => col.id === ROUTE_STOPS_ROUTE_COLUMN);
+    if (!routeColumn || !routeColumn.value) return false;
+    
+    try {
+      const parsedValue = JSON.parse(routeColumn.value);
+      const linkedIds = parsedValue.linkedPulseIds || [];
+      return linkedIds.some(link => link.linkedPulseId.toString() === routeId.toString());
+    } catch (e) {
+      return false;
+    }
+  });
 
   // Parse column values for each stop
-  return items.map(item => {
+  return filteredItems.map(item => {
     const columnData = {};
     item.column_values.forEach(col => {
       columnData[col.id] = {
