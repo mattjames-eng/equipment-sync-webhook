@@ -226,7 +226,7 @@ async function fetchRouteDetails(routeId) {
  */
 async function fetchRouteStops(routeId) {
   // Fetch all items from Route Stops board with full column data
-  // Note: items(ids: [...]) returns NULL for board relations, so we use boards().items_page()
+  // Note: We need to query the specific column to get board relation values
   const itemsQuery = `
     query {
       boards(ids: [${ROUTE_STOPS_BOARD_ID}]) {
@@ -234,10 +234,17 @@ async function fetchRouteStops(routeId) {
           items {
             id
             name
-            column_values {
+            column_values(ids: ["${ROUTE_STOPS_ROUTE_COLUMN}", "${ROUTE_STOPS_LOCATION_COLUMN}", "${ROUTE_STOPS_DATE_COLUMN}", "${ROUTE_STOPS_TIME_COLUMN}"]) {
               id
               value
               text
+              ... on BoardRelationValue {
+                linked_item_ids
+                linked_items {
+                  id
+                  name
+                }
+              }
             }
           }
         }
@@ -270,10 +277,19 @@ async function fetchRouteStops(routeId) {
     
     console.log(`\n--- Checking item ${item.id} (${item.name}) ---`);
     console.log('Route column found:', !!routeColumn);
+    console.log('Route column full object:', JSON.stringify(routeColumn, null, 2));
     
     if (!routeColumn) {
       console.log('No route column found');
       return false;
+    }
+    
+    // Check if we have linked_item_ids (GraphQL fragment format)
+    if (routeColumn.linked_item_ids) {
+      console.log('Using linked_item_ids:', routeColumn.linked_item_ids);
+      const match = routeColumn.linked_item_ids.some(id => id.toString() === routeId.toString());
+      console.log('Match result:', match);
+      return match;
     }
     
     console.log('Route column value (raw):', routeColumn.value);
@@ -329,7 +345,15 @@ async function fetchRouteStops(routeId) {
   }
 
   // Helper function to extract linked item ID from board relation column
-  const getLinkedId = (columnValue) => {
+  const getLinkedId = (columnData) => {
+    if (!columnData) return null;
+    
+    // Format 0: GraphQL fragment with linked_item_ids
+    if (columnData.linked_item_ids && columnData.linked_item_ids.length > 0) {
+      return columnData.linked_item_ids[0];
+    }
+    
+    const columnValue = columnData.value;
     if (!columnValue) return null;
     
     // Format 1: linkedPulseIds array
@@ -351,7 +375,8 @@ async function fetchRouteStops(routeId) {
     item.column_values.forEach(col => {
       columnData[col.id] = {
         value: col.value ? JSON.parse(col.value) : null,
-        text: col.text
+        text: col.text,
+        linked_item_ids: col.linked_item_ids || null
       };
     });
 
@@ -360,7 +385,7 @@ async function fetchRouteStops(routeId) {
       name: item.name,
       date: columnData[ROUTE_STOPS_DATE_COLUMN]?.text || '',
       time: columnData[ROUTE_STOPS_TIME_COLUMN]?.text || '',
-      locationId: getLinkedId(columnData[ROUTE_STOPS_LOCATION_COLUMN]?.value),
+      locationId: getLinkedId(columnData[ROUTE_STOPS_LOCATION_COLUMN]),
       columns: columnData
     };
   });
