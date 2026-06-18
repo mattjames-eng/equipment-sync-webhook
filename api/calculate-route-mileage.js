@@ -19,15 +19,19 @@ const ROUTES_BOARD_ID = '18415598386';
 const ROUTE_STOPS_BOARD_ID = '18415570592';
 const CONTACTS_COMPANIES_BOARD_ID = '18415573401';
 
-// Column IDs
+// Column IDs - Routes Board
+const ROUTES_START_LOCATION_COLUMN = 'board_relation_mm4dfw6d'; // Route Start Location
+const ROUTES_END_LOCATION_COLUMN = 'board_relation_mm4d795a'; // Route End Location
+const ROUTES_TOTAL_DISTANCE_COLUMN = 'numeric_mm3wwt5j'; // Total Distance on Routes
+const ROUTES_TOTAL_DRIVE_TIME_COLUMN = 'numeric_mm3wens3'; // Total Drive Time on Routes
+
+// Column IDs - Route Stops Board
 const ROUTE_STOPS_ROUTE_COLUMN = 'board_relation_mm3w48fh'; // Route connection on Route Stops
 const ROUTE_STOPS_LOCATION_COLUMN = 'board_relation_mm3vn6yb'; // Location connection
 const ROUTE_STOPS_DATE_COLUMN = 'date_mm3v2kz1'; // Date for sorting
 const ROUTE_STOPS_TIME_COLUMN = 'hour_mm3ws9gq'; // Time for sorting
 const ROUTE_STOPS_DISTANCE_COLUMN = 'numeric_mm4eq22c'; // Distance to Next Stop
 const ROUTE_STOPS_DRIVE_TIME_COLUMN = 'numeric_mm4ezw83'; // Drive Time to Next Stop
-const ROUTES_TOTAL_DISTANCE_COLUMN = 'numeric_mm3wwt5j'; // Total Distance on Routes
-const ROUTES_TOTAL_DRIVE_TIME_COLUMN = 'numeric_mm3wens3'; // Total Drive Time on Routes
 
 /**
  * Main handler for route mileage calculation webhook
@@ -74,7 +78,11 @@ module.exports = async (req, res) => {
 
     console.log(`Calculating mileage for Route: ${routeId}`);
 
-    // Step 1: Fetch all Route Stops for this route
+    // Step 1: Fetch Route details (start/end locations)
+    const routeDetails = await fetchRouteDetails(routeId);
+    console.log('Route details fetched:', routeDetails);
+
+    // Step 2: Fetch all Route Stops for this route
     const routeStops = await fetchRouteStops(routeId);
     console.log(`Found ${routeStops.length} route stops`);
 
@@ -85,23 +93,33 @@ module.exports = async (req, res) => {
       });
     }
 
-    // Step 2: Sort route stops by date and time
+    // Step 3: Sort route stops by date and time
     const sortedStops = sortRouteStops(routeStops);
     console.log('Route stops sorted by date/time');
 
-    // Step 3: Fetch location addresses for each stop
+    // Step 4: Fetch location addresses for route stops
     const stopsWithAddresses = await enrichStopsWithAddresses(sortedStops);
     console.log('Addresses fetched for all stops');
 
-    // Step 4: Calculate distances and drive times between consecutive stops
-    const calculations = await calculateDistancesAndTimes(stopsWithAddresses);
+    // Step 5: Fetch start and end location addresses
+    const startLocation = await fetchLocationAddress(routeDetails.startLocationId);
+    const endLocation = await fetchLocationAddress(routeDetails.endLocationId);
+    console.log('Start location:', startLocation);
+    console.log('End location:', endLocation);
+
+    // Step 6: Build complete route sequence
+    const completeRoute = buildCompleteRoute(startLocation, stopsWithAddresses, endLocation);
+    console.log(`Complete route built with ${completeRoute.length} waypoints`);
+
+    // Step 7: Calculate distances and drive times between consecutive waypoints
+    const calculations = await calculateDistancesAndTimes(completeRoute);
     console.log('Distances and times calculated');
 
-    // Step 5: Update each Route Stop with distance/time to next stop
+    // Step 8: Update each Route Stop with distance/time to next stop
     await updateRouteStops(calculations);
     console.log('Route stops updated with distance/time data');
 
-    // Step 6: Calculate totals and update the Route
+    // Step 9: Calculate totals and update the Route
     const totals = calculateTotals(calculations);
     await updateRouteTotals(routeId, totals);
     console.log(`Route totals updated: ${totals.totalDistance} miles, ${totals.totalDriveTime} hours`);
@@ -125,9 +143,9 @@ module.exports = async (req, res) => {
 };
 
 /**
- * Fetch all Route Stops for a given route
+ * Fetch Route details including start and end locations
  */
-async function fetchRouteStops(routeId) {
+async function fetchRouteDetails(routeId) {
   const query = `
     query {
       items(ids: [${routeId}]) {
@@ -157,7 +175,27 @@ async function fetchRouteStops(routeId) {
     throw new Error(`Monday API error: ${JSON.stringify(data.errors)}`);
   }
 
-  // Now fetch all Route Stops that are connected to this route
+  const route = data.data.items[0];
+  const columnData = {};
+  route.column_values.forEach(col => {
+    columnData[col.id] = {
+      value: col.value ? JSON.parse(col.value) : null,
+      text: col.text
+    };
+  });
+
+  return {
+    id: route.id,
+    name: route.name,
+    startLocationId: columnData[ROUTES_START_LOCATION_COLUMN]?.value?.linkedPulseIds?.[0]?.linkedPulseId || null,
+    endLocationId: columnData[ROUTES_END_LOCATION_COLUMN]?.value?.linkedPulseIds?.[0]?.linkedPulseId || null
+  };
+}
+
+/**
+ * Fetch all Route Stops for a given route
+ */
+async function fetchRouteStops(routeId) {
   const stopsQuery = `
     query {
       items_page_by_column_values(
@@ -229,7 +267,55 @@ function sortRouteStops(stops) {
 }
 
 /**
- * Fetch addresses for all locations
+ * Fetch address for a single location
+ */
+async function fetchLocationAddress(locationId) {
+  if (!locationId) {
+    return null;
+  }
+
+  const query = `
+    query {
+      items(ids: [${locationId}]) {
+        id
+        name
+        column_values {
+          id
+          value
+          text
+          type
+        }
+      }
+    }
+  `;
+
+  const response = await fetch(MONDAY_API_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': MONDAY_API_TOKEN
+    },
+    body: JSON.stringify({ query })
+  });
+
+  const data = await response.json();
+  
+  if (data.errors) {
+    throw new Error(`Monday API error fetching location: ${JSON.stringify(data.errors)}`);
+  }
+
+  const location = data.data.items[0];
+  const addressCol = location.column_values.find(c => c.id === 'long_text_mm3vkzc6');
+  
+  return {
+    id: location.id,
+    name: location.name,
+    address: addressCol?.text || location.name
+  };
+}
+
+/**
+ * Fetch addresses for all route stop locations
  */
 async function enrichStopsWithAddresses(stops) {
   const locationIds = stops
@@ -291,14 +377,50 @@ async function enrichStopsWithAddresses(stops) {
 }
 
 /**
+ * Build complete route sequence: Start → Stops → End
+ */
+function buildCompleteRoute(startLocation, stops, endLocation) {
+  const route = [];
+
+  // Add start location if it exists
+  if (startLocation) {
+    route.push({
+      id: 'start',
+      name: startLocation.name,
+      locationName: startLocation.name,
+      address: startLocation.address,
+      isStartLocation: true
+    });
+  }
+
+  // Add all route stops
+  stops.forEach(stop => {
+    route.push(stop);
+  });
+
+  // Add end location if it exists
+  if (endLocation) {
+    route.push({
+      id: 'end',
+      name: endLocation.name,
+      locationName: endLocation.name,
+      address: endLocation.address,
+      isEndLocation: true
+    });
+  }
+
+  return route;
+}
+
+/**
  * Calculate distances and drive times using Google Maps Distance Matrix API
  */
-async function calculateDistancesAndTimes(stops) {
+async function calculateDistancesAndTimes(waypoints) {
   const calculations = [];
 
-  for (let i = 0; i < stops.length - 1; i++) {
-    const origin = stops[i];
-    const destination = stops[i + 1];
+  for (let i = 0; i < waypoints.length - 1; i++) {
+    const origin = waypoints[i];
+    const destination = waypoints[i + 1];
 
     console.log(`Calculating distance: ${origin.locationName} → ${destination.locationName}`);
 
@@ -310,12 +432,15 @@ async function calculateDistancesAndTimes(stops) {
 
     if (data.status !== 'OK') {
       console.error(`Google Maps API error: ${data.status}`);
-      calculations.push({
-        stopId: origin.id,
-        distanceToNext: 0,
-        driveTimeToNext: 0,
-        error: data.status
-      });
+      // Skip start/end locations in calculations array (they don't get updated)
+      if (!origin.isStartLocation && !origin.isEndLocation) {
+        calculations.push({
+          stopId: origin.id,
+          distanceToNext: 0,
+          driveTimeToNext: 0,
+          error: data.status
+        });
+      }
       continue;
     }
 
@@ -323,12 +448,15 @@ async function calculateDistancesAndTimes(stops) {
 
     if (element.status !== 'OK') {
       console.error(`Route calculation error: ${element.status}`);
-      calculations.push({
-        stopId: origin.id,
-        distanceToNext: 0,
-        driveTimeToNext: 0,
-        error: element.status
-      });
+      // Skip start/end locations in calculations array
+      if (!origin.isStartLocation && !origin.isEndLocation) {
+        calculations.push({
+          stopId: origin.id,
+          distanceToNext: 0,
+          driveTimeToNext: 0,
+          error: element.status
+        });
+      }
       continue;
     }
 
@@ -336,21 +464,27 @@ async function calculateDistancesAndTimes(stops) {
     const distanceMiles = (element.distance.value / 1609.34).toFixed(1); // meters to miles
     const driveTimeHours = (element.duration.value / 3600).toFixed(2); // seconds to hours
 
-    calculations.push({
-      stopId: origin.id,
-      distanceToNext: parseFloat(distanceMiles),
-      driveTimeToNext: parseFloat(driveTimeHours)
-    });
+    // Only add to calculations if this is a route stop (not start/end location)
+    if (!origin.isStartLocation && !origin.isEndLocation) {
+      calculations.push({
+        stopId: origin.id,
+        distanceToNext: parseFloat(distanceMiles),
+        driveTimeToNext: parseFloat(driveTimeHours)
+      });
+    }
 
     console.log(`  → ${distanceMiles} miles, ${driveTimeHours} hours`);
   }
 
-  // Last stop has no "next stop"
-  calculations.push({
-    stopId: stops[stops.length - 1].id,
-    distanceToNext: 0,
-    driveTimeToNext: 0
-  });
+  // Last stop has no "next stop" (or it goes to end location, which we don't store on the stop)
+  const lastStop = waypoints[waypoints.length - 2]; // Second to last (before end location)
+  if (lastStop && !lastStop.isStartLocation && !lastStop.isEndLocation) {
+    calculations.push({
+      stopId: lastStop.id,
+      distanceToNext: 0,
+      driveTimeToNext: 0
+    });
+  }
 
   return calculations;
 }
