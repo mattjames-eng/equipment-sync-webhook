@@ -225,19 +225,27 @@ async function fetchRouteDetails(routeId) {
  * Fetch all Route Stops for a given route
  */
 async function fetchRouteStops(routeId) {
-  // First, get all items from Route Stops board
+  // Use items_page_by_column_values to filter by the Route connection
+  // This is more reliable than boards().items_page() for board relation columns
   const stopsQuery = `
     query {
-      boards(ids: [${ROUTE_STOPS_BOARD_ID}]) {
-        items_page(limit: 500) {
-          items {
+      items_page_by_column_values(
+        board_id: ${ROUTE_STOPS_BOARD_ID},
+        columns: [
+          {
+            column_id: "${ROUTE_STOPS_ROUTE_COLUMN}",
+            column_values: ["${routeId}"]
+          }
+        ],
+        limit: 500
+      ) {
+        items {
+          id
+          name
+          column_values {
             id
-            name
-            column_values {
-              id
-              value
-              text
-            }
+            value
+            text
           }
         }
       }
@@ -259,59 +267,20 @@ async function fetchRouteStops(routeId) {
     throw new Error(`Monday API error fetching stops: ${JSON.stringify(stopsData.errors)}`);
   }
 
-  const allItems = stopsData.data.boards[0].items_page.items;
+  const allItems = stopsData.data.items_page_by_column_values.items;
   
-  console.log(`Total items on Route Stops board: ${allItems.length}`);
-  console.log(`Looking for Route ID: ${routeId}`);
+  console.log(`Found ${allItems.length} route stops connected to Route ${routeId}`);
 
-  // Filter items that are connected to this route
-  const filteredItems = allItems.filter(item => {
-    console.log(`\n=== Checking item ${item.id} (${item.name}) ===`);
-    console.log('All column values:', JSON.stringify(item.column_values.map(c => ({ id: c.id, value: c.value, text: c.text })), null, 2));
-    
-    const routeColumn = item.column_values.find(col => col.id === ROUTE_STOPS_ROUTE_COLUMN);
-    if (!routeColumn || !routeColumn.value) {
-      console.log(`Item ${item.id} (${item.name}): No route column or value`);
-      console.log(`Looking for column ID: ${ROUTE_STOPS_ROUTE_COLUMN}`);
-      return false;
-    }
-    
-    try {
-      const parsedValue = JSON.parse(routeColumn.value);
-      console.log(`Item ${item.id} (${item.name}) route column:`, JSON.stringify(parsedValue));
-      
-      // Handle both API response formats:
-      // Format 1: linkedPulseIds array (from items_page_by_column_values)
-      if (parsedValue.linkedPulseIds) {
-        const match = parsedValue.linkedPulseIds.some(link => 
-          link.linkedPulseId.toString() === routeId.toString()
-        );
-        console.log(`  Format 1 match: ${match}`);
-        return match;
-      }
-      
-      // Format 2: Direct array of linked items (from boards().items_page())
-      if (Array.isArray(parsedValue)) {
-        const match = parsedValue.some(link => 
-          link.id && link.id.toString() === routeId.toString()
-        );
-        console.log(`  Format 2 match: ${match}`);
-        return match;
-      }
-      
-      console.log(`  No matching format`);
-      return false;
-    } catch (e) {
-      console.error(`Error parsing route column for item ${item.id}:`, e);
-      return false;
-    }
-  });
+  // Log first item's columns for debugging
+  if (allItems.length > 0) {
+    console.log('Sample item columns:', JSON.stringify(allItems[0].column_values.map(c => ({ id: c.id, value: c.value, text: c.text })), null, 2));
+  }
 
   // Helper function to extract linked item ID from board relation column
   const getLinkedId = (columnValue) => {
     if (!columnValue) return null;
     
-    // Format 1: linkedPulseIds array
+    // Format 1: linkedPulseIds array (from items_page_by_column_values)
     if (columnValue.linkedPulseIds && columnValue.linkedPulseIds.length > 0) {
       return columnValue.linkedPulseIds[0].linkedPulseId;
     }
@@ -325,7 +294,7 @@ async function fetchRouteStops(routeId) {
   };
 
   // Parse column values for each stop
-  return filteredItems.map(item => {
+  return allItems.map(item => {
     const columnData = {};
     item.column_values.forEach(col => {
       columnData[col.id] = {
