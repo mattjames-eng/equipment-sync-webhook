@@ -266,9 +266,13 @@ async function fetchRouteStops(routeId) {
 
   // Filter items that are connected to this route
   const filteredItems = allItems.filter(item => {
+    console.log(`\n=== Checking item ${item.id} (${item.name}) ===`);
+    console.log('All column values:', JSON.stringify(item.column_values.map(c => ({ id: c.id, value: c.value, text: c.text })), null, 2));
+    
     const routeColumn = item.column_values.find(col => col.id === ROUTE_STOPS_ROUTE_COLUMN);
     if (!routeColumn || !routeColumn.value) {
       console.log(`Item ${item.id} (${item.name}): No route column or value`);
+      console.log(`Looking for column ID: ${ROUTE_STOPS_ROUTE_COLUMN}`);
       return false;
     }
     
