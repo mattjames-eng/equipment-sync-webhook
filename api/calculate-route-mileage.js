@@ -225,51 +225,21 @@ async function fetchRouteDetails(routeId) {
  * Fetch all Route Stops for a given route
  */
 async function fetchRouteStops(routeId) {
-  // Step 1: Get all item IDs from Route Stops board
-  const idsQuery = `
+  // Fetch all items from Route Stops board with full column data
+  // Note: items(ids: [...]) returns NULL for board relations, so we use boards().items_page()
+  const itemsQuery = `
     query {
       boards(ids: [${ROUTE_STOPS_BOARD_ID}]) {
         items_page(limit: 500) {
           items {
             id
+            name
+            column_values {
+              id
+              value
+              text
+            }
           }
-        }
-      }
-    }
-  `;
-
-  const idsResponse = await fetch(MONDAY_API_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': MONDAY_API_TOKEN
-    },
-    body: JSON.stringify({ query: idsQuery })
-  });
-
-  const idsData = await idsResponse.json();
-  
-  if (idsData.errors) {
-    throw new Error(`Monday API error fetching item IDs: ${JSON.stringify(idsData.errors)}`);
-  }
-
-  const itemIds = idsData.data.boards[0].items_page.items.map(item => item.id);
-  console.log(`Found ${itemIds.length} total items on Route Stops board`);
-
-  if (itemIds.length === 0) {
-    return [];
-  }
-
-  // Step 2: Query those items directly to get full column data (including relations)
-  const itemsQuery = `
-    query {
-      items(ids: [${itemIds.join(', ')}]) {
-        id
-        name
-        column_values {
-          id
-          value
-          text
         }
       }
     }
@@ -290,7 +260,7 @@ async function fetchRouteStops(routeId) {
     throw new Error(`Monday API error fetching items: ${JSON.stringify(itemsData.errors)}`);
   }
 
-  const allItems = itemsData.data.items;
+  const allItems = itemsData.data.boards[0].items_page.items;
   
   console.log(`Fetched full data for ${allItems.length} items`);
 
