@@ -28,7 +28,7 @@ const BOL_STATUS_COLUMN = 'color_mm4dx241';
 // Google Docs BOL Template ID
 const BOL_TEMPLATE_ID = '1queGcWsRgc8b8cBBlwdNnEDE-MVpSFIZ0iMPD33JLJE';
 
-// Google Drive folder for generated BOLs
+// Google Drive folder for generated BOLs (Shared Drive)
 const BOL_FOLDER_ID = '1tHeg8lfNY2mv-1rhLHLen5AFGugmzYaN';
 
 /**
@@ -362,13 +362,14 @@ async function generateBOLFromTemplate(data) {
   const docs = google.docs({ version: 'v1', auth: authClient });
   const drive = google.drive({ version: 'v3', auth: authClient });
 
-  // Copy the template into your folder
+  // Copy the template into your Shared Drive folder
   const copyResponse = await drive.files.copy({
     fileId: BOL_TEMPLATE_ID,
     requestBody: {
       name: `BOL - ${data.routeStopName} - ${data.date}`,
       parents: [BOL_FOLDER_ID]
-    }
+    },
+    supportsAllDrives: true
   });
 
   const newDocId = copyResponse.data.id;
@@ -435,13 +436,14 @@ async function generateBOLFromTemplate(data) {
     requestBody: {
       role: 'reader',
       type: 'anyone'
-    }
+    },
+    supportsAllDrives: true
   });
 
   const fileUrl = `https://drive.google.com/uc?export=download&id=${newDocId}`;
 
   // Keep the doc for records - don't delete
-  console.log('✅ BOL document saved to folder for records');
+  console.log('✅ BOL document saved to Shared Drive folder for records');
 
   return {
     url: fileUrl,
