@@ -184,20 +184,32 @@ async function fetchRouteDetails(routeId) {
     };
   });
 
+  // Debug logging
+  console.log('Start Location Column Value:', JSON.stringify(columnData[ROUTES_START_LOCATION_COLUMN]?.value));
+  console.log('End Location Column Value:', JSON.stringify(columnData[ROUTES_END_LOCATION_COLUMN]?.value));
+
   // Helper function to extract linked item ID from board relation column
   const getLinkedId = (columnValue) => {
-    if (!columnValue) return null;
+    if (!columnValue) {
+      console.log('getLinkedId: columnValue is null/undefined');
+      return null;
+    }
+    
+    console.log('getLinkedId input:', JSON.stringify(columnValue));
     
     // Format 1: linkedPulseIds array
     if (columnValue.linkedPulseIds && columnValue.linkedPulseIds.length > 0) {
+      console.log('Using Format 1 (linkedPulseIds)');
       return columnValue.linkedPulseIds[0].linkedPulseId;
     }
     
     // Format 2: Direct array of linked items
     if (Array.isArray(columnValue) && columnValue.length > 0) {
+      console.log('Using Format 2 (direct array)');
       return columnValue[0].id;
     }
     
+    console.log('No matching format found');
     return null;
   };
 
@@ -248,33 +260,45 @@ async function fetchRouteStops(routeId) {
   }
 
   const allItems = stopsData.data.boards[0].items_page.items;
+  
+  console.log(`Total items on Route Stops board: ${allItems.length}`);
+  console.log(`Looking for Route ID: ${routeId}`);
 
   // Filter items that are connected to this route
   const filteredItems = allItems.filter(item => {
     const routeColumn = item.column_values.find(col => col.id === ROUTE_STOPS_ROUTE_COLUMN);
-    if (!routeColumn || !routeColumn.value) return false;
+    if (!routeColumn || !routeColumn.value) {
+      console.log(`Item ${item.id} (${item.name}): No route column or value`);
+      return false;
+    }
     
     try {
       const parsedValue = JSON.parse(routeColumn.value);
+      console.log(`Item ${item.id} (${item.name}) route column:`, JSON.stringify(parsedValue));
       
       // Handle both API response formats:
       // Format 1: linkedPulseIds array (from items_page_by_column_values)
       if (parsedValue.linkedPulseIds) {
-        return parsedValue.linkedPulseIds.some(link => 
+        const match = parsedValue.linkedPulseIds.some(link => 
           link.linkedPulseId.toString() === routeId.toString()
         );
+        console.log(`  Format 1 match: ${match}`);
+        return match;
       }
       
       // Format 2: Direct array of linked items (from boards().items_page())
       if (Array.isArray(parsedValue)) {
-        return parsedValue.some(link => 
+        const match = parsedValue.some(link => 
           link.id && link.id.toString() === routeId.toString()
         );
+        console.log(`  Format 2 match: ${match}`);
+        return match;
       }
       
+      console.log(`  No matching format`);
       return false;
     } catch (e) {
-      console.error('Error parsing route column:', e);
+      console.error(`Error parsing route column for item ${item.id}:`, e);
       return false;
     }
   });
