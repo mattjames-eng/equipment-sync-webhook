@@ -184,11 +184,28 @@ async function fetchRouteDetails(routeId) {
     };
   });
 
+  // Helper function to extract linked item ID from board relation column
+  const getLinkedId = (columnValue) => {
+    if (!columnValue) return null;
+    
+    // Format 1: linkedPulseIds array
+    if (columnValue.linkedPulseIds && columnValue.linkedPulseIds.length > 0) {
+      return columnValue.linkedPulseIds[0].linkedPulseId;
+    }
+    
+    // Format 2: Direct array of linked items
+    if (Array.isArray(columnValue) && columnValue.length > 0) {
+      return columnValue[0].id;
+    }
+    
+    return null;
+  };
+
   return {
     id: route.id,
     name: route.name,
-    startLocationId: columnData[ROUTES_START_LOCATION_COLUMN]?.value?.linkedPulseIds?.[0]?.linkedPulseId || null,
-    endLocationId: columnData[ROUTES_END_LOCATION_COLUMN]?.value?.linkedPulseIds?.[0]?.linkedPulseId || null
+    startLocationId: getLinkedId(columnData[ROUTES_START_LOCATION_COLUMN]?.value),
+    endLocationId: getLinkedId(columnData[ROUTES_END_LOCATION_COLUMN]?.value)
   };
 }
 
@@ -262,6 +279,23 @@ async function fetchRouteStops(routeId) {
     }
   });
 
+  // Helper function to extract linked item ID from board relation column
+  const getLinkedId = (columnValue) => {
+    if (!columnValue) return null;
+    
+    // Format 1: linkedPulseIds array
+    if (columnValue.linkedPulseIds && columnValue.linkedPulseIds.length > 0) {
+      return columnValue.linkedPulseIds[0].linkedPulseId;
+    }
+    
+    // Format 2: Direct array of linked items
+    if (Array.isArray(columnValue) && columnValue.length > 0) {
+      return columnValue[0].id;
+    }
+    
+    return null;
+  };
+
   // Parse column values for each stop
   return filteredItems.map(item => {
     const columnData = {};
@@ -277,7 +311,7 @@ async function fetchRouteStops(routeId) {
       name: item.name,
       date: columnData[ROUTE_STOPS_DATE_COLUMN]?.text || '',
       time: columnData[ROUTE_STOPS_TIME_COLUMN]?.text || '',
-      locationId: columnData[ROUTE_STOPS_LOCATION_COLUMN]?.value?.linkedPulseIds?.[0]?.linkedPulseId || null,
+      locationId: getLinkedId(columnData[ROUTE_STOPS_LOCATION_COLUMN]?.value),
       columns: columnData
     };
   });
