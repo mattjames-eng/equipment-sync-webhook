@@ -12,7 +12,8 @@ const MONDAY_API_URL = 'https://api.monday.com/v2';
 const MONDAY_API_TOKEN = process.env.MONDAY_API_TOKEN;
 
 // Google Maps API configuration
-const GOOGLE_MAPS_API_KEY = process.env.GOOGLE_MAPS_API_KEY;
+const GOOGLE_MAPS_API_KEY = process.env.GOOGLE_MAPS_API_KEY; // Legacy Distance Matrix API (not used)
+const ROUTES_V2_API_KEY = process.env.ROUTES_V2_API_KEY; // New Routes API v2
 
 // Board IDs
 const ROUTES_BOARD_ID = '18415598386';
@@ -550,7 +551,7 @@ function buildCompleteRoute(startLocation, stops, endLocation) {
 }
 
 /**
- * Calculate distances and drive times using Google Maps Distance Matrix API
+ * Calculate distances and drive times using Google Routes API (new)
  */
 async function calculateDistancesAndTimes(waypoints) {
   const calculations = [];
@@ -561,45 +562,53 @@ async function calculateDistancesAndTimes(waypoints) {
 
     console.log(`Calculating distance: ${origin.locationName} → ${destination.locationName}`);
 
-    // Call Google Maps Distance Matrix API
-    const url = `https://maps.googleapis.com/maps/api/distancematrix/json?origins=${encodeURIComponent(origin.address)}&destinations=${encodeURIComponent(destination.address)}&units=imperial&key=${GOOGLE_MAPS_API_KEY}`;
+    // Call Google Routes API (new API)
+    const url = 'https://routes.googleapis.com/directions/v2:computeRoutes';
+    
+    const requestBody = {
+      origin: {
+        address: origin.address
+      },
+      destination: {
+        address: destination.address
+      },
+      travelMode: 'DRIVE',
+      routingPreference: 'TRAFFIC_AWARE',
+      computeAlternativeRoutes: false,
+      units: 'IMPERIAL'
+    };
 
-    const response = await fetch(url);
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Goog-Api-Key': ROUTES_V2_API_KEY,
+        'X-Goog-FieldMask': 'routes.duration,routes.distanceMeters'
+      },
+      body: JSON.stringify(requestBody)
+    });
+
     const data = await response.json();
 
-    if (data.status !== 'OK') {
-      console.error(`Google Maps API error: ${data.status}`);
+    if (!data.routes || data.routes.length === 0) {
+      console.error(`Google Routes API error:`, data);
       // Skip start/end locations in calculations array (they don't get updated)
       if (!origin.isStartLocation && !origin.isEndLocation) {
         calculations.push({
           stopId: origin.id,
           distanceToNext: 0,
           driveTimeToNext: 0,
-          error: data.status
+          error: 'NO_ROUTE_FOUND'
         });
       }
       continue;
     }
 
-    const element = data.rows[0].elements[0];
-
-    if (element.status !== 'OK') {
-      console.error(`Route calculation error: ${element.status}`);
-      // Skip start/end locations in calculations array
-      if (!origin.isStartLocation && !origin.isEndLocation) {
-        calculations.push({
-          stopId: origin.id,
-          distanceToNext: 0,
-          driveTimeToNext: 0,
-          error: element.status
-        });
-      }
-      continue;
-    }
+    const route = data.routes[0];
 
     // Extract distance in miles and time in hours
-    const distanceMiles = (element.distance.value / 1609.34).toFixed(1); // meters to miles
-    const driveTimeHours = (element.duration.value / 3600).toFixed(2); // seconds to hours
+    const distanceMiles = (route.distanceMeters / 1609.34).toFixed(1); // meters to miles
+    const driveTimeHours = (parseInt(route.duration.replace('s', '')) / 3600).toFixed(2); // seconds to hours
 
     // Only add to calculations if this is a route stop (not start/end location)
     if (!origin.isStartLocation && !origin.isEndLocation) {
