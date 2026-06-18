@@ -1,5 +1,6 @@
 const { google } = require('googleapis');
 const fetch = require('node-fetch');
+const FormData = require('form-data');
 
 // Vercel body parser configuration
 export const config = {
@@ -10,6 +11,7 @@ export const config = {
 
 // Monday.com API configuration
 const MONDAY_API_URL = 'https://api.monday.com/v2';
+const MONDAY_API_FILE_URL = 'https://api.monday.com/v2/file';
 const MONDAY_API_TOKEN = process.env.MONDAY_API_TOKEN;
 
 // Google API configuration
@@ -103,11 +105,16 @@ module.exports = async (req, res) => {
     const pdfData = await generateBOLFromTemplate(enrichedData);
     console.log('BOL PDF generated:', pdfData);
 
-    // Step 4: Upload PDF to Monday.com file column
-    await uploadBOLToMonday(itemId, pdfData, enrichedData.routeStopName);
-
-    // Step 5: Update status to "Complete"
+    // Step 4: Update status to "Complete" FIRST to prevent looping
     await updateBOLStatus(itemId, 'Complete');
+
+    // Step 5: Upload PDF to Monday.com file column
+    try {
+      await uploadBOLToMonday(itemId, pdfData, enrichedData.routeStopName);
+    } catch (uploadError) {
+      console.error('Failed to upload PDF to Monday:', uploadError.message);
+      // Don't throw - we already generated the doc successfully and marked complete
+    }
 
     return res.status(200).json({ 
       success: true, 
@@ -448,36 +455,40 @@ async function generateBOLFromTemplate(data) {
   return {
     url: fileUrl,
     base64: pdfBase64,
+    buffer: pdfBuffer,
     docId: newDocId
   };
 }
 
 /**
- * Upload BOL PDF to Monday.com file column
+ * Upload BOL PDF to Monday.com file column using multipart form data
  */
 async function uploadBOLToMonday(itemId, pdfData, routeStopName) {
-  const getUrlQuery = `
-    mutation {
-      add_file_to_column(
-        item_id: ${itemId},
-        column_id: "file_mm4dpv3q",
-        file: {
-          name: "BOL_${routeStopName.replace(/[^a-zA-Z0-9]/g, '_')}.pdf",
-          url: "${pdfData.url}"
-        }
-      ) {
-        id
-      }
+  const fileName = `BOL_${routeStopName.replace(/[^a-zA-Z0-9]/g, '_')}.pdf`;
+  
+  // Create form data with the PDF
+  const form = new FormData();
+  form.append('query', `mutation ($file: File!) {
+    add_file_to_column(
+      item_id: ${itemId},
+      column_id: "file_mm4dpv3q",
+      file: $file
+    ) {
+      id
     }
-  `;
+  }`);
+  form.append('variables[file]', pdfData.buffer, {
+    filename: fileName,
+    contentType: 'application/pdf'
+  });
 
-  const response = await fetch(MONDAY_API_URL, {
+  const response = await fetch(MONDAY_API_FILE_URL, {
     method: 'POST',
     headers: {
-      'Content-Type': 'application/json',
-      'Authorization': MONDAY_API_TOKEN
+      'Authorization': MONDAY_API_TOKEN,
+      ...form.getHeaders()
     },
-    body: JSON.stringify({ query: getUrlQuery })
+    body: form
   });
 
   const data = await response.json();
@@ -486,7 +497,7 @@ async function uploadBOLToMonday(itemId, pdfData, routeStopName) {
     throw new Error(`Failed to upload BOL to Monday: ${JSON.stringify(data.errors)}`);
   }
 
-  console.log('BOL uploaded to Monday.com');
+  console.log('✅ BOL PDF uploaded to Monday.com');
   return data;
 }
 
