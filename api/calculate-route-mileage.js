@@ -239,9 +239,25 @@ async function fetchRouteStops(routeId) {
     
     try {
       const parsedValue = JSON.parse(routeColumn.value);
-      const linkedIds = parsedValue.linkedPulseIds || [];
-      return linkedIds.some(link => link.linkedPulseId.toString() === routeId.toString());
+      
+      // Handle both API response formats:
+      // Format 1: linkedPulseIds array (from items_page_by_column_values)
+      if (parsedValue.linkedPulseIds) {
+        return parsedValue.linkedPulseIds.some(link => 
+          link.linkedPulseId.toString() === routeId.toString()
+        );
+      }
+      
+      // Format 2: Direct array of linked items (from boards().items_page())
+      if (Array.isArray(parsedValue)) {
+        return parsedValue.some(link => 
+          link.id && link.id.toString() === routeId.toString()
+        );
+      }
+      
+      return false;
     } catch (e) {
+      console.error('Error parsing route column:', e);
       return false;
     }
   });
