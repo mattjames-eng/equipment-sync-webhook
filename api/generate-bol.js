@@ -505,7 +505,8 @@ async function uploadBOLToMonday(itemId, pdfData, routeStopName) {
  * Update BOL Generation Status column
  */
 async function updateBOLStatus(itemId, status) {
-  const statusValue = status === 'Complete' ? '{"index": 2}' : '{"index": 0}';
+  // Use the label index directly as a number (not string)
+  const statusIndex = status === 'Complete' ? 2 : 0;
   
   const mutation = `
     mutation {
@@ -513,7 +514,7 @@ async function updateBOLStatus(itemId, status) {
         item_id: ${itemId},
         board_id: ${ROUTE_STOPS_BOARD_ID},
         column_id: "${BOL_STATUS_COLUMN}",
-        value: "${statusValue.replace(/"/g, '\\"')}"
+        value: "{\\"index\\": ${statusIndex}}"
       ) {
         id
       }
@@ -534,7 +535,7 @@ async function updateBOLStatus(itemId, status) {
   if (data.errors) {
     console.error('Failed to update BOL status:', data.errors);
   } else {
-    console.log(`BOL status updated to: ${status}`);
+    console.log(`✅ BOL status updated to: ${status}`);
   }
 
   return data;
