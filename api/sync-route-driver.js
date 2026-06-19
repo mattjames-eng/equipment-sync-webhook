@@ -10,14 +10,13 @@ const MONDAY_API_TOKEN = process.env.MONDAY_API_TOKEN;
 const ROUTES_BOARD_ID = '18415598386';
 const ROUTE_STOPS_BOARD_ID = '18415570592';
 
-const ROUTES_DRIVER_COLUMN = 'board_relation_mm4cb1se';      // Driver on Routes
-const ROUTE_STOPS_ROUTE_COLUMN = 'board_relation_mm3w48fh';  // Route connection on Route Stops
-const ROUTE_STOPS_DRIVER_COLUMN = 'board_relation_mm3va52r'; // Driver on Route Stops
+// ✅ Updated to new column ID pointing to Contacts & Companies
+const ROUTES_DRIVER_COLUMN = 'board_relation_mm4fg4yp';
+const ROUTE_STOPS_ROUTE_COLUMN = 'board_relation_mm3w48fh';
+const ROUTE_STOPS_DRIVER_COLUMN = 'board_relation_mm3va52r';
 
 module.exports = async (req, res) => {
   console.log('Sync Route Driver webhook triggered');
-  console.log('Method:', req.method);
-  console.log('Body:', JSON.stringify(req.body));
 
   if (req.method === 'POST' && req.body && req.body.challenge) {
     return res.status(200).json({ challenge: req.body.challenge });
@@ -29,19 +28,16 @@ module.exports = async (req, res) => {
 
   let body = req.body;
   if (typeof body === 'string') {
-    try {
-      body = JSON.parse(body);
-    } catch (e) {
-      return res.status(400).json({ error: 'Invalid JSON in request body' });
-    }
+    try { body = JSON.parse(body); }
+    catch (e) { return res.status(400).json({ error: 'Invalid JSON in request body' }); }
   }
 
   try {
     const event = body.event;
-    if (!event) return res.status(400).json({ error: 'Missing event data' });
+    if (!event) return res.status(400).json({ error: 'Missing event data in webhook payload' });
 
     const routeId = event.pulseId;
-    if (!routeId) return res.status(400).json({ error: 'Missing routeId' });
+    if (!routeId) return res.status(400).json({ error: 'Missing routeId in webhook payload' });
 
     console.log(`Syncing driver for Route: ${routeId}`);
 
@@ -52,7 +48,7 @@ module.exports = async (req, res) => {
     console.log(`Found ${routeStops.length} route stops to update`);
 
     if (routeStops.length === 0) {
-      return res.status(200).json({ message: 'No route stops found', routeId });
+      return res.status(200).json({ message: 'No route stops found for this route', routeId });
     }
 
     await updateRouteStopsDriver(routeStops, driverIds);
@@ -97,7 +93,7 @@ async function fetchRouteDriverIds(routeId) {
   });
 
   const data = await response.json();
-  if (data.errors) throw new Error(`Monday API error: ${JSON.stringify(data.errors)}`);
+  if (data.errors) throw new Error(`Monday API error fetching route: ${JSON.stringify(data.errors)}`);
 
   const item = data.data.items[0];
   if (!item) throw new Error(`Route ${routeId} not found`);
@@ -155,7 +151,7 @@ async function fetchRouteStops(routeId) {
   });
 
   const data = await response.json();
-  if (data.errors) throw new Error(`Monday API error: ${JSON.stringify(data.errors)}`);
+  if (data.errors) throw new Error(`Monday API error fetching route stops: ${JSON.stringify(data.errors)}`);
 
   const allItems = data.data.boards[0].items_page.items;
   console.log(`Fetched ${allItems.length} total items from Route Stops board`);
