@@ -22,17 +22,17 @@ const CONTACTS_COMPANIES_BOARD_ID = '18415573401';
 
 // Column IDs - Routes Board
 const ROUTES_START_LOCATION_COLUMN = 'board_relation_mm4dfw6d'; // Route Start Location
-const ROUTES_END_LOCATION_COLUMN = 'board_relation_mm4d795a'; // Route End Location
-const ROUTES_TOTAL_DISTANCE_COLUMN = 'numeric_mm3wwt5j'; // Total Distance on Routes
-const ROUTES_TOTAL_DRIVE_TIME_COLUMN = 'numeric_mm3wens3'; // Total Drive Time on Routes
+const ROUTES_END_LOCATION_COLUMN = 'board_relation_mm4d795a';   // Route End Location
+const ROUTES_TOTAL_DISTANCE_COLUMN = 'numeric_mm3wwt5j';        // Total Distance on Routes
+const ROUTES_TOTAL_DRIVE_TIME_COLUMN = 'numeric_mm3wens3';      // Total Drive Time on Routes
 
 // Column IDs - Route Stops Board
-const ROUTE_STOPS_ROUTE_COLUMN = 'board_relation_mm3w48fh'; // Route connection on Route Stops
-const ROUTE_STOPS_LOCATION_COLUMN = 'board_relation_mm3vn6yb'; // Location connection
-const ROUTE_STOPS_DATE_COLUMN = 'date_mm3v2kz1'; // Date for sorting
-const ROUTE_STOPS_TIME_COLUMN = 'hour_mm3ws9gq'; // Time for sorting
-const ROUTE_STOPS_DISTANCE_COLUMN = 'numeric_mm4eq22c'; // Distance to Next Stop
-const ROUTE_STOPS_DRIVE_TIME_COLUMN = 'numeric_mm4ezw83'; // Drive Time to Next Stop
+const ROUTE_STOPS_ROUTE_COLUMN = 'board_relation_mm3w48fh';     // Route connection on Route Stops
+const ROUTE_STOPS_LOCATION_COLUMN = 'board_relation_mm3vn6yb';  // Location connection
+const ROUTE_STOPS_DATE_COLUMN = 'date_mm3v2kz1';                // Date for sorting
+const ROUTE_STOPS_TIME_COLUMN = 'hour_mm3ws9gq';                // Time for sorting
+const ROUTE_STOPS_DISTANCE_COLUMN = 'numeric_mm4eq22c';         // Distance to Next Stop
+const ROUTE_STOPS_DRIVE_TIME_COLUMN = 'numeric_mm4ezw83';       // Drive Time to Next Stop
 
 /**
  * Main handler for route mileage calculation webhook
@@ -41,18 +41,18 @@ module.exports = async (req, res) => {
   console.log('Route Mileage Calculation webhook triggered');
   console.log('Method:', req.method);
   console.log('Body:', req.body);
-  
+
   // Handle Monday webhook challenge validation
   if (req.method === 'POST' && req.body && req.body.challenge) {
     console.log('Responding to Monday challenge:', req.body.challenge);
     return res.status(200).json({ challenge: req.body.challenge });
   }
-  
+
   // Handle GET requests for basic validation
   if (req.method === 'GET') {
     return res.status(200).json({ status: 'ok' });
   }
-  
+
   // Parse body if it's not already parsed
   let body = req.body;
   if (typeof body === 'string') {
@@ -62,17 +62,16 @@ module.exports = async (req, res) => {
       return res.status(400).json({ error: 'Invalid JSON in request body' });
     }
   }
-  
+
   try {
-    // Extract data from Monday's webhook format
     const event = body.event;
-    
+
     if (!event) {
       return res.status(400).json({ error: 'Missing event data in webhook payload' });
     }
-    
+
     const routeId = event.pulseId;
-    
+
     if (!routeId) {
       return res.status(400).json({ error: 'Missing routeId in webhook payload' });
     }
@@ -88,10 +87,7 @@ module.exports = async (req, res) => {
     console.log(`Found ${routeStops.length} route stops`);
 
     if (routeStops.length === 0) {
-      return res.status(200).json({ 
-        message: 'No route stops found for this route',
-        routeId
-      });
+      return res.status(200).json({ message: 'No route stops found for this route', routeId });
     }
 
     // Step 3: Sort route stops by date and time
@@ -125,8 +121,8 @@ module.exports = async (req, res) => {
     await updateRouteTotals(routeId, totals);
     console.log(`Route totals updated: ${totals.totalDistance} miles, ${totals.totalDriveTime} hours`);
 
-    return res.status(200).json({ 
-      success: true, 
+    return res.status(200).json({
+      success: true,
       message: 'Route mileage calculated successfully',
       routeId,
       stopsProcessed: routeStops.length,
@@ -136,10 +132,7 @@ module.exports = async (req, res) => {
 
   } catch (error) {
     console.error('Error calculating route mileage:', error);
-    return res.status(500).json({ 
-      error: 'Failed to calculate route mileage', 
-      details: error.message 
-    });
+    return res.status(500).json({ error: 'Failed to calculate route mileage', details: error.message });
   }
 };
 
@@ -156,6 +149,9 @@ async function fetchRouteDetails(routeId) {
           id
           value
           text
+          ... on BoardRelationValue {
+            linked_item_ids
+          }
         }
       }
     }
@@ -163,53 +159,56 @@ async function fetchRouteDetails(routeId) {
 
   const response = await fetch(MONDAY_API_URL, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': MONDAY_API_TOKEN
-    },
+    headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_TOKEN },
     body: JSON.stringify({ query })
   });
 
   const data = await response.json();
-  
-  if (data.errors) {
-    throw new Error(`Monday API error: ${JSON.stringify(data.errors)}`);
-  }
+  if (data.errors) throw new Error(`Monday API error: ${JSON.stringify(data.errors)}`);
 
   const route = data.data.items[0];
   const columnData = {};
   route.column_values.forEach(col => {
     columnData[col.id] = {
       value: col.value ? JSON.parse(col.value) : null,
-      text: col.text
+      text: col.text,
+      linked_item_ids: col.linked_item_ids || null
     };
   });
 
-  // Debug logging
-  console.log('Start Location Column Value:', JSON.stringify(columnData[ROUTES_START_LOCATION_COLUMN]?.value));
-  console.log('End Location Column Value:', JSON.stringify(columnData[ROUTES_END_LOCATION_COLUMN]?.value));
+  console.log('Start Location Column:', JSON.stringify(columnData[ROUTES_START_LOCATION_COLUMN]));
+  console.log('End Location Column:', JSON.stringify(columnData[ROUTES_END_LOCATION_COLUMN]));
 
-  // Helper function to extract linked item ID from board relation column
-  const getLinkedId = (columnValue) => {
-    if (!columnValue) {
-      console.log('getLinkedId: columnValue is null/undefined');
+  // ✅ Fix 1: check linked_item_ids (GraphQL fragment) first — most reliable
+  const getLinkedId = (colData) => {
+    if (!colData) {
+      console.log('getLinkedId: colData is null/undefined');
       return null;
     }
-    
-    console.log('getLinkedId input:', JSON.stringify(columnValue));
-    
-    // Format 1: linkedPulseIds array
+
+    if (colData.linked_item_ids && colData.linked_item_ids.length > 0) {
+      console.log('Using Format 0 (linked_item_ids)');
+      return colData.linked_item_ids[0];
+    }
+
+    const columnValue = colData.value;
+    if (!columnValue) {
+      console.log('getLinkedId: value is null/undefined');
+      return null;
+    }
+
+    console.log('getLinkedId input value:', JSON.stringify(columnValue));
+
     if (columnValue.linkedPulseIds && columnValue.linkedPulseIds.length > 0) {
       console.log('Using Format 1 (linkedPulseIds)');
       return columnValue.linkedPulseIds[0].linkedPulseId;
     }
-    
-    // Format 2: Direct array of linked items
+
     if (Array.isArray(columnValue) && columnValue.length > 0) {
       console.log('Using Format 2 (direct array)');
       return columnValue[0].id;
     }
-    
+
     console.log('No matching format found');
     return null;
   };
@@ -217,8 +216,8 @@ async function fetchRouteDetails(routeId) {
   return {
     id: route.id,
     name: route.name,
-    startLocationId: getLinkedId(columnData[ROUTES_START_LOCATION_COLUMN]?.value),
-    endLocationId: getLinkedId(columnData[ROUTES_END_LOCATION_COLUMN]?.value)
+    startLocationId: getLinkedId(columnData[ROUTES_START_LOCATION_COLUMN]),
+    endLocationId: getLinkedId(columnData[ROUTES_END_LOCATION_COLUMN])
   };
 }
 
@@ -226,8 +225,6 @@ async function fetchRouteDetails(routeId) {
  * Fetch all Route Stops for a given route
  */
 async function fetchRouteStops(routeId) {
-  // Fetch all items from Route Stops board with full column data
-  // Note: We need to query the specific column to get board relation values
   const itemsQuery = `
     query {
       boards(ids: [${ROUTE_STOPS_BOARD_ID}]) {
@@ -255,58 +252,48 @@ async function fetchRouteStops(routeId) {
 
   const itemsResponse = await fetch(MONDAY_API_URL, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': MONDAY_API_TOKEN
-    },
+    headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_TOKEN },
     body: JSON.stringify({ query: itemsQuery })
   });
 
   const itemsData = await itemsResponse.json();
-  
-  if (itemsData.errors) {
-    throw new Error(`Monday API error fetching items: ${JSON.stringify(itemsData.errors)}`);
-  }
+  if (itemsData.errors) throw new Error(`Monday API error fetching items: ${JSON.stringify(itemsData.errors)}`);
 
   const allItems = itemsData.data.boards[0].items_page.items;
-  
   console.log(`Fetched full data for ${allItems.length} items`);
 
-  // Step 3: Filter items that are connected to this route
   const filteredItems = allItems.filter(item => {
     const routeColumn = item.column_values.find(col => col.id === ROUTE_STOPS_ROUTE_COLUMN);
-    
+
     console.log(`\n--- Checking item ${item.id} (${item.name}) ---`);
     console.log('Route column found:', !!routeColumn);
     console.log('Route column full object:', JSON.stringify(routeColumn, null, 2));
-    
+
     if (!routeColumn) {
       console.log('No route column found');
       return false;
     }
-    
-    // Check if we have linked_item_ids (GraphQL fragment format)
+
     if (routeColumn.linked_item_ids) {
       console.log('Using linked_item_ids:', routeColumn.linked_item_ids);
       const match = routeColumn.linked_item_ids.some(id => id.toString() === routeId.toString());
       console.log('Match result:', match);
       return match;
     }
-    
+
     console.log('Route column value (raw):', routeColumn.value);
     console.log('Route column text:', routeColumn.text);
-    
+
     if (!routeColumn.value) {
       console.log('Route column value is null/empty');
       return false;
     }
-    
+
     try {
       const parsedValue = JSON.parse(routeColumn.value);
       console.log('Parsed value:', JSON.stringify(parsedValue, null, 2));
       console.log('Looking for routeId:', routeId);
-      
-      // Format 1: linkedPulseIds array
+
       if (parsedValue.linkedPulseIds) {
         console.log('Format 1: linkedPulseIds array detected');
         const match = parsedValue.linkedPulseIds.some(link => {
@@ -316,8 +303,7 @@ async function fetchRouteStops(routeId) {
         console.log('Match result:', match);
         return match;
       }
-      
-      // Format 2: Direct array of linked items
+
       if (Array.isArray(parsedValue)) {
         console.log('Format 2: Direct array detected');
         const match = parsedValue.some(link => {
@@ -327,7 +313,7 @@ async function fetchRouteStops(routeId) {
         console.log('Match result:', match);
         return match;
       }
-      
+
       console.log('No recognized format found');
       return false;
     } catch (e) {
@@ -338,39 +324,33 @@ async function fetchRouteStops(routeId) {
 
   console.log(`Found ${filteredItems.length} route stops connected to Route ${routeId}`);
 
-  // Log first item's route column for debugging
   if (filteredItems.length > 0) {
     const firstItem = filteredItems[0];
     const routeCol = firstItem.column_values.find(c => c.id === ROUTE_STOPS_ROUTE_COLUMN);
     console.log('Sample route column value:', routeCol?.value);
   }
 
-  // Helper function to extract linked item ID from board relation column
   const getLinkedId = (columnData) => {
     if (!columnData) return null;
-    
-    // Format 0: GraphQL fragment with linked_item_ids
+
     if (columnData.linked_item_ids && columnData.linked_item_ids.length > 0) {
       return columnData.linked_item_ids[0];
     }
-    
+
     const columnValue = columnData.value;
     if (!columnValue) return null;
-    
-    // Format 1: linkedPulseIds array
+
     if (columnValue.linkedPulseIds && columnValue.linkedPulseIds.length > 0) {
       return columnValue.linkedPulseIds[0].linkedPulseId;
     }
-    
-    // Format 2: Direct array of linked items
+
     if (Array.isArray(columnValue) && columnValue.length > 0) {
       return columnValue[0].id;
     }
-    
+
     return null;
   };
 
-  // Parse column values for each stop
   return filteredItems.map(item => {
     const columnData = {};
     item.column_values.forEach(col => {
@@ -397,7 +377,6 @@ async function fetchRouteStops(routeId) {
  */
 function sortRouteStops(stops) {
   return stops.sort((a, b) => {
-    // Combine date and time for comparison
     const dateTimeA = new Date(`${a.date} ${a.time}`);
     const dateTimeB = new Date(`${b.date} ${b.time}`);
     return dateTimeA - dateTimeB;
@@ -408,9 +387,7 @@ function sortRouteStops(stops) {
  * Fetch address for a single location
  */
 async function fetchLocationAddress(locationId) {
-  if (!locationId) {
-    return null;
-  }
+  if (!locationId) return null;
 
   const query = `
     query {
@@ -429,22 +406,16 @@ async function fetchLocationAddress(locationId) {
 
   const response = await fetch(MONDAY_API_URL, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': MONDAY_API_TOKEN
-    },
+    headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_TOKEN },
     body: JSON.stringify({ query })
   });
 
   const data = await response.json();
-  
-  if (data.errors) {
-    throw new Error(`Monday API error fetching location: ${JSON.stringify(data.errors)}`);
-  }
+  if (data.errors) throw new Error(`Monday API error fetching location: ${JSON.stringify(data.errors)}`);
 
   const location = data.data.items[0];
   const addressCol = location.column_values.find(c => c.id === 'long_text_mm3vkzc6');
-  
+
   return {
     id: location.id,
     name: location.name,
@@ -456,15 +427,12 @@ async function fetchLocationAddress(locationId) {
  * Fetch addresses for all route stop locations
  */
 async function enrichStopsWithAddresses(stops) {
-  const locationIds = stops
-    .map(stop => stop.locationId)
-    .filter(id => id !== null);
+  const locationIds = stops.map(stop => stop.locationId).filter(id => id !== null);
 
   if (locationIds.length === 0) {
     throw new Error('No locations found for route stops');
   }
 
-  // Fetch all locations in one query
   const query = `
     query {
       items(ids: [${locationIds.join(', ')}]) {
@@ -482,31 +450,22 @@ async function enrichStopsWithAddresses(stops) {
 
   const response = await fetch(MONDAY_API_URL, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': MONDAY_API_TOKEN
-    },
+    headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_TOKEN },
     body: JSON.stringify({ query })
   });
 
   const data = await response.json();
-  
-  if (data.errors) {
-    throw new Error(`Monday API error fetching locations: ${JSON.stringify(data.errors)}`);
-  }
+  if (data.errors) throw new Error(`Monday API error fetching locations: ${JSON.stringify(data.errors)}`);
 
-  // Build a map of location ID to address
   const locationMap = {};
   data.data.items.forEach(item => {
-    // Find address column (long_text_mm3vkzc6)
     const addressCol = item.column_values.find(c => c.id === 'long_text_mm3vkzc6');
     locationMap[item.id] = {
       name: item.name,
-      address: addressCol?.text || item.name // Fallback to name if no address
+      address: addressCol?.text || item.name
     };
   });
 
-  // Enrich stops with addresses
   return stops.map(stop => ({
     ...stop,
     locationName: locationMap[stop.locationId]?.name || 'Unknown',
@@ -520,7 +479,6 @@ async function enrichStopsWithAddresses(stops) {
 function buildCompleteRoute(startLocation, stops, endLocation) {
   const route = [];
 
-  // Add start location if it exists
   if (startLocation) {
     route.push({
       id: 'start',
@@ -531,12 +489,8 @@ function buildCompleteRoute(startLocation, stops, endLocation) {
     });
   }
 
-  // Add all route stops
-  stops.forEach(stop => {
-    route.push(stop);
-  });
+  stops.forEach(stop => route.push(stop));
 
-  // Add end location if it exists
   if (endLocation) {
     route.push({
       id: 'end',
@@ -551,7 +505,7 @@ function buildCompleteRoute(startLocation, stops, endLocation) {
 }
 
 /**
- * Calculate distances and drive times using Google Routes API (new)
+ * Calculate distances and drive times using Google Routes API v2
  */
 async function calculateDistancesAndTimes(waypoints) {
   const calculations = [];
@@ -562,16 +516,10 @@ async function calculateDistancesAndTimes(waypoints) {
 
     console.log(`Calculating distance: ${origin.locationName} → ${destination.locationName}`);
 
-    // Call Google Routes API (new API)
     const url = 'https://routes.googleapis.com/directions/v2:computeRoutes';
-    
     const requestBody = {
-      origin: {
-        address: origin.address
-      },
-      destination: {
-        address: destination.address
-      },
+      origin: { address: origin.address },
+      destination: { address: destination.address },
       travelMode: 'DRIVE',
       routingPreference: 'TRAFFIC_AWARE',
       computeAlternativeRoutes: false,
@@ -592,25 +540,16 @@ async function calculateDistancesAndTimes(waypoints) {
 
     if (!data.routes || data.routes.length === 0) {
       console.error(`Google Routes API error:`, data);
-      // Skip start/end locations in calculations array (they don't get updated)
       if (!origin.isStartLocation && !origin.isEndLocation) {
-        calculations.push({
-          stopId: origin.id,
-          distanceToNext: 0,
-          driveTimeToNext: 0,
-          error: 'NO_ROUTE_FOUND'
-        });
+        calculations.push({ stopId: origin.id, distanceToNext: 0, driveTimeToNext: 0, error: 'NO_ROUTE_FOUND' });
       }
       continue;
     }
 
     const route = data.routes[0];
+    const distanceMiles = (route.distanceMeters / 1609.34).toFixed(1);
+    const driveTimeHours = (parseInt(route.duration.replace('s', '')) / 3600).toFixed(2);
 
-    // Extract distance in miles and time in hours
-    const distanceMiles = (route.distanceMeters / 1609.34).toFixed(1); // meters to miles
-    const driveTimeHours = (parseInt(route.duration.replace('s', '')) / 3600).toFixed(2); // seconds to hours
-
-    // Only add to calculations if this is a route stop (not start/end location)
     if (!origin.isStartLocation && !origin.isEndLocation) {
       calculations.push({
         stopId: origin.id,
@@ -622,14 +561,11 @@ async function calculateDistancesAndTimes(waypoints) {
     console.log(`  → ${distanceMiles} miles, ${driveTimeHours} hours`);
   }
 
-  // Last stop has no "next stop" (or it goes to end location, which we don't store on the stop)
-  const lastStop = waypoints[waypoints.length - 2]; // Second to last (before end location)
-  if (lastStop && !lastStop.isStartLocation && !lastStop.isEndLocation) {
-    calculations.push({
-      stopId: lastStop.id,
-      distanceToNext: 0,
-      driveTimeToNext: 0
-    });
+  // ✅ Fix 2: only add a trailing 0 if there's NO end location (last stop is true terminus)
+  // When an end location exists, the last stop's leg was already calculated in the loop above
+  const lastWaypoint = waypoints[waypoints.length - 1];
+  if (!lastWaypoint.isEndLocation && !lastWaypoint.isStartLocation) {
+    calculations.push({ stopId: lastWaypoint.id, distanceToNext: 0, driveTimeToNext: 0 });
   }
 
   return calculations;
@@ -654,15 +590,11 @@ async function updateRouteStops(calculations) {
 
     const response = await fetch(MONDAY_API_URL, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': MONDAY_API_TOKEN
-      },
+      headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_TOKEN },
       body: JSON.stringify({ query: mutation })
     });
 
     const data = await response.json();
-    
     if (data.errors) {
       console.error(`Failed to update stop ${calc.stopId}:`, data.errors);
     }
@@ -700,16 +632,10 @@ async function updateRouteTotals(routeId, totals) {
 
   const response = await fetch(MONDAY_API_URL, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': MONDAY_API_TOKEN
-    },
+    headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_TOKEN },
     body: JSON.stringify({ query: mutation })
   });
 
   const data = await response.json();
-  
-  if (data.errors) {
-    throw new Error(`Failed to update route totals: ${JSON.stringify(data.errors)}`);
-  }
+  if (data.errors) throw new Error(`Failed to update route totals: ${JSON.stringify(data.errors)}`);
 }
