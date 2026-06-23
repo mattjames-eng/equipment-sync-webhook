@@ -607,7 +607,47 @@ async function handleAdvancePackage(req, res) {
 
     // Step 3: Daily Schedule — fetch from Daily Show Schedules board via board_relation
     let dailyScheduleText = 'Single day event — see call time above.';
-    const scheduleIds = apLinkedIds(cols, AP.dailySchedule);
+    let scheduleIds = apLinkedIds(cols, AP.dailySchedule);
+
+    // ── Auto-link: if relation is empty, find matching schedule items by name ──
+    if (scheduleIds.length === 0) {
+      console.log(`[AdvancePackage] Daily schedule relation empty — searching for "${showName}" on Daily Show Schedules board...`);
+      try {
+        const searchData = await mondayApiCall(`
+          query {
+            boards(ids: [18418730953]) {
+              items_page(limit: 100) {
+                items { id name }
+              }
+            }
+          }
+        `);
+        const allScheduleItems = searchData.data?.boards?.[0]?.items_page?.items || [];
+        const matchedIds = allScheduleItems
+          .filter(i => i.name.toLowerCase().startsWith(showName.toLowerCase()))
+          .map(i => i.id);
+
+        if (matchedIds.length > 0) {
+          // Persist the link on the AP item for future runs
+          await mondayApiCall(`
+            mutation {
+              change_column_value(
+                board_id: ${ADVANCE_PACKAGES_BOARD_ID},
+                item_id: ${itemId},
+                column_id: "${AP.dailySchedule}",
+                value: "{\\"item_ids\\": [${matchedIds.join(',')}]}"
+              ) { id }
+            }
+          `);
+          scheduleIds = matchedIds;
+          console.log(`[AdvancePackage] Auto-linked ${matchedIds.length} schedule item(s): ${matchedIds.join(', ')}`);
+        } else {
+          console.log(`[AdvancePackage] No schedule items found matching "${showName}" — skipping daily schedule.`);
+        }
+      } catch (autoLinkErr) {
+        console.warn('[AdvancePackage] Auto-link failed (non-fatal):', autoLinkErr.message);
+      }
+    }
 
     if (scheduleIds.length > 0) {
       const schedData = await mondayApiCall(`
