@@ -404,7 +404,7 @@ export default async function handler(req, res) {
         console.log(`  📋 Equip List   : ${equipmentListUUID || '❌ NOT FOUND'}`);
 
         // ===== STEP 2: Fetch Flex quote header data =====
-        const dataUrl = `${FLEX_BASE_URL}/api/element/${internalId}/header-data?codeList=elementNumber,name,clientId,venueId,eventDate,totalPrice,notes,equipmentList`;
+        const dataUrl = `${FLEX_BASE_URL}/api/element/${internalId}/header-data?codeList=elementNumber,name,clientId,venueId,eventDate,plannedStartDate,plannedEndDate,totalPrice,notes,equipmentList`;
         const dataResponse = await fetch(dataUrl, {
             headers: { 'X-Auth-Token': FLEX_API_KEY, 'Accept': 'application/json' }
         });
@@ -469,6 +469,20 @@ export default async function handler(req, res) {
             const dateStr   = deepExtractName(data.eventDate);
             const dateMatch = dateStr ? dateStr.match(/(\d{4}-\d{2}-\d{2})/) : null;
             if (dateMatch) columnValues.date_mm3xca9r = { date: dateMatch[1] };
+        }
+
+        // Prep Date (plannedStartDate from Flex)
+        if (data?.plannedStartDate) {
+            const dateStr   = deepExtractName(data.plannedStartDate);
+            const dateMatch = dateStr ? dateStr.match(/(\d{4}-\d{2}-\d{2})/) : null;
+            if (dateMatch) columnValues.date_mm4at0qc = { date: dateMatch[1] };
+        }
+
+        // Return Date (plannedEndDate from Flex)
+        if (data?.plannedEndDate) {
+            const dateStr   = deepExtractName(data.plannedEndDate);
+            const dateMatch = dateStr ? dateStr.match(/(\d{4}-\d{2}-\d{2})/) : null;
+            if (dateMatch) columnValues.date_mm4a7fn6 = { date: dateMatch[1] };
         }
 
         console.log('\n📝 Column values to write:', JSON.stringify(columnValues, null, 2));
