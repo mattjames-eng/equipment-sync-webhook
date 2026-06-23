@@ -41,21 +41,21 @@ const CA = {
 };
 
 const ROLE_TO_DEPT = {
-  'Audio Engineer':    { dept: '🎵 Audio',      label: '🎵 Audio Details',      key: 'audioDetails' },
-  'Lighting Director': { dept: '💡 Lighting',   label: '💡 Lighting Details',   key: 'lightingDetails' },
-  'Lighting Tech':     { dept: '💡 Lighting',   label: '💡 Lighting Details',   key: 'lightingDetails' },
-  'Lighting Engineer': { dept: '💡 Lighting',   label: '💡 Lighting Details',   key: 'lightingDetails' },
-  'Video Director':    { dept: '📺 Video',      label: '📺 Video Details',      key: 'videoDetails' },
-  'Video Engineer':    { dept: '📺 Video',      label: '📺 Video Details',      key: 'videoDetails' },
-  'Video Tech':        { dept: '📺 Video',      label: '📺 Video Details',      key: 'videoDetails' },
-  'Stagehand':         { dept: '🎪 Staging',    label: '🎪 Staging Details',    key: 'stagingDetails' },
-  'Rigger':            { dept: '🔩 Rigging',    label: '🔩 Rigging Details',    key: 'riggingDetails' },
-  'Up Rigger':         { dept: '🔩 Rigging',    label: '🔩 Rigging Details',    key: 'riggingDetails' },
-  'Down Rigger':       { dept: '🔩 Rigging',    label: '🔩 Rigging Details',    key: 'riggingDetails' },
-  'Laser Operator':    { dept: '🔴 Laser',      label: '🔴 Laser Details',      key: 'laserDetails' },
-  'Laser Tech':        { dept: '🔴 Laser',      label: '🔴 Laser Details',      key: 'laserDetails' },
-  'SFX Operator':      { dept: '🎆 Special FX', label: '🎆 Special FX Details', key: 'sfxDetails' },
-  'SFX Tech':          { dept: '🎆 Special FX', label: '🎆 Special FX Details', key: 'sfxDetails' },
+  'Audio Engineer':    { dept: 'Audio',      label: 'Audio Details',      key: 'audioDetails' },
+  'Lighting Director': { dept: 'Lighting',   label: 'Lighting Details',   key: 'lightingDetails' },
+  'Lighting Tech':     { dept: 'Lighting',   label: 'Lighting Details',   key: 'lightingDetails' },
+  'Lighting Engineer': { dept: 'Lighting',   label: 'Lighting Details',   key: 'lightingDetails' },
+  'Video Director':    { dept: 'Video',      label: 'Video Details',      key: 'videoDetails' },
+  'Video Engineer':    { dept: 'Video',      label: 'Video Details',      key: 'videoDetails' },
+  'Video Tech':        { dept: 'Video',      label: 'Video Details',      key: 'videoDetails' },
+  'Stagehand':         { dept: 'Staging',    label: 'Staging Details',    key: 'stagingDetails' },
+  'Rigger':            { dept: 'Rigging',    label: 'Rigging Details',    key: 'riggingDetails' },
+  'Up Rigger':         { dept: 'Rigging',    label: 'Rigging Details',    key: 'riggingDetails' },
+  'Down Rigger':       { dept: 'Rigging',    label: 'Rigging Details',    key: 'riggingDetails' },
+  'Laser Operator':    { dept: 'Laser',      label: 'Laser Details',      key: 'laserDetails' },
+  'Laser Tech':        { dept: 'Laser',      label: 'Laser Details',      key: 'laserDetails' },
+  'SFX Operator':      { dept: 'Special FX', label: 'Special FX Details', key: 'sfxDetails' },
+  'SFX Tech':          { dept: 'Special FX', label: 'Special FX Details', key: 'sfxDetails' },
 };
 
 // ── Shared helpers ───────────────────────────────────────────
@@ -66,6 +66,9 @@ function apColText(columns, colId) {
 
 function apLinkedIds(columns, colId) {
   const col = columns.find(c => c.id === colId);
+  // Prefer typed linked_items (populated when BoardRelationValue fragment is in the query)
+  if (col?.linked_items?.length) return col.linked_items.map(i => String(i.id));
+  // Fallback: parse raw JSON value (older API responses)
   if (!col?.value) return [];
   try {
     const val = JSON.parse(col.value);
@@ -98,7 +101,7 @@ export default async function handler(req, res) {
   if (!itemId) return res.status(400).json({ success: false, error: 'Missing target item ID variable' });
 
   try {
-    console.log(`📥 Initializing Document Generation Pipeline for Contract Row: ${itemId}`);
+    console.log(`[Contract] Generating for item ${itemId}`);
 
     const auth = new google.auth.GoogleAuth({
       credentials: JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT),
@@ -125,7 +128,6 @@ export default async function handler(req, res) {
       }
     });
     const newDocId = copyResponse.data.id;
-    console.log(`📄 Transient processing document instance safely initialized in shared folder: ${newDocId}`);
 
     const currentFormattedDate = new Date().toLocaleDateString('en-US', {
       year: 'numeric',
@@ -181,7 +183,6 @@ export default async function handler(req, res) {
 
     const pdfBuffer = Buffer.from(pdfResponse.data);
 
-    console.log('🧹 Clearing existing contract documents...');
     await mondayApiCall(`
       mutation {
         change_column_value(
@@ -193,7 +194,6 @@ export default async function handler(req, res) {
       }
     `);
 
-    console.log('📦 Streaming binary contract parameters to asset storage matrix...');
     const pdfBlob = new Blob([pdfBuffer], { type: 'application/pdf' });
     const uploadForm = new FormData();
 
@@ -219,7 +219,6 @@ export default async function handler(req, res) {
     const uploadResult = await uploadResponse.json();
     if (uploadResult.errors) throw new Error(JSON.stringify(uploadResult.errors));
 
-    console.log('🔄 Updating contract status...');
     await mondayApiCall(`
       mutation {
         change_column_value(
@@ -230,24 +229,20 @@ export default async function handler(req, res) {
         ) { id }
       }
     `);
-    console.log('✅ Status updated to "Sent to Tech"');
 
     try {
       await drive.files.delete({ fileId: newDocId, supportsAllDrives: true });
-      console.log(`🗑️ Temporary document deleted: ${newDocId}`);
     } catch (cleanupError) {
-      console.warn(`⚠️ Could not delete temporary document ${newDocId}: ${cleanupError.message}`);
-      console.warn('This is non-fatal - contract generation succeeded.');
+      console.warn(`Could not delete temporary document ${newDocId}: ${cleanupError.message} (non-fatal)`);
     }
 
-    console.log(`🏁 Pipeline execution cleanly terminated for record: ${itemId}`);
     return res.status(200).json({ success: true, message: 'Contract package saved successfully.' });
 
   } catch (error) {
-    console.error('❌ Automation engine faulted:', error);
+    console.error('[Contract] Error:', error);
     try {
       await mondayApiCall(`mutation { change_column_value(item_id: ${itemId}, board_id: 18415879229, column_id: "color_mm3y7397", value: "{\\"label\\":\\"Draft\\"}") { id } }`);
-    } catch (e) { console.error('Fallback update pipeline failure context:', e); }
+    } catch (e) { console.error('Fallback status update failed:', e); }
     return res.status(500).json({ success: false, error: error.message });
   }
 }
@@ -261,7 +256,7 @@ async function handleAdvancePackage(req, res) {
   if (!itemId) return res.status(400).json({ success: false, error: 'Missing item ID' });
 
   try {
-    console.log(`📥 [AdvancePackage] Generating PDF for item ${itemId}`);
+    console.log(`[AdvancePackage] Generating PDF for item ${itemId}`);
 
     const auth = new google.auth.GoogleAuth({
       credentials: JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT),
@@ -274,11 +269,15 @@ async function handleAdvancePackage(req, res) {
     const drive = google.drive({ version: 'v3', auth });
 
     // Step 1: Fetch Advance Package item
+    // BoardRelationValue fragment is required so apLinkedIds() can read linked_items
     const itemData = await mondayApiCall(`
       query {
         items(ids: [${itemId}]) {
           id name
-          column_values { id value text }
+          column_values {
+            id value text
+            ... on BoardRelationValue { linked_items { id name } }
+          }
         }
       }
     `);
@@ -305,7 +304,7 @@ async function handleAdvancePackage(req, res) {
       sfxDetails:      apColText(cols, AP.sfxDetails),
     };
 
-    // Step 2: Crew Assignment → role, PM, crew name
+    // Step 2: Crew Assignment -> role, PM, crew name
     let crewName = '—', role = '—', pmName = '—';
     let department = '—', departmentLabel = 'Department Details', departmentDetails = '—';
 
@@ -317,14 +316,17 @@ async function handleAdvancePackage(req, res) {
             column_values {
               id value text
               ... on BoardRelationValue { linked_items { id name } }
+              ... on MirrorValue { display_value }
             }
           }
         }
       `);
 
       const aCols = assignData.data?.items?.[0]?.column_values || [];
-      role   = apColText(aCols, CA.role);
-      pmName = apColText(aCols, CA.pm);
+      role = apColText(aCols, CA.role);
+      // PM is a mirror/lookup column — display_value is the only reliable field
+      const pmCol = aCols.find(c => c.id === CA.pm);
+      pmName = pmCol?.display_value?.trim() || pmCol?.text?.trim() || '—';
 
       const crewRelCol   = aCols.find(c => c.id === CA.crewMember);
       const crewMemberId = crewRelCol?.linked_items?.[0]?.id;
@@ -379,7 +381,7 @@ async function handleAdvancePackage(req, res) {
       fields: 'id',
     });
     newDocId = copy.data.id;
-    console.log(`📄 [AdvancePackage] Cloned template → ${newDocId}`);
+    console.log(`[AdvancePackage] Cloned template -> ${newDocId}`);
 
     // Step 5: Replace placeholders
     const dateGenerated = new Date().toLocaleDateString('en-US', {
@@ -420,19 +422,23 @@ async function handleAdvancePackage(req, res) {
       { responseType: 'arraybuffer' }
     );
     const pdfBuffer = Buffer.from(pdfResponse.data);
-    console.log(`📦 [AdvancePackage] PDF exported — ${pdfBuffer.length} bytes`);
+    console.log(`[AdvancePackage] PDF exported — ${pdfBuffer.length} bytes`);
 
-    // Step 7: Clear existing file column
-    await mondayApiCall(`
-      mutation {
-        change_column_value(
-          item_id: ${itemId},
-          board_id: ${ADVANCE_PACKAGES_BOARD_ID},
-          column_id: "${AP.packagePDF}",
-          value: "{\\"clear_all\\": true}"
-        ) { id }
-      }
-    `);
+    // Step 7: Clear existing file column (non-fatal — column may already be empty)
+    try {
+      await mondayApiCall(`
+        mutation {
+          change_column_value(
+            item_id: ${itemId},
+            board_id: ${ADVANCE_PACKAGES_BOARD_ID},
+            column_id: "${AP.packagePDF}",
+            value: "{}"
+          ) { id }
+        }
+      `);
+    } catch (clearErr) {
+      console.warn('[AdvancePackage] Could not clear file column (non-fatal):', clearErr.message);
+    }
 
     // Step 8: Upload PDF
     const safeShow = showName.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 40);
@@ -457,22 +463,21 @@ async function handleAdvancePackage(req, res) {
       body: formData,
     });
     if (!uploadRes.ok) throw new Error(`PDF upload failed: ${await uploadRes.text()}`);
-    console.log(`✅ [AdvancePackage] PDF uploaded → ${fileName}`);
+    console.log(`[AdvancePackage] PDF uploaded -> ${fileName}`);
 
     // Step 9: Delete temp doc
     try {
       await drive.files.delete({ fileId: newDocId, supportsAllDrives: true });
-      console.log(`🗑️ [AdvancePackage] Temp doc deleted: ${newDocId}`);
+      console.log(`[AdvancePackage] Temp doc deleted: ${newDocId}`);
       newDocId = null;
     } catch (cleanupError) {
-      console.warn(`⚠️ Could not delete temp doc ${newDocId}: ${cleanupError.message} (non-fatal)`);
+      console.warn(`Could not delete temp doc ${newDocId}: ${cleanupError.message} (non-fatal)`);
     }
 
-    console.log(`🏁 [AdvancePackage] Done for item ${itemId}`);
     return res.status(200).json({ success: true, message: `Advance package PDF generated for ${crewName} — ${showName}` });
 
   } catch (err) {
-    console.error('❌ [AdvancePackage] Error:', err.message);
+    console.error('[AdvancePackage] Error:', err.message);
     if (newDocId) {
       try {
         const auth = new google.auth.GoogleAuth({
@@ -514,7 +519,7 @@ async function fetchContractData(itemId) {
   const crewRelationCol = columns.find(c => c.id === 'board_relation_mm3yckmg');
   const crewMemberId = crewRelationCol?.linked_items?.[0]?.id;
 
-  console.log('🔍 Crew Member ID:', crewMemberId);
+  console.log('Crew Member ID:', crewMemberId);
 
   let crewData = {
     name: 'Independent Contractor',
@@ -525,7 +530,6 @@ async function fetchContractData(itemId) {
 
   if (crewMemberId) {
     try {
-      console.log('📞 Fetching crew data for ID:', crewMemberId);
       const crewQuery = `query {
         items(ids: [${crewMemberId}]) {
           name
@@ -540,13 +544,12 @@ async function fetchContractData(itemId) {
         crewData.email    = crewCols.find(c => c.id === 'email_mm3yfhmg')?.text || 'TBD';
         crewData.phone    = crewCols.find(c => c.id === 'phone_mm3yd44g')?.text || 'TBD';
         crewData.position = crewCols.find(c => c.id === 'dropdown_mm3yd2n8')?.text || 'Production Technician';
-        console.log('✅ Crew data fetched:', crewData);
       }
     } catch (error) {
-      console.error('❌ Could not fetch crew member data:', error.message);
+      console.error('Could not fetch crew member data:', error.message);
     }
   } else {
-    console.warn('⚠️ No crew member ID found in board relation');
+    console.warn('No crew member ID found in board relation');
   }
 
   const startDate = getColValue('date_mm3y5whf');
