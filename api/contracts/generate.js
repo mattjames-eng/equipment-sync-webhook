@@ -7,13 +7,14 @@ const ADVANCE_TEMPLATE_ID       = '1nu2TOyAuIWj9uNVXbGUkgSOwLN5VXEWrm9vnv8676LE'
 const ADVANCE_PACKAGES_BOARD_ID = '18416589368';
 
 const AP = {
-  project:             'board_relation_mm41b2yr',
-  callTime:            'text_mm41e8w1',
-  travelDetails:       'long_text_mm41hh7m',
-  specialRequirements: 'long_text_mm41rp3w',
-  packagePDF:          'file_mm41ky95',
-  crewAssignment:      'board_relation_mm41t8fy',
-  dailySchedule:       'board_relation_mm4j9t0s',
+  project:                  'board_relation_mm41b2yr',
+  callTime:                 'text_mm41e8w1',
+  travelDetails:            'long_text_mm41hh7m',
+  specialRequirements:      'long_text_mm41rp3w',
+  equipmentResponsibilities:'long_text_mm414y52',
+  packagePDF:               'file_mm41ky95',
+  crewAssignment:           'board_relation_mm41t8fy',
+  dailySchedule:            'board_relation_mm4j9t0s',
 };
 
 // ── Projects column IDs (source of truth for all show-level data) ─
@@ -497,9 +498,10 @@ async function handleAdvancePackage(req, res) {
     if (!item) throw new Error(`Item ${itemId} not found on Advance Packages board`);
 
     const cols = item.column_values;
-    const showName            = item.name;
-    const callTime            = apColText(cols, AP.callTime);
-    const specialRequirements = apColText(cols, AP.specialRequirements);
+    const showName                = item.name;
+    const callTime                = apColText(cols, AP.callTime);
+    const specialRequirements     = apColText(cols, AP.specialRequirements);
+    const equipmentResponsibilities = apColText(cols, AP.equipmentResponsibilities);
 
     // ── Fetch Project — source of truth for show-level data ───
     let eventDate = '—', venueDetails = '—', showOverview = '—';
@@ -680,8 +682,9 @@ async function handleAdvancePackage(req, res) {
           ['{{DATE_GENERATED}}',       dateGenerated],
           ['{{VENUE_DETAILS}}',        venueDetails],
           ['{{TRAVEL_DETAILS}}',       travelBlock],
-          ['{{SPECIAL_REQUIREMENTS}}', specialRequirements],
-          ['{{SHOW_OVERVIEW}}',        showOverview],
+          ['{{SPECIAL_REQUIREMENTS}}',       specialRequirements],
+          ['{{EQUIPMENT_RESPONSIBILITIES}}', equipmentResponsibilities],
+          ['{{SHOW_OVERVIEW}}',              showOverview],
           ['{{DEPARTMENT_LABEL}}',     departmentLabel],
           ['{{DEPARTMENT_DETAILS}}',   departmentDetails],
           ['{{DAILY_SCHEDULE}}',       dailyScheduleText],
