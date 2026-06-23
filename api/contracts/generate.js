@@ -7,22 +7,32 @@ const ADVANCE_TEMPLATE_ID       = '1nu2TOyAuIWj9uNVXbGUkgSOwLN5VXEWrm9vnv8676LE'
 const ADVANCE_PACKAGES_BOARD_ID = '18416589368';
 
 const AP = {
-  eventDate:           'date_mm41b64p',
+  project:             'board_relation_mm41b2yr',
   callTime:            'text_mm41e8w1',
-  venueDetails:        'long_text_mm41gm07',
   travelDetails:       'long_text_mm41hh7m',
   specialRequirements: 'long_text_mm41rp3w',
-  showOverview:        'long_text_mm4j3yp',
-  audioDetails:        'long_text_mm4jzzew',
-  lightingDetails:     'long_text_mm4jrw3m',
-  videoDetails:        'long_text_mm4j4bk2',
-  stagingDetails:      'long_text_mm4jfd7c',
-  riggingDetails:      'long_text_mm4jfr1r',
-  laserDetails:        'long_text_mm4jn45s',
-  sfxDetails:          'long_text_mm4jj18d',
   packagePDF:          'file_mm41ky95',
   crewAssignment:      'board_relation_mm41t8fy',
   dailySchedule:       'board_relation_mm4j9t0s',
+};
+
+// ── Projects column IDs (source of truth for all show-level data) ─
+const PROJ = {
+  eventDate:      'date_mm3xca9r',
+  venueAddress:   'lookup_mm3xp9ts',   // mirror → use display_value
+  venueContact:   'lookup_mm3xep0h',   // mirror → use display_value
+  buildingAccess: 'text_mm43zars',
+  parkingLoc:     'text_mm43v6w0',
+  loadInEntrance: 'text_mm4364z5',
+  securityContact:'text_mm434hxz',
+  showOverview:   'long_text_mm4kdr7v',
+  audioDetails:   'long_text_mm4k7g2e',
+  lightingDetails:'long_text_mm4k8rtq',
+  videoDetails:   'long_text_mm4k7r1y',
+  stagingDetails: 'long_text_mm4kkn20',
+  riggingDetails: 'long_text_mm4kr4ws',
+  laserDetails:   'long_text_mm4kt3f1',
+  sfxDetails:     'long_text_mm4kmffw',
 };
 
 const DS = {
@@ -488,23 +498,64 @@ async function handleAdvancePackage(req, res) {
 
     const cols = item.column_values;
     const showName            = item.name;
-    const eventDate           = apColText(cols, AP.eventDate);
     const callTime            = apColText(cols, AP.callTime);
-    const venueDetails        = apColText(cols, AP.venueDetails);
-    // AP-level travel notes (PM override/supplement to Crew Assignment travel columns)
-    const apTravelNotes       = apColText(cols, AP.travelDetails);
     const specialRequirements = apColText(cols, AP.specialRequirements);
-    const showOverview        = apColText(cols, AP.showOverview);
 
+    // ── Fetch Project — source of truth for show-level data ───
+    let eventDate = '—', venueDetails = '—', showOverview = '—';
     const deptValues = {
-      audioDetails:    apColText(cols, AP.audioDetails),
-      lightingDetails: apColText(cols, AP.lightingDetails),
-      videoDetails:    apColText(cols, AP.videoDetails),
-      stagingDetails:  apColText(cols, AP.stagingDetails),
-      riggingDetails:  apColText(cols, AP.riggingDetails),
-      laserDetails:    apColText(cols, AP.laserDetails),
-      sfxDetails:      apColText(cols, AP.sfxDetails),
+      audioDetails: '—', lightingDetails: '—', videoDetails: '—',
+      stagingDetails: '—', riggingDetails: '—', laserDetails: '—', sfxDetails: '—',
     };
+
+    const projectIds = apLinkedIds(cols, AP.project);
+    if (projectIds.length > 0) {
+      const projData = await mondayApiCall(`
+        query {
+          items(ids: [${projectIds[0]}]) {
+            column_values {
+              id value text
+              ... on MirrorValue { display_value }
+            }
+          }
+        }
+      `);
+      const pCols = projData.data?.items?.[0]?.column_values || [];
+      const pText = (id) => apColText(pCols, id);
+      const pMirror = (id) => {
+        const col = pCols.find(c => c.id === id);
+        return col?.display_value?.trim() || col?.text?.trim() || '—';
+      };
+
+      eventDate    = pText(PROJ.eventDate);
+      showOverview = pText(PROJ.showOverview);
+
+      // Build structured venue details block from Project fields
+      const venueParts = [];
+      const vAddr    = pMirror(PROJ.venueAddress);
+      const vContact = pMirror(PROJ.venueContact);
+      const access   = pText(PROJ.buildingAccess);
+      const parking  = pText(PROJ.parkingLoc);
+      const loadIn   = pText(PROJ.loadInEntrance);
+      const security = pText(PROJ.securityContact);
+      if (vAddr    !== '—') venueParts.push(vAddr);
+      if (vContact !== '—') venueParts.push(`Contact: ${vContact}`);
+      if (loadIn   !== '—') venueParts.push(`Load-In Entrance: ${loadIn}`);
+      if (access   !== '—') venueParts.push(`Building Access: ${access}`);
+      if (parking  !== '—') venueParts.push(`Parking: ${parking}`);
+      if (security !== '—') venueParts.push(`Security: ${security}`);
+      venueDetails = venueParts.join('\n') || '—';
+
+      deptValues.audioDetails    = pText(PROJ.audioDetails);
+      deptValues.lightingDetails = pText(PROJ.lightingDetails);
+      deptValues.videoDetails    = pText(PROJ.videoDetails);
+      deptValues.stagingDetails  = pText(PROJ.stagingDetails);
+      deptValues.riggingDetails  = pText(PROJ.riggingDetails);
+      deptValues.laserDetails    = pText(PROJ.laserDetails);
+      deptValues.sfxDetails      = pText(PROJ.sfxDetails);
+    } else {
+      console.warn('[AdvancePackage] No Project linked on AP item — show-level data will be blank');
+    }
 
     // Step 2: Crew Assignment → role, PM, crew name
     let crewName = '—', role = '—', pmName = '—';
