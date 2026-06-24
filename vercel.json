@@ -1,0 +1,12 @@
+{
+  "rewrites": [
+    {
+      "source": "/api/sync-crew-user-assignments",
+      "destination": "/api/sync-crew-user?route=assignments"
+    },
+    {
+      "source": "/api/sync-crew-user-contracts",
+      "destination": "/api/sync-crew-user?route=contracts"
+    }
+  ]
+}
