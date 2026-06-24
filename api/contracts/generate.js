@@ -395,7 +395,7 @@ export default async function handler(req, res) {
         change_column_value(
           item_id: ${itemId},
           board_id: 18415879229,
-          column_id: "doc_mm3y4td1",
+          column_id: "file_mm4mgdk6",
           value: "{}"
         ) { id }
       }
@@ -409,7 +409,7 @@ export default async function handler(req, res) {
       mutation ($file: File!) {
         add_file_to_column(
           item_id: ${itemId},
-          column_id: "doc_mm3y4td1",
+          column_id: "file_mm4mgdk6",
           file: $file
         ) { id }
       }
