@@ -876,6 +876,36 @@ async function fetchContractData(itemId) {
     console.warn('⚠️ No crew member ID found in board relation');
   }
 
+  // Fetch linked Project for name, client, and venue
+  const projectRelCol = columns.find(c => c.id === 'board_relation_mm3y7kar');
+  const linkedProjectId = projectRelCol?.linked_items?.[0]?.id || null;
+  const linkedProjectName = projectRelCol?.linked_items?.[0]?.name || item.name;
+
+  let clientName = 'TBD';
+  let venueName  = 'TBD';
+
+  if (linkedProjectId) {
+    try {
+      console.log(`Fetching project data for ID: ${linkedProjectId}`);
+      const projResponse = await mondayApiCall(`
+        query {
+          items(ids: [${linkedProjectId}]) {
+            column_values { id text }
+          }
+        }
+      `);
+      const projCols = projResponse.data?.items?.[0]?.column_values || [];
+      const getProjCol = (id) => projCols.find(c => c.id === id)?.text?.trim() || 'TBD';
+      clientName = getProjCol('text_mm435rt8');  // Client Name (from Flex)
+      venueName  = getProjCol('text_mm43r22q');  // Venue Name (from Flex)
+      console.log(`Project data fetched — Client: ${clientName} | Venue: ${venueName}`);
+    } catch (error) {
+      console.error('Could not fetch project data:', error.message);
+    }
+  } else {
+    console.warn('No linked project found on contract item');
+  }
+
   const startDate = getColValue('date_mm3y5whf');
   const endDate   = getColValue('date_mm3yndhd');
   const formatDate = (dateObj) => {
@@ -895,9 +925,9 @@ async function fetchContractData(itemId) {
     position:               crewData.position,
     crewEmail:              crewData.email,
     crewPhone:              crewData.phone,
-    projectName:            getCol('board_relation_mm3yxkvs') || item.name,
-    clientName:             'TBD',
-    venueName:              getCol('board_relation_mm3y7kar') || 'TBD',
+    projectName:            linkedProjectName,
+    clientName:             clientName,
+    venueName:              venueName,
     startDate:              formatDate(startDate),
     endDate:                formatDate(endDate),
     contractType:           getCol('dropdown_mm3yt6p2') || 'Day Rate',
