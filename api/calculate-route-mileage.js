@@ -53,6 +53,11 @@ module.exports = async (req, res) => {
     return res.status(200).json({ status: 'ok' });
   }
 
+  // Route dispatch — handle sub-routes before main mileage logic
+  const route = req.query?.route;
+  if (route === 'sync-route-driver') return handleSyncRouteDriver(req, res);
+  if (route === 'sync-stop-driver')  return handleSyncStopDriver(req, res);
+
   // Parse body if it's not already parsed
   let body = req.body;
   if (typeof body === 'string') {
@@ -638,4 +643,246 @@ async function updateRouteTotals(routeId, totals) {
 
   const data = await response.json();
   if (data.errors) throw new Error(`Failed to update route totals: ${JSON.stringify(data.errors)}`);
+}
+
+// ================================================================
+// HANDLER: Sync route driver → cascade to all route stops
+// Folded in from sync-route-driver.js
+// Endpoint: /api/calculate-route-mileage?route=sync-route-driver
+// ================================================================
+async function handleSyncRouteDriver(req, res) {
+  console.log('Sync Route Driver webhook triggered');
+  let body = req.body;
+  if (typeof body === 'string') {
+    try { body = JSON.parse(body); }
+    catch (e) { return res.status(400).json({ error: 'Invalid JSON in request body' }); }
+  }
+
+  try {
+    const event = body.event;
+    if (!event) return res.status(400).json({ error: 'Missing event data in webhook payload' });
+
+    const routeId = event.pulseId;
+    if (!routeId) return res.status(400).json({ error: 'Missing routeId in webhook payload' });
+
+    console.log(`Syncing driver for Route: ${routeId}`);
+
+    const driverIds  = await fetchRouteDriverIds(routeId);
+    const routeStops = await fetchRouteStopsForDriverSync(routeId);
+    console.log(`Found ${routeStops.length} route stops to update`);
+
+    if (routeStops.length === 0) {
+      return res.status(200).json({ message: 'No route stops found for this route', routeId });
+    }
+
+    await updateRouteStopsDriver(routeStops, driverIds);
+
+    return res.status(200).json({
+      success: true,
+      message: 'Driver synced to route stops successfully',
+      routeId, driverIds, stopsUpdated: routeStops.length
+    });
+  } catch (error) {
+    console.error('Error syncing route driver:', error);
+    return res.status(500).json({ error: 'Failed to sync route driver', details: error.message });
+  }
+}
+
+// ================================================================
+// HANDLER: Sync stop driver — single stop picks up driver from its route
+// Folded in from sync-stop-driver.js
+// Endpoint: /api/calculate-route-mileage?route=sync-stop-driver
+// ================================================================
+async function handleSyncStopDriver(req, res) {
+  console.log('Sync Stop Driver webhook triggered');
+  let body = req.body;
+  if (typeof body === 'string') {
+    try { body = JSON.parse(body); }
+    catch (e) { return res.status(400).json({ error: 'Invalid JSON in request body' }); }
+  }
+
+  try {
+    const event = body.event;
+    if (!event) return res.status(400).json({ error: 'Missing event data in webhook payload' });
+
+    const stopId = event.pulseId;
+    if (!stopId) return res.status(400).json({ error: 'Missing stopId in webhook payload' });
+
+    console.log(`Processing Route Stop: ${stopId}`);
+
+    const routeId  = await fetchStopRouteId(stopId);
+    if (!routeId) {
+      return res.status(200).json({ message: 'No route connected to this stop yet', stopId });
+    }
+
+    const driverIds = await fetchRouteDriverIds(routeId);
+    if (driverIds.length === 0) {
+      return res.status(200).json({ message: 'No driver assigned to the connected route', stopId, routeId });
+    }
+
+    await updateStopDriver(stopId, driverIds);
+
+    return res.status(200).json({
+      success: true,
+      message: 'Driver synced to route stop successfully',
+      stopId, routeId, driverIds
+    });
+  } catch (error) {
+    console.error('Error syncing stop driver:', error);
+    return res.status(500).json({ error: 'Failed to sync stop driver', details: error.message });
+  }
+}
+
+// ================================================================
+// SHARED HELPERS — Driver Sync
+// ================================================================
+
+async function fetchRouteDriverIds(routeId) {
+  const ROUTES_DRIVER_COLUMN = 'board_relation_mm4fg4yp';
+  const query = `
+    query {
+      items(ids: [${routeId}]) {
+        column_values(ids: ["${ROUTES_DRIVER_COLUMN}"]) {
+          id value
+          ... on BoardRelationValue { linked_item_ids }
+        }
+      }
+    }
+  `;
+  const response = await fetch(MONDAY_API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_TOKEN },
+    body: JSON.stringify({ query })
+  });
+  const data = await response.json();
+  if (data.errors) throw new Error(`Monday API error fetching route: ${JSON.stringify(data.errors)}`);
+
+  const driverCol = data.data.items[0]?.column_values?.find(c => c.id === ROUTES_DRIVER_COLUMN);
+  if (driverCol?.linked_item_ids?.length) return driverCol.linked_item_ids;
+  if (driverCol?.value) {
+    try {
+      const parsed = JSON.parse(driverCol.value);
+      if (parsed.linkedPulseIds?.length) return parsed.linkedPulseIds.map(l => l.linkedPulseId);
+      if (Array.isArray(parsed) && parsed.length) return parsed.map(l => l.id);
+    } catch (e) {}
+  }
+  return [];
+}
+
+async function fetchRouteStopsForDriverSync(routeId) {
+  const query = `
+    query {
+      boards(ids: [${ROUTE_STOPS_BOARD_ID}]) {
+        items_page(limit: 500) {
+          items {
+            id name
+            column_values(ids: ["${ROUTE_STOPS_ROUTE_COLUMN}"]) {
+              id value
+              ... on BoardRelationValue { linked_item_ids }
+            }
+          }
+        }
+      }
+    }
+  `;
+  const response = await fetch(MONDAY_API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_TOKEN },
+    body: JSON.stringify({ query })
+  });
+  const data = await response.json();
+  if (data.errors) throw new Error(`Monday API error: ${JSON.stringify(data.errors)}`);
+
+  return (data.data.boards[0].items_page.items || []).filter(item => {
+    const col = item.column_values.find(c => c.id === ROUTE_STOPS_ROUTE_COLUMN);
+    if (!col) return false;
+    if (col.linked_item_ids) return col.linked_item_ids.some(id => id.toString() === routeId.toString());
+    if (col.value) {
+      try {
+        const p = JSON.parse(col.value);
+        if (p.linkedPulseIds) return p.linkedPulseIds.some(l => l.linkedPulseId.toString() === routeId.toString());
+        if (Array.isArray(p)) return p.some(l => l.id?.toString() === routeId.toString());
+      } catch (e) {}
+    }
+    return false;
+  });
+}
+
+async function updateRouteStopsDriver(stops, driverIds) {
+  const ROUTE_STOPS_DRIVER_COLUMN = 'board_relation_mm3va52r';
+  const columnValue = JSON.stringify({ item_ids: driverIds.length > 0 ? driverIds : [] });
+  for (const stop of stops) {
+    const mutation = `
+      mutation {
+        change_column_value(
+          item_id: ${stop.id},
+          board_id: ${ROUTE_STOPS_BOARD_ID},
+          column_id: "${ROUTE_STOPS_DRIVER_COLUMN}",
+          value: ${JSON.stringify(columnValue)}
+        ) { id }
+      }
+    `;
+    const response = await fetch(MONDAY_API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_TOKEN },
+      body: JSON.stringify({ query: mutation })
+    });
+    const data = await response.json();
+    if (data.errors) console.error(`Failed to update driver on stop ${stop.id}:`, data.errors);
+    else console.log(`Stop ${stop.id} (${stop.name}) driver updated`);
+  }
+}
+
+async function fetchStopRouteId(stopId) {
+  const query = `
+    query {
+      items(ids: [${stopId}]) {
+        column_values(ids: ["${ROUTE_STOPS_ROUTE_COLUMN}"]) {
+          id value
+          ... on BoardRelationValue { linked_item_ids }
+        }
+      }
+    }
+  `;
+  const response = await fetch(MONDAY_API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_TOKEN },
+    body: JSON.stringify({ query })
+  });
+  const data = await response.json();
+  if (data.errors) throw new Error(`Monday API error: ${JSON.stringify(data.errors)}`);
+
+  const col = data.data.items[0]?.column_values?.find(c => c.id === ROUTE_STOPS_ROUTE_COLUMN);
+  if (col?.linked_item_ids?.length) return col.linked_item_ids[0];
+  if (col?.value) {
+    try {
+      const p = JSON.parse(col.value);
+      if (p.linkedPulseIds?.length) return p.linkedPulseIds[0].linkedPulseId;
+      if (Array.isArray(p) && p.length) return p[0].id;
+    } catch (e) {}
+  }
+  return null;
+}
+
+async function updateStopDriver(stopId, driverIds) {
+  const ROUTE_STOPS_DRIVER_COLUMN = 'board_relation_mm3va52r';
+  const columnValue = JSON.stringify({ item_ids: driverIds });
+  const mutation = `
+    mutation {
+      change_column_value(
+        item_id: ${stopId},
+        board_id: ${ROUTE_STOPS_BOARD_ID},
+        column_id: "${ROUTE_STOPS_DRIVER_COLUMN}",
+        value: ${JSON.stringify(columnValue)}
+      ) { id }
+    }
+  `;
+  const response = await fetch(MONDAY_API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_TOKEN },
+    body: JSON.stringify({ query: mutation })
+  });
+  const data = await response.json();
+  if (data.errors) throw new Error(`Failed to update driver on stop ${stopId}: ${JSON.stringify(data.errors)}`);
+  console.log(`Stop ${stopId} driver updated`);
 }
