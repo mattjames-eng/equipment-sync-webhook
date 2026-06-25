@@ -12,7 +12,7 @@
   "functions": {
     "api/calculate-route-mileage.js":    { "maxDuration": 60 },
     "api/generate-bol.js":              { "maxDuration": 60 },
-    "api/create-project-from-quote.js": { "maxDuration": 30 },
+    "api/create-project-from-quote.js": { "maxDuration": 60 },
     "api/tasks-handler.js":             { "maxDuration": 60 }
   }
 }
