@@ -1,6 +1,4 @@
-const { google } = require('googleapis');
-const fetch = require('node-fetch');
-const FormData = require('form-data');
+import { google } from 'googleapis';
 
 // Vercel body parser configuration
 export const config = {
@@ -12,7 +10,7 @@ export const config = {
 // Monday.com API configuration
 const MONDAY_API_URL = 'https://api.monday.com/v2';
 const MONDAY_API_FILE_URL = 'https://api.monday.com/v2/file';
-const MONDAY_API_TOKEN = process.env.MONDAY_API_TOKEN;
+const MONDAY_API_KEY = process.env.MONDAY_API_KEY;
 
 // Google API configuration
 const GOOGLE_CREDENTIALS = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_KEY);
@@ -36,7 +34,7 @@ const BOL_FOLDER_ID = '1tHeg8lfNY2mv-1rhLHLen5AFGugmzYaN';
 /**
  * Main handler for BOL generation webhook
  */
-module.exports = async (req, res) => {
+export default async function handler(req, res) {
   console.log('BOL Generation webhook triggered');
   console.log('Method:', req.method);
   console.log('Query params:', req.query);
@@ -130,7 +128,7 @@ module.exports = async (req, res) => {
       details: error.message 
     });
   }
-};
+}
 
 /**
  * Fetch route stop data from Monday.com
@@ -154,7 +152,7 @@ async function fetchRouteStopData(itemId) {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': MONDAY_API_TOKEN
+      'Authorization': MONDAY_API_KEY
     },
     body: JSON.stringify({ query })
   });
@@ -253,7 +251,7 @@ async function fetchCrewMemberData(crewId) {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': MONDAY_API_TOKEN
+      'Authorization': MONDAY_API_KEY
     },
     body: JSON.stringify({ query })
   });
@@ -297,7 +295,7 @@ async function fetchContactData(contactId) {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': MONDAY_API_TOKEN
+      'Authorization': MONDAY_API_KEY
     },
     body: JSON.stringify({ query })
   });
@@ -338,7 +336,7 @@ async function fetchProjectData(projectId) {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': MONDAY_API_TOKEN
+      'Authorization': MONDAY_API_KEY
     },
     body: JSON.stringify({ query })
   });
@@ -466,7 +464,7 @@ async function generateBOLFromTemplate(data) {
 async function uploadBOLToMonday(itemId, pdfData, routeStopName) {
   const fileName = `BOL_${routeStopName.replace(/[^a-zA-Z0-9]/g, '_')}.pdf`;
   
-  // Create form data with the PDF
+  // Create form data with the PDF (native Node 18+ FormData + Blob)
   const form = new FormData();
   form.append('query', `mutation ($file: File!) {
     add_file_to_column(
@@ -477,16 +475,14 @@ async function uploadBOLToMonday(itemId, pdfData, routeStopName) {
       id
     }
   }`);
-  form.append('variables[file]', pdfData.buffer, {
-    filename: fileName,
-    contentType: 'application/pdf'
-  });
+  const blob = new Blob([pdfData.buffer], { type: 'application/pdf' });
+  form.append('variables[file]', blob, fileName);
 
   const response = await fetch(MONDAY_API_FILE_URL, {
     method: 'POST',
     headers: {
-      'Authorization': MONDAY_API_TOKEN,
-      ...form.getHeaders()
+      'Authorization': MONDAY_API_KEY
+      // Content-Type is set automatically by fetch when body is FormData
     },
     body: form
   });
@@ -525,7 +521,7 @@ async function updateBOLStatus(itemId, status) {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': MONDAY_API_TOKEN
+      'Authorization': MONDAY_API_KEY
     },
     body: JSON.stringify({ query: mutation })
   });
