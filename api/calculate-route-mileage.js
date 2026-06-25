@@ -1,5 +1,3 @@
-const fetch = require('node-fetch');
-
 // Vercel body parser configuration
 export const config = {
   api: {
@@ -9,11 +7,10 @@ export const config = {
 
 // Monday.com API configuration
 const MONDAY_API_URL = 'https://api.monday.com/v2';
-const MONDAY_API_TOKEN = process.env.MONDAY_API_TOKEN;
+const MONDAY_API_TOKEN = process.env.MONDAY_API_KEY;
 
 // Google Maps API configuration
-const GOOGLE_MAPS_API_KEY = process.env.GOOGLE_MAPS_API_KEY; // Legacy Distance Matrix API (not used)
-const ROUTES_V2_API_KEY = process.env.ROUTES_V2_API_KEY; // New Routes API v2
+const ROUTES_V2_API_KEY = process.env.ROUTES_V2_API_KEY; // Routes API v2
 
 // Board IDs
 const ROUTES_BOARD_ID = '18415598386';
@@ -37,7 +34,7 @@ const ROUTE_STOPS_DRIVE_TIME_COLUMN = 'numeric_mm4ezw83';       // Drive Time to
 /**
  * Main handler for route mileage calculation webhook
  */
-module.exports = async (req, res) => {
+export default async function handler(req, res) {
   console.log('Route Mileage Calculation webhook triggered');
   console.log('Method:', req.method);
   console.log('Body:', req.body);
@@ -139,7 +136,7 @@ module.exports = async (req, res) => {
     console.error('Error calculating route mileage:', error);
     return res.status(500).json({ error: 'Failed to calculate route mileage', details: error.message });
   }
-};
+}
 
 /**
  * Fetch Route details including start and end locations
