@@ -31,11 +31,11 @@ const MONDAY_API_URL = 'https://api.monday.com/v2';
 const MONDAY_API_KEY = process.env.MONDAY_API_KEY;
 
 const FLEX_BASE_URL = process.env.FLEX_BASE_URL || 'https://anticstudios.flexrentalsolutions.com/f5';
-const FLEX_API_KEY  = process.env.FLEX_API_KEY_QUOTES || process.env.FLEX_API_KEY || 'QjT1EKjjVkZoQmmUsIpRK3ggq94bqW34qNCt';
+const FLEX_API_KEY  = process.env.FLEX_API_KEY_QUOTES || process.env.FLEX_API_KEY;
 
 const PROJECTS_BOARD_ID = '18415679761';
 const CONTACTS_BOARD_ID = '18415573401';
-const PM_DEFAULT_ID     = '102097223';
+const PM_DEFAULT_ID     = process.env.PM_DEFAULT_MONDAY_USER_ID || '102097223';
 
 const GOOGLE_APPS_SCRIPT_URL = process.env.GOOGLE_APPS_SCRIPT_URL || null;
 
@@ -547,7 +547,7 @@ export default async function handler(req, res) {
                 resultItemId,
                 clientResolvedName,
                 eventDateStr,
-                'matt.james@anticstudios.com'
+                process.env.PM_DEFAULT_EMAIL || 'matt.james@anticstudios.com'
             );
         }
 
