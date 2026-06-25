@@ -8,5 +8,10 @@
       "source": "/api/sync-crew-user-contracts",
       "destination": "/api/sync-crew-user?route=contracts"
     }
-  ]
+  ],
+  "functions": {
+    "api/calculate-route-mileage.js": { "maxDuration": 60 },
+    "api/generate-bol.js":            { "maxDuration": 60 },
+    "api/create-project-from-quote.js": { "maxDuration": 30 }
+  }
 }
