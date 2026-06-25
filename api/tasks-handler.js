@@ -1,43 +1,47 @@
 /**
- * monday.com Status Controller → Tiered Task Template Injector (Dropdown Plural Patch)
- * * This endpoint listens to changes on the "Tasks Status" column (color_mm3ycrm1).
- * * Bypasses duplicate button clicks, enforces progression dependencies,
- * and populates tiered subitems atomically with type-safe dropdown arrays.
- * * Author: Matt James, Antic Studios
+ * monday.com Status Controller → Tiered Task Template Injector
+ *
+ * Listens to changes on the "Tasks Status" column (color_mm3ycrm1).
+ * Bypasses duplicate button clicks, enforces progression dependencies,
+ * and populates tiered subitems in parallel with type-safe dropdown arrays.
+ *
+ * Author: Matt James, Antic Studios
  */
 
-const MONDAY_API_URL = 'https://api.monday.com/v2';
-const MONDAY_API_KEY = process.env.MONDAY_API_KEY;
+export const config = { api: { bodyParser: true } };
 
-const PROJECTS_BOARD_ID = '18415679761';
-const TEMPLATE_PROJECT_ID = '12153638858'; 
+const MONDAY_API_URL      = 'https://api.monday.com/v2';
+const MONDAY_API_KEY      = process.env.MONDAY_API_KEY;
+const PROJECTS_BOARD_ID   = '18415679761';
+const TEMPLATE_PROJECT_ID = '12153638858';
 
 // Master routing table for the execution states
 const STATUS_ROUTER = {
-    'Loading Basic...': { tierName: 'Basic', requiredState: null, successLabel: 'Basic Added' },
-    'Loading Standard...': { tierName: 'Standard', requiredState: 'Basic Added', successLabel: 'Standard Added' },
-    'Loading Complex...': { tierName: 'Complex', requiredState: 'Standard Added', successLabel: 'Complex Added' },
+    'Loading Basic...':    { tierName: 'Basic',    requiredState: null,           successLabel: 'Basic Added'    },
+    'Loading Standard...': { tierName: 'Standard', requiredState: 'Basic Added',  successLabel: 'Standard Added' },
+    'Loading Complex...':  { tierName: 'Complex',  requiredState: 'Standard Added', successLabel: 'Complex Added' },
     'Loading Festival...': { tierName: 'Festival', requiredState: 'Complex Added', successLabel: 'Festival Added' }
 };
 
 export default async function handler(req, res) {
-    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Origin',  '*');
     res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
     if (req.method === 'OPTIONS') return res.status(200).end();
-    if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+    if (req.method !== 'POST')    return res.status(405).json({ error: 'Method not allowed' });
 
-    if (req.body && req.body.challenge) return res.status(200).json({ challenge: req.body.challenge });
+    if (req.body?.challenge) return res.status(200).json({ challenge: req.body.challenge });
 
-    const event = req.body?.event || {};
-    const projectId = event.pulseId || event.itemId;
+    const event         = req.body?.event || {};
+    const projectId     = event.pulseId || event.itemId;
     const incomingLabel = event.value?.label?.text;
 
     if (!projectId || !incomingLabel) {
         return res.status(200).json({ success: false, message: 'Missing parameters, skipping.' });
     }
 
+    // Ignore completion-state echoes to prevent feedback loops
     if (incomingLabel.includes('Added')) {
         return res.status(200).json({ success: true, message: 'Completion state loop ignored.' });
     }
@@ -47,71 +51,80 @@ export default async function handler(req, res) {
         return res.status(200).json({ success: false, message: `Unmapped status label ignored: ${incomingLabel}` });
     }
 
-    console.log(`📥 Status Trigger Captured -> Project: ${projectId} | Action: ${incomingLabel}`);
+    console.log(`📥 Task injection triggered — Project: ${projectId} | Tier: ${route.tierName}`);
 
     try {
-        const projectQuery = `query { items(ids: [${projectId}]) { column_values(ids: ["color_mm3ycrm1"]) { text } subitems { column_values(ids: ["dropdown_mm3xhker"]) { text } } } }`;
-        const projectResponse = await mondayApiCall(projectQuery);
-        const projectNode = projectResponse.data?.items?.[0];
-        
+        // Fetch project state + template in parallel — no reason to wait for one before the other
+        const [projectResponse, templateResponse] = await Promise.all([
+            mondayApiCall(`query {
+                items(ids: [${projectId}]) {
+                    column_values(ids: ["color_mm3ycrm1"]) { text }
+                    subitems { column_values(ids: ["dropdown_mm3xhker"]) { id text } }
+                }
+            }`),
+            mondayApiCall(`query {
+                items(ids: [${TEMPLATE_PROJECT_ID}]) {
+                    subitems { name column_values { id text } }
+                }
+            }`)
+        ]);
+
+        const projectNode           = projectResponse.data?.items?.[0];
         const currentTrackingStatus = projectNode?.column_values?.[0]?.text;
-        const currentSubitems = projectNode?.subitems || [];
+        const currentSubitems       = projectNode?.subitems || [];
+        const templateSubitems      = templateResponse.data?.items?.[0]?.subitems || [];
 
-        const tierAlreadyExists = currentSubitems.some(subitem => {
-            const tierText = subitem.column_values.find(col => col.id === 'dropdown_mm3xhker')?.text;
-            return tierText === route.tierName;
-        });
-
+        // Guard: tier already injected → flip status and bail cleanly
+        const tierAlreadyExists = currentSubitems.some(subitem =>
+            subitem.column_values.find(col => col.id === 'dropdown_mm3xhker')?.text === route.tierName
+        );
         if (tierAlreadyExists) {
-            console.log(`⚠️ Blocked Duplicate Action: [${route.tierName}] tasks already exist on this row item. Reverting state...`);
+            console.log(`⚠️ [${route.tierName}] tasks already exist — reverting to success state`);
             await updateParentTrackingStatus(projectId, route.successLabel);
             return res.status(200).json({ success: true, message: 'Duplicate addition blocked cleanly.' });
         }
 
+        // Guard: prerequisite tier not yet added
         if (route.requiredState && currentTrackingStatus !== route.requiredState) {
-            console.log(`❌ Sequence Error: Prerequisite '${route.requiredState}' not satisfied.`);
-            await updateParentTrackingStatus(projectId, currentTrackingStatus || "No Tasks");
+            console.log(`❌ Prerequisite '${route.requiredState}' not met (current: '${currentTrackingStatus}')`);
+            await updateParentTrackingStatus(projectId, currentTrackingStatus || 'No Tasks');
             return res.status(200).json({ success: false, error: 'Sequence block handled.' });
         }
 
-        console.log(`🔍 Fetching subitem matrix blueprints from template anchor record: ${TEMPLATE_PROJECT_ID}`);
-        const templateQuery = `query { items(ids: [${TEMPLATE_PROJECT_ID}]) { subitems { name column_values { id text } } } }`;
-        const templateResponse = await mondayApiCall(templateQuery);
-        const templateSubitems = templateResponse.data?.items?.[0]?.subitems || [];
+        // Filter template to matching tier
+        const tasksToInject = templateSubitems.filter(subitem =>
+            subitem.column_values.find(col => col.id === 'dropdown_mm3xhker')?.text === route.tierName
+        );
+        console.log(`🎯 Injecting ${tasksToInject.length} tasks for tier: ${route.tierName}`);
 
-        const tasksToInject = templateSubitems.filter(subitem => {
-            const tierText = subitem.column_values.find(col => col.id === 'dropdown_mm3xhker')?.text;
-            return tierText === route.tierName;
-        });
-
-        console.log(`🎯 Aligned [${tasksToInject.length}] layout checklist elements matching context frame.`);
-
-        let itemsAddedCount = 0;
-        for (const task of tasksToInject) {
-            const phaseText = task.column_values.find(col => col.id === 'dropdown_mm3x2wmx')?.text;
+        // Create all subitems in parallel — serial creation at 141 tasks would time out
+        await Promise.all(tasksToInject.map(task => {
+            const phaseText    = task.column_values.find(col => col.id === 'dropdown_mm3x2wmx')?.text;
             const priorityText = task.column_values.find(col => col.id === 'color_mm3x885a')?.text;
 
-            // FIXED: Dropdown column types expect an array assigned to a plural "labels" key layout rule
             const subitemValues = {
-                status: { label: "Not Started" },
+                status:            { label: 'Not Started' },
                 dropdown_mm3xhker: { labels: [route.tierName] }
             };
+            if (phaseText)    subitemValues.dropdown_mm3x2wmx = { labels: [phaseText] };
+            if (priorityText) subitemValues.color_mm3x885a    = { label: priorityText };
 
-            if (phaseText) subitemValues.dropdown_mm3x2wmx = { labels: [phaseText] };
-            if (priorityText) subitemValues.color_mm3x885a = { label: priorityText };
-
-            const subitemMutation = `mutation { create_subitem(parent_item_id: ${projectId}, item_name: "${task.name.replace(/"/g, '\\"')}", column_values: ${JSON.stringify(JSON.stringify(subitemValues))}) { id } }`;
-            await mondayApiCall(subitemMutation);
-            itemsAddedCount++;
-        }
+            return mondayApiCall(`mutation {
+                create_subitem(
+                    parent_item_id: ${projectId},
+                    item_name: "${task.name.replace(/"/g, '\\"')}",
+                    column_values: ${JSON.stringify(JSON.stringify(subitemValues))}
+                ) { id }
+            }`);
+        }));
 
         await updateParentTrackingStatus(projectId, route.successLabel);
-        console.log(`✅ Checklist expansion complete! Milestone updated to: ${route.successLabel}`);
-        
-        return res.status(200).json({ success: true, injected: itemsAddedCount });
+        console.log(`✅ ${tasksToInject.length} tasks injected — status: ${route.successLabel}`);
+
+        return res.status(200).json({ success: true, injected: tasksToInject.length });
 
     } catch (error) {
-        console.error('❌ Automation engine fault encountered:', error);
+        console.error('❌ Task injection error:', error);
         return res.status(500).json({ success: false, error: error.message });
     }
 }
