@@ -1,11 +1,9 @@
-const fetch = require('node-fetch');
-
 export const config = {
   api: { bodyParser: true },
 };
 
 const MONDAY_API_URL   = 'https://api.monday.com/v2';
-const MONDAY_API_TOKEN = process.env.MONDAY_API_TOKEN;
+const MONDAY_API_TOKEN = process.env.MONDAY_API_KEY;
 
 // Board IDs
 const CREW_DB_BOARD_ID          = '18415879010';
@@ -50,7 +48,7 @@ const COLUMN_MAP = {
 // ================================================================
 // MAIN HANDLER — routes on ?route= query param
 // ================================================================
-module.exports = async (req, res) => {
+export default async function handler(req, res) {
   if (req.method === 'POST' && req.body?.challenge) {
     return res.status(200).json({ challenge: req.body.challenge });
   }
@@ -65,7 +63,7 @@ module.exports = async (req, res) => {
 
   // ── Default: sync new crew member to Contacts board ─────────
   return handleSyncNewCrewMember(req, res);
-};
+}
 
 // ================================================================
 // HANDLER: Sync new crew member → Contacts & Companies
