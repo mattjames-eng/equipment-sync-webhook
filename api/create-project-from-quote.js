@@ -426,8 +426,11 @@ export default async function handler(req, res) {
         const clientFallback = deepExtractName(data?.clientId) || '';
         const venueFallback  = deepExtractName(data?.venueId)  || '';
 
-        const clientResolvedName = await fetchContactNameFromFlex(clientUuid, clientFallback);
-        const venueResolvedName  = await fetchContactNameFromFlex(venueUuid,  venueFallback);
+        // Resolve both identity lookups in parallel — they're independent Flex API calls
+        const [clientResolvedName, venueResolvedName] = await Promise.all([
+            fetchContactNameFromFlex(clientUuid, clientFallback),
+            fetchContactNameFromFlex(venueUuid,  venueFallback)
+        ]);
 
         const quoteNumber    = deepExtractName(data?.elementNumber) || String(quoteId);
         const projectName    = deepExtractName(data?.name)          || 'Untitled Project';
