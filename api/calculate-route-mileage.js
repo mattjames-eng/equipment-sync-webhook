@@ -6,487 +6,319 @@ export const config = {
 };
 
 // Monday.com API configuration
-const MONDAY_API_URL = 'https://api.monday.com/v2';
-const MONDAY_API_TOKEN = process.env.MONDAY_API_KEY;
+const MONDAY_API_URL    = 'https://api.monday.com/v2';
+const MONDAY_API_TOKEN  = process.env.MONDAY_API_KEY;
 
 // Google Maps API configuration
-const ROUTES_V2_API_KEY = process.env.ROUTES_V2_API_KEY; // Routes API v2
+const ROUTES_V2_API_KEY = process.env.ROUTES_V2_API_KEY;
 
 // Board IDs
-const ROUTES_BOARD_ID = '18415598386';
+const ROUTES_BOARD_ID      = '18415598386';
 const ROUTE_STOPS_BOARD_ID = '18415570592';
-const CONTACTS_COMPANIES_BOARD_ID = '18415573401';
 
 // Column IDs - Routes Board
-const ROUTES_START_LOCATION_COLUMN = 'board_relation_mm4dfw6d'; // Route Start Location
-const ROUTES_END_LOCATION_COLUMN = 'board_relation_mm4d795a';   // Route End Location
-const ROUTES_TOTAL_DISTANCE_COLUMN = 'numeric_mm3wwt5j';        // Total Distance on Routes
-const ROUTES_TOTAL_DRIVE_TIME_COLUMN = 'numeric_mm3wens3';      // Total Drive Time on Routes
+const ROUTES_START_LOCATION_COLUMN   = 'board_relation_mm4dfw6d'; // Route Start Location
+const ROUTES_END_LOCATION_COLUMN     = 'board_relation_mm4d795a'; // Route End Location
+const ROUTES_TOTAL_DISTANCE_COLUMN   = 'numeric_mm3wwt5j';        // Total Distance on Routes
+const ROUTES_TOTAL_DRIVE_TIME_COLUMN = 'numeric_mm3wens3';        // Total Drive Time on Routes
 
 // Column IDs - Route Stops Board
-const ROUTE_STOPS_ROUTE_COLUMN = 'board_relation_mm3w48fh';     // Route connection on Route Stops
-const ROUTE_STOPS_LOCATION_COLUMN = 'board_relation_mm3vn6yb';  // Location connection
-const ROUTE_STOPS_DATE_COLUMN = 'date_mm3v2kz1';                // Date for sorting
-const ROUTE_STOPS_TIME_COLUMN = 'hour_mm3ws9gq';                // Time for sorting
-const ROUTE_STOPS_DISTANCE_COLUMN = 'numeric_mm4eq22c';         // Distance to Next Stop
-const ROUTE_STOPS_DRIVE_TIME_COLUMN = 'numeric_mm4ezw83';       // Drive Time to Next Stop
+const ROUTE_STOPS_ROUTE_COLUMN       = 'board_relation_mm3w48fh'; // Route connection
+const ROUTE_STOPS_LOCATION_COLUMN    = 'board_relation_mm3vn6yb'; // Location connection
+const ROUTE_STOPS_DATE_COLUMN        = 'date_mm3v2kz1';           // Date for sorting
+const ROUTE_STOPS_TIME_COLUMN        = 'hour_mm3ws9gq';           // Time for sorting
+const ROUTE_STOPS_DISTANCE_COLUMN    = 'numeric_mm4eq22c';        // Distance to Next Stop
+const ROUTE_STOPS_DRIVE_TIME_COLUMN  = 'numeric_mm4ezw83';        // Drive Time to Next Stop
 
-/**
- * Main handler for route mileage calculation webhook
- */
+// ================================================================
+// SHARED HELPER: resolve linked item ID from a BoardRelationValue.
+// monday.com returns this in 3 different formats depending on
+// which API version / fragment you use — handle all of them.
+// ================================================================
+function getLinkedId(colData) {
+  if (!colData) return null;
+
+  // Format A: GraphQL inline fragment (most reliable)
+  if (colData.linked_item_ids?.length) return colData.linked_item_ids[0];
+
+  const val = colData.value;
+  if (!val) return null;
+
+  // Format B: { linkedPulseIds: [{ linkedPulseId: "..." }] }
+  if (val.linkedPulseIds?.length) return val.linkedPulseIds[0].linkedPulseId;
+
+  // Format C: direct array [{ id: "..." }]
+  if (Array.isArray(val) && val.length) return val[0].id;
+
+  return null;
+}
+
+// ================================================================
+// SHARED HELPER: Monday GraphQL request
+// ================================================================
+async function mondayRequest(query) {
+  const response = await fetch(MONDAY_API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_TOKEN },
+    body: JSON.stringify({ query })
+  });
+  const data = await response.json();
+  if (data.errors) throw new Error(`Monday API error: ${JSON.stringify(data.errors)}`);
+  return data.data;
+}
+
+// ================================================================
+// MAIN HANDLER
+// ================================================================
 export default async function handler(req, res) {
-  console.log('Route Mileage Calculation webhook triggered');
-  console.log('Method:', req.method);
-  console.log('Body:', req.body);
+  console.log('Route mileage webhook triggered');
 
-  // Handle Monday webhook challenge validation
-  if (req.method === 'POST' && req.body && req.body.challenge) {
-    console.log('Responding to Monday challenge:', req.body.challenge);
+  // Monday webhook challenge
+  if (req.method === 'POST' && req.body?.challenge) {
     return res.status(200).json({ challenge: req.body.challenge });
   }
 
-  // Handle GET requests for basic validation
   if (req.method === 'GET') {
     return res.status(200).json({ status: 'ok' });
   }
 
-  // Route dispatch — handle sub-routes before main mileage logic
+  // Sub-route dispatch
   const route = req.query?.route;
   if (route === 'sync-route-driver') return handleSyncRouteDriver(req, res);
   if (route === 'sync-stop-driver')  return handleSyncStopDriver(req, res);
 
-  // Parse body if it's not already parsed
+  // Parse body
   let body = req.body;
   if (typeof body === 'string') {
-    try {
-      body = JSON.parse(body);
-    } catch (e) {
-      return res.status(400).json({ error: 'Invalid JSON in request body' });
-    }
+    try { body = JSON.parse(body); }
+    catch (e) { return res.status(400).json({ error: 'Invalid JSON in request body' }); }
   }
 
   try {
-    const event = body.event;
-
-    if (!event) {
-      return res.status(400).json({ error: 'Missing event data in webhook payload' });
-    }
-
+    const event = body?.event;
+    if (!event)          return res.status(400).json({ error: 'Missing event data' });
     const routeId = event.pulseId;
-
-    if (!routeId) {
-      return res.status(400).json({ error: 'Missing routeId in webhook payload' });
-    }
+    if (!routeId)        return res.status(400).json({ error: 'Missing routeId' });
 
     console.log(`Calculating mileage for Route: ${routeId}`);
 
-    // Step 1: Fetch Route details (start/end locations)
-    const routeDetails = await fetchRouteDetails(routeId);
-    console.log('Route details fetched:', routeDetails);
+    // Fetch route details + stops in parallel (stops are server-side filtered)
+    const [routeDetails, routeStops] = await Promise.all([
+      fetchRouteDetails(routeId),
+      fetchRouteStops(routeId)
+    ]);
 
-    // Step 2: Fetch all Route Stops for this route
-    const routeStops = await fetchRouteStops(routeId);
-    console.log(`Found ${routeStops.length} route stops`);
+    console.log(`Route: "${routeDetails.name}" | ${routeStops.length} stops`);
 
     if (routeStops.length === 0) {
       return res.status(200).json({ message: 'No route stops found for this route', routeId });
     }
 
-    // Step 3: Sort route stops by date and time
+    // Sort by date + time
     const sortedStops = sortRouteStops(routeStops);
-    console.log('Route stops sorted by date/time');
 
-    // Step 4: Fetch location addresses for route stops
-    const stopsWithAddresses = await enrichStopsWithAddresses(sortedStops);
-    console.log('Addresses fetched for all stops');
+    // Fetch all location addresses in parallel (batched + start/end simultaneously)
+    const locationIds = sortedStops.map(s => s.locationId).filter(Boolean);
+    const [locationMap, startLocation, endLocation] = await Promise.all([
+      fetchLocationsByIds(locationIds),
+      fetchLocationAddress(routeDetails.startLocationId),
+      fetchLocationAddress(routeDetails.endLocationId)
+    ]);
 
-    // Step 5: Fetch start and end location addresses
-    const startLocation = await fetchLocationAddress(routeDetails.startLocationId);
-    const endLocation = await fetchLocationAddress(routeDetails.endLocationId);
-    console.log('Start location:', startLocation);
-    console.log('End location:', endLocation);
+    const stopsWithAddresses = sortedStops.map(stop => ({
+      ...stop,
+      locationName: locationMap[stop.locationId]?.name    || 'Unknown',
+      address:      locationMap[stop.locationId]?.address || 'Unknown'
+    }));
 
-    // Step 6: Build complete route sequence
+    // Build full waypoint sequence: Start → Stops → End
     const completeRoute = buildCompleteRoute(startLocation, stopsWithAddresses, endLocation);
-    console.log(`Complete route built with ${completeRoute.length} waypoints`);
+    console.log(`${completeRoute.length} waypoints total`);
 
-    // Step 7: Calculate distances and drive times between consecutive waypoints
+    // Calculate all leg distances in parallel, then write all stops in parallel
     const calculations = await calculateDistancesAndTimes(completeRoute);
-    console.log('Distances and times calculated');
-
-    // Step 8: Update each Route Stop with distance/time to next stop
     await updateRouteStops(calculations);
-    console.log('Route stops updated with distance/time data');
 
-    // Step 9: Calculate totals and update the Route
+    // Roll up totals and update the Route item
     const totals = calculateTotals(calculations);
     await updateRouteTotals(routeId, totals);
-    console.log(`Route totals updated: ${totals.totalDistance} miles, ${totals.totalDriveTime} hours`);
+
+    console.log(`✅ Route complete — ${totals.totalDistance} mi, ${totals.totalDriveTime} hrs`);
 
     return res.status(200).json({
       success: true,
-      message: 'Route mileage calculated successfully',
       routeId,
       stopsProcessed: routeStops.length,
-      totalDistance: totals.totalDistance,
+      totalDistance:  totals.totalDistance,
       totalDriveTime: totals.totalDriveTime
     });
 
   } catch (error) {
-    console.error('Error calculating route mileage:', error);
+    console.error('Route mileage error:', error);
     return res.status(500).json({ error: 'Failed to calculate route mileage', details: error.message });
   }
 }
 
-/**
- * Fetch Route details including start and end locations
- */
+// ================================================================
+// FETCH ROUTE DETAILS (start/end location IDs)
+// ================================================================
 async function fetchRouteDetails(routeId) {
-  const query = `
+  const data = await mondayRequest(`
     query {
       items(ids: [${routeId}]) {
-        id
-        name
-        column_values {
-          id
-          value
-          text
-          ... on BoardRelationValue {
-            linked_item_ids
-          }
+        id name
+        column_values(ids: ["${ROUTES_START_LOCATION_COLUMN}", "${ROUTES_END_LOCATION_COLUMN}"]) {
+          id value text
+          ... on BoardRelationValue { linked_item_ids }
         }
       }
     }
-  `;
+  `);
 
-  const response = await fetch(MONDAY_API_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_TOKEN },
-    body: JSON.stringify({ query })
-  });
-
-  const data = await response.json();
-  if (data.errors) throw new Error(`Monday API error: ${JSON.stringify(data.errors)}`);
-
-  const route = data.data.items[0];
-  const columnData = {};
-  route.column_values.forEach(col => {
-    columnData[col.id] = {
-      value: col.value ? JSON.parse(col.value) : null,
-      text: col.text,
+  const item = data.items[0];
+  const colMap = {};
+  item.column_values.forEach(col => {
+    colMap[col.id] = {
+      value:           col.value ? JSON.parse(col.value) : null,
+      text:            col.text,
       linked_item_ids: col.linked_item_ids || null
     };
   });
 
-  console.log('Start Location Column:', JSON.stringify(columnData[ROUTES_START_LOCATION_COLUMN]));
-  console.log('End Location Column:', JSON.stringify(columnData[ROUTES_END_LOCATION_COLUMN]));
-
-  // ✅ Fix 1: check linked_item_ids (GraphQL fragment) first — most reliable
-  const getLinkedId = (colData) => {
-    if (!colData) {
-      console.log('getLinkedId: colData is null/undefined');
-      return null;
-    }
-
-    if (colData.linked_item_ids && colData.linked_item_ids.length > 0) {
-      console.log('Using Format 0 (linked_item_ids)');
-      return colData.linked_item_ids[0];
-    }
-
-    const columnValue = colData.value;
-    if (!columnValue) {
-      console.log('getLinkedId: value is null/undefined');
-      return null;
-    }
-
-    console.log('getLinkedId input value:', JSON.stringify(columnValue));
-
-    if (columnValue.linkedPulseIds && columnValue.linkedPulseIds.length > 0) {
-      console.log('Using Format 1 (linkedPulseIds)');
-      return columnValue.linkedPulseIds[0].linkedPulseId;
-    }
-
-    if (Array.isArray(columnValue) && columnValue.length > 0) {
-      console.log('Using Format 2 (direct array)');
-      return columnValue[0].id;
-    }
-
-    console.log('No matching format found');
-    return null;
-  };
-
   return {
-    id: route.id,
-    name: route.name,
-    startLocationId: getLinkedId(columnData[ROUTES_START_LOCATION_COLUMN]),
-    endLocationId: getLinkedId(columnData[ROUTES_END_LOCATION_COLUMN])
+    id:              item.id,
+    name:            item.name,
+    startLocationId: getLinkedId(colMap[ROUTES_START_LOCATION_COLUMN]),
+    endLocationId:   getLinkedId(colMap[ROUTES_END_LOCATION_COLUMN])
   };
 }
 
-/**
- * Fetch all Route Stops for a given route
- */
+// ================================================================
+// FETCH ROUTE STOPS — server-side filtered by routeId.
+// monday's items_page query_params handles the join so we never
+// pull the full board and filter in JavaScript.
+// ================================================================
 async function fetchRouteStops(routeId) {
-  const itemsQuery = `
+  const data = await mondayRequest(`
     query {
       boards(ids: [${ROUTE_STOPS_BOARD_ID}]) {
-        items_page(limit: 500) {
+        items_page(
+          limit: 500,
+          query_params: {
+            rules: [{
+              column_id: "${ROUTE_STOPS_ROUTE_COLUMN}",
+              compare_value: ["${routeId}"]
+            }]
+          }
+        ) {
           items {
-            id
-            name
-            column_values(ids: ["${ROUTE_STOPS_ROUTE_COLUMN}", "${ROUTE_STOPS_LOCATION_COLUMN}", "${ROUTE_STOPS_DATE_COLUMN}", "${ROUTE_STOPS_TIME_COLUMN}"]) {
-              id
-              value
-              text
-              ... on BoardRelationValue {
-                linked_item_ids
-                linked_items {
-                  id
-                  name
-                }
-              }
+            id name
+            column_values(ids: [
+              "${ROUTE_STOPS_LOCATION_COLUMN}",
+              "${ROUTE_STOPS_DATE_COLUMN}",
+              "${ROUTE_STOPS_TIME_COLUMN}"
+            ]) {
+              id value text
+              ... on BoardRelationValue { linked_item_ids }
             }
           }
         }
       }
     }
-  `;
+  `);
 
-  const itemsResponse = await fetch(MONDAY_API_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_TOKEN },
-    body: JSON.stringify({ query: itemsQuery })
-  });
+  const items = data.boards[0].items_page.items;
+  console.log(`Found ${items.length} stops for Route ${routeId}`);
 
-  const itemsData = await itemsResponse.json();
-  if (itemsData.errors) throw new Error(`Monday API error fetching items: ${JSON.stringify(itemsData.errors)}`);
-
-  const allItems = itemsData.data.boards[0].items_page.items;
-  console.log(`Fetched full data for ${allItems.length} items`);
-
-  const filteredItems = allItems.filter(item => {
-    const routeColumn = item.column_values.find(col => col.id === ROUTE_STOPS_ROUTE_COLUMN);
-
-    console.log(`\n--- Checking item ${item.id} (${item.name}) ---`);
-    console.log('Route column found:', !!routeColumn);
-    console.log('Route column full object:', JSON.stringify(routeColumn, null, 2));
-
-    if (!routeColumn) {
-      console.log('No route column found');
-      return false;
-    }
-
-    if (routeColumn.linked_item_ids) {
-      console.log('Using linked_item_ids:', routeColumn.linked_item_ids);
-      const match = routeColumn.linked_item_ids.some(id => id.toString() === routeId.toString());
-      console.log('Match result:', match);
-      return match;
-    }
-
-    console.log('Route column value (raw):', routeColumn.value);
-    console.log('Route column text:', routeColumn.text);
-
-    if (!routeColumn.value) {
-      console.log('Route column value is null/empty');
-      return false;
-    }
-
-    try {
-      const parsedValue = JSON.parse(routeColumn.value);
-      console.log('Parsed value:', JSON.stringify(parsedValue, null, 2));
-      console.log('Looking for routeId:', routeId);
-
-      if (parsedValue.linkedPulseIds) {
-        console.log('Format 1: linkedPulseIds array detected');
-        const match = parsedValue.linkedPulseIds.some(link => {
-          console.log(`  Comparing ${link.linkedPulseId} === ${routeId}`);
-          return link.linkedPulseId.toString() === routeId.toString();
-        });
-        console.log('Match result:', match);
-        return match;
-      }
-
-      if (Array.isArray(parsedValue)) {
-        console.log('Format 2: Direct array detected');
-        const match = parsedValue.some(link => {
-          console.log(`  Comparing ${link.id} === ${routeId}`);
-          return link.id && link.id.toString() === routeId.toString();
-        });
-        console.log('Match result:', match);
-        return match;
-      }
-
-      console.log('No recognized format found');
-      return false;
-    } catch (e) {
-      console.error(`Error parsing route column for item ${item.id}:`, e);
-      return false;
-    }
-  });
-
-  console.log(`Found ${filteredItems.length} route stops connected to Route ${routeId}`);
-
-  if (filteredItems.length > 0) {
-    const firstItem = filteredItems[0];
-    const routeCol = firstItem.column_values.find(c => c.id === ROUTE_STOPS_ROUTE_COLUMN);
-    console.log('Sample route column value:', routeCol?.value);
-  }
-
-  const getLinkedId = (columnData) => {
-    if (!columnData) return null;
-
-    if (columnData.linked_item_ids && columnData.linked_item_ids.length > 0) {
-      return columnData.linked_item_ids[0];
-    }
-
-    const columnValue = columnData.value;
-    if (!columnValue) return null;
-
-    if (columnValue.linkedPulseIds && columnValue.linkedPulseIds.length > 0) {
-      return columnValue.linkedPulseIds[0].linkedPulseId;
-    }
-
-    if (Array.isArray(columnValue) && columnValue.length > 0) {
-      return columnValue[0].id;
-    }
-
-    return null;
-  };
-
-  return filteredItems.map(item => {
-    const columnData = {};
+  return items.map(item => {
+    const colMap = {};
     item.column_values.forEach(col => {
-      columnData[col.id] = {
-        value: col.value ? JSON.parse(col.value) : null,
-        text: col.text,
+      colMap[col.id] = {
+        value:           col.value ? JSON.parse(col.value) : null,
+        text:            col.text,
         linked_item_ids: col.linked_item_ids || null
       };
     });
 
     return {
-      id: item.id,
-      name: item.name,
-      date: columnData[ROUTE_STOPS_DATE_COLUMN]?.text || '',
-      time: columnData[ROUTE_STOPS_TIME_COLUMN]?.text || '',
-      locationId: getLinkedId(columnData[ROUTE_STOPS_LOCATION_COLUMN]),
-      columns: columnData
+      id:         item.id,
+      name:       item.name,
+      date:       colMap[ROUTE_STOPS_DATE_COLUMN]?.text     || '',
+      time:       colMap[ROUTE_STOPS_TIME_COLUMN]?.text     || '',
+      locationId: getLinkedId(colMap[ROUTE_STOPS_LOCATION_COLUMN])
     };
   });
 }
 
-/**
- * Sort route stops by date and time
- */
+// ================================================================
+// SORT STOPS by date + time
+// ================================================================
 function sortRouteStops(stops) {
-  return stops.sort((a, b) => {
-    const dateTimeA = new Date(`${a.date} ${a.time}`);
-    const dateTimeB = new Date(`${b.date} ${b.time}`);
-    return dateTimeA - dateTimeB;
-  });
+  return [...stops].sort((a, b) =>
+    new Date(`${a.date} ${a.time}`) - new Date(`${b.date} ${b.time}`)
+  );
 }
 
-/**
- * Fetch address for a single location
- */
-async function fetchLocationAddress(locationId) {
-  if (!locationId) return null;
+// ================================================================
+// FETCH LOCATIONS — single batched query for all stop locations
+// ================================================================
+async function fetchLocationsByIds(locationIds) {
+  if (!locationIds.length) return {};
 
-  const query = `
-    query {
-      items(ids: [${locationId}]) {
-        id
-        name
-        column_values {
-          id
-          value
-          text
-          type
-        }
-      }
-    }
-  `;
-
-  const response = await fetch(MONDAY_API_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_TOKEN },
-    body: JSON.stringify({ query })
-  });
-
-  const data = await response.json();
-  if (data.errors) throw new Error(`Monday API error fetching location: ${JSON.stringify(data.errors)}`);
-
-  const location = data.data.items[0];
-  const addressCol = location.column_values.find(c => c.id === 'long_text_mm3vkzc6');
-
-  return {
-    id: location.id,
-    name: location.name,
-    address: addressCol?.text || location.name
-  };
-}
-
-/**
- * Fetch addresses for all route stop locations
- */
-async function enrichStopsWithAddresses(stops) {
-  const locationIds = stops.map(stop => stop.locationId).filter(id => id !== null);
-
-  if (locationIds.length === 0) {
-    throw new Error('No locations found for route stops');
-  }
-
-  const query = `
+  const data = await mondayRequest(`
     query {
       items(ids: [${locationIds.join(', ')}]) {
-        id
-        name
-        column_values {
-          id
-          value
-          text
-          type
-        }
+        id name
+        column_values(ids: ["long_text_mm3vkzc6"]) { id text }
       }
     }
-  `;
+  `);
 
-  const response = await fetch(MONDAY_API_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_TOKEN },
-    body: JSON.stringify({ query })
-  });
-
-  const data = await response.json();
-  if (data.errors) throw new Error(`Monday API error fetching locations: ${JSON.stringify(data.errors)}`);
-
-  const locationMap = {};
-  data.data.items.forEach(item => {
+  const map = {};
+  data.items.forEach(item => {
     const addressCol = item.column_values.find(c => c.id === 'long_text_mm3vkzc6');
-    locationMap[item.id] = {
-      name: item.name,
+    map[item.id] = {
+      name:    item.name,
       address: addressCol?.text || item.name
     };
   });
-
-  return stops.map(stop => ({
-    ...stop,
-    locationName: locationMap[stop.locationId]?.name || 'Unknown',
-    address: locationMap[stop.locationId]?.address || 'Unknown'
-  }));
+  return map;
 }
 
-/**
- * Build complete route sequence: Start → Stops → End
- */
+// ================================================================
+// FETCH SINGLE LOCATION ADDRESS (for route start/end)
+// ================================================================
+async function fetchLocationAddress(locationId) {
+  if (!locationId) return null;
+
+  const data = await mondayRequest(`
+    query {
+      items(ids: [${locationId}]) {
+        id name
+        column_values(ids: ["long_text_mm3vkzc6"]) { id text }
+      }
+    }
+  `);
+
+  const item       = data.items[0];
+  const addressCol = item.column_values.find(c => c.id === 'long_text_mm3vkzc6');
+  return {
+    id:      item.id,
+    name:    item.name,
+    address: addressCol?.text || item.name
+  };
+}
+
+// ================================================================
+// BUILD COMPLETE ROUTE: Start sentinel → Stops → End sentinel
+// ================================================================
 function buildCompleteRoute(startLocation, stops, endLocation) {
   const route = [];
 
   if (startLocation) {
     route.push({
-      id: 'start',
-      name: startLocation.name,
-      locationName: startLocation.name,
-      address: startLocation.address,
+      id: 'start', name: startLocation.name,
+      locationName: startLocation.name, address: startLocation.address,
       isStartLocation: true
     });
   }
@@ -495,10 +327,8 @@ function buildCompleteRoute(startLocation, stops, endLocation) {
 
   if (endLocation) {
     route.push({
-      id: 'end',
-      name: endLocation.name,
-      locationName: endLocation.name,
-      address: endLocation.address,
+      id: 'end', name: endLocation.name,
+      locationName: endLocation.name, address: endLocation.address,
       isEndLocation: true
     });
   }
@@ -506,179 +336,144 @@ function buildCompleteRoute(startLocation, stops, endLocation) {
   return route;
 }
 
-/**
- * Calculate distances and drive times using Google Routes API v2
- */
+// ================================================================
+// CALCULATE DISTANCES + DRIVE TIMES
+// All Google Routes API calls fire in parallel — one per leg.
+// ================================================================
 async function calculateDistancesAndTimes(waypoints) {
-  const calculations = [];
-
+  const pairs = [];
   for (let i = 0; i < waypoints.length - 1; i++) {
-    const origin = waypoints[i];
-    const destination = waypoints[i + 1];
+    pairs.push({ origin: waypoints[i], destination: waypoints[i + 1] });
+  }
 
-    console.log(`Calculating distance: ${origin.locationName} → ${destination.locationName}`);
-
-    const url = 'https://routes.googleapis.com/directions/v2:computeRoutes';
-    const requestBody = {
-      origin: { address: origin.address },
-      destination: { address: destination.address },
-      travelMode: 'DRIVE',
-      routingPreference: 'TRAFFIC_AWARE',
-      computeAlternativeRoutes: false,
-      units: 'IMPERIAL'
-    };
-
-    const response = await fetch(url, {
+  const legResults = await Promise.all(pairs.map(async ({ origin, destination }) => {
+    const response = await fetch('https://routes.googleapis.com/directions/v2:computeRoutes', {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json',
-        'X-Goog-Api-Key': ROUTES_V2_API_KEY,
+        'Content-Type':     'application/json',
+        'X-Goog-Api-Key':   ROUTES_V2_API_KEY,
         'X-Goog-FieldMask': 'routes.duration,routes.distanceMeters'
       },
-      body: JSON.stringify(requestBody)
+      body: JSON.stringify({
+        origin:                   { address: origin.address },
+        destination:              { address: destination.address },
+        travelMode:               'DRIVE',
+        routingPreference:        'TRAFFIC_AWARE',
+        computeAlternativeRoutes: false,
+        units:                    'IMPERIAL'
+      })
     });
 
     const data = await response.json();
 
-    if (!data.routes || data.routes.length === 0) {
-      console.error(`Google Routes API error:`, data);
-      if (!origin.isStartLocation && !origin.isEndLocation) {
-        calculations.push({ stopId: origin.id, distanceToNext: 0, driveTimeToNext: 0, error: 'NO_ROUTE_FOUND' });
-      }
-      continue;
+    if (!data.routes?.length) {
+      console.error(`No route: ${origin.locationName} → ${destination.locationName}`);
+      return { origin, distanceMiles: 0, driveTimeHours: 0, error: true };
     }
 
-    const route = data.routes[0];
-    const distanceMiles = (route.distanceMeters / 1609.34).toFixed(1);
-    const driveTimeHours = (parseInt(route.duration.replace('s', '')) / 3600).toFixed(2);
+    const leg           = data.routes[0];
+    const distanceMiles = parseFloat((leg.distanceMeters / 1609.34).toFixed(1));
+    // Google returns duration as "1234s" — strip non-numeric chars to be safe
+    const durationSec   = parseInt(leg.duration.replace(/\D/g, ''), 10);
+    const driveTimeHours = parseFloat((durationSec / 3600).toFixed(2));
 
+    console.log(`  ${origin.locationName} → ${destination.locationName}: ${distanceMiles} mi, ${driveTimeHours} hrs`);
+    return { origin, distanceMiles, driveTimeHours };
+  }));
+
+  // Map to stop write objects — skip start/end sentinels
+  const calculations = [];
+  for (const { origin, distanceMiles, driveTimeHours, error } of legResults) {
     if (!origin.isStartLocation && !origin.isEndLocation) {
       calculations.push({
-        stopId: origin.id,
-        distanceToNext: parseFloat(distanceMiles),
-        driveTimeToNext: parseFloat(driveTimeHours)
+        stopId:          origin.id,
+        distanceToNext:  distanceMiles,
+        driveTimeToNext: driveTimeHours,
+        ...(error && { error: 'NO_ROUTE_FOUND' })
       });
     }
-
-    console.log(`  → ${distanceMiles} miles, ${driveTimeHours} hours`);
   }
 
-  // ✅ Fix 2: only add a trailing 0 if there's NO end location (last stop is true terminus)
-  // When an end location exists, the last stop's leg was already calculated in the loop above
-  const lastWaypoint = waypoints[waypoints.length - 1];
-  if (!lastWaypoint.isEndLocation && !lastWaypoint.isStartLocation) {
-    calculations.push({ stopId: lastWaypoint.id, distanceToNext: 0, driveTimeToNext: 0 });
+  // True terminus (no end-location sentinel): zero out "to next"
+  const last = waypoints[waypoints.length - 1];
+  if (!last.isEndLocation && !last.isStartLocation) {
+    calculations.push({ stopId: last.id, distanceToNext: 0, driveTimeToNext: 0 });
   }
 
   return calculations;
 }
 
-/**
- * Update Route Stops with distance and drive time to next stop
- */
+// ================================================================
+// UPDATE ROUTE STOPS — all writes in parallel
+// ================================================================
 async function updateRouteStops(calculations) {
-  for (const calc of calculations) {
-    const mutation = `
+  await Promise.all(calculations.map(async (calc) => {
+    await mondayRequest(`
       mutation {
         change_multiple_column_values(
           item_id: ${calc.stopId},
           board_id: ${ROUTE_STOPS_BOARD_ID},
           column_values: "{\\"${ROUTE_STOPS_DISTANCE_COLUMN}\\": \\"${calc.distanceToNext}\\", \\"${ROUTE_STOPS_DRIVE_TIME_COLUMN}\\": \\"${calc.driveTimeToNext}\\"}"
-        ) {
-          id
-        }
+        ) { id }
       }
-    `;
-
-    const response = await fetch(MONDAY_API_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_TOKEN },
-      body: JSON.stringify({ query: mutation })
-    });
-
-    const data = await response.json();
-    if (data.errors) {
-      console.error(`Failed to update stop ${calc.stopId}:`, data.errors);
-    }
-  }
+    `);
+  }));
 }
 
-/**
- * Calculate total distance and drive time
- */
+// ================================================================
+// CALCULATE + WRITE ROUTE TOTALS
+// ================================================================
 function calculateTotals(calculations) {
-  const totalDistance = calculations.reduce((sum, calc) => sum + calc.distanceToNext, 0);
-  const totalDriveTime = calculations.reduce((sum, calc) => sum + calc.driveTimeToNext, 0);
-
   return {
-    totalDistance: totalDistance.toFixed(1),
-    totalDriveTime: totalDriveTime.toFixed(2)
+    totalDistance:  parseFloat(calculations.reduce((s, c) => s + c.distanceToNext,  0).toFixed(1)),
+    totalDriveTime: parseFloat(calculations.reduce((s, c) => s + c.driveTimeToNext, 0).toFixed(2))
   };
 }
 
-/**
- * Update Route with total distance and drive time
- */
 async function updateRouteTotals(routeId, totals) {
-  const mutation = `
+  await mondayRequest(`
     mutation {
       change_multiple_column_values(
         item_id: ${routeId},
         board_id: ${ROUTES_BOARD_ID},
         column_values: "{\\"${ROUTES_TOTAL_DISTANCE_COLUMN}\\": \\"${totals.totalDistance}\\", \\"${ROUTES_TOTAL_DRIVE_TIME_COLUMN}\\": \\"${totals.totalDriveTime}\\"}"
-      ) {
-        id
-      }
+      ) { id }
     }
-  `;
-
-  const response = await fetch(MONDAY_API_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_TOKEN },
-    body: JSON.stringify({ query: mutation })
-  });
-
-  const data = await response.json();
-  if (data.errors) throw new Error(`Failed to update route totals: ${JSON.stringify(data.errors)}`);
+  `);
 }
 
 // ================================================================
-// HANDLER: Sync route driver → cascade to all route stops
-// Folded in from sync-route-driver.js
+// HANDLER: Sync route driver → cascade driver to all stops
 // Endpoint: /api/calculate-route-mileage?route=sync-route-driver
 // ================================================================
 async function handleSyncRouteDriver(req, res) {
-  console.log('Sync Route Driver webhook triggered');
   let body = req.body;
   if (typeof body === 'string') {
     try { body = JSON.parse(body); }
-    catch (e) { return res.status(400).json({ error: 'Invalid JSON in request body' }); }
+    catch (e) { return res.status(400).json({ error: 'Invalid JSON' }); }
   }
 
   try {
-    const event = body.event;
-    if (!event) return res.status(400).json({ error: 'Missing event data in webhook payload' });
-
+    const event   = body?.event;
+    if (!event)   return res.status(400).json({ error: 'Missing event data' });
     const routeId = event.pulseId;
-    if (!routeId) return res.status(400).json({ error: 'Missing routeId in webhook payload' });
+    if (!routeId) return res.status(400).json({ error: 'Missing routeId' });
 
     console.log(`Syncing driver for Route: ${routeId}`);
 
-    const driverIds  = await fetchRouteDriverIds(routeId);
-    const routeStops = await fetchRouteStopsForDriverSync(routeId);
-    console.log(`Found ${routeStops.length} route stops to update`);
+    const [driverIds, routeStops] = await Promise.all([
+      fetchRouteDriverIds(routeId),
+      fetchRouteStopsForDriverSync(routeId)
+    ]);
 
     if (routeStops.length === 0) {
-      return res.status(200).json({ message: 'No route stops found for this route', routeId });
+      return res.status(200).json({ message: 'No route stops found', routeId });
     }
 
     await updateRouteStopsDriver(routeStops, driverIds);
 
-    return res.status(200).json({
-      success: true,
-      message: 'Driver synced to route stops successfully',
-      routeId, driverIds, stopsUpdated: routeStops.length
-    });
+    return res.status(200).json({ success: true, routeId, driverIds, stopsUpdated: routeStops.length });
+
   } catch (error) {
     console.error('Error syncing route driver:', error);
     return res.status(500).json({ error: 'Failed to sync route driver', details: error.message });
@@ -686,44 +481,36 @@ async function handleSyncRouteDriver(req, res) {
 }
 
 // ================================================================
-// HANDLER: Sync stop driver — single stop picks up driver from its route
-// Folded in from sync-stop-driver.js
+// HANDLER: Sync stop driver — single stop inherits driver from its route
 // Endpoint: /api/calculate-route-mileage?route=sync-stop-driver
 // ================================================================
 async function handleSyncStopDriver(req, res) {
-  console.log('Sync Stop Driver webhook triggered');
   let body = req.body;
   if (typeof body === 'string') {
     try { body = JSON.parse(body); }
-    catch (e) { return res.status(400).json({ error: 'Invalid JSON in request body' }); }
+    catch (e) { return res.status(400).json({ error: 'Invalid JSON' }); }
   }
 
   try {
-    const event = body.event;
-    if (!event) return res.status(400).json({ error: 'Missing event data in webhook payload' });
-
+    const event  = body?.event;
+    if (!event)  return res.status(400).json({ error: 'Missing event data' });
     const stopId = event.pulseId;
-    if (!stopId) return res.status(400).json({ error: 'Missing stopId in webhook payload' });
+    if (!stopId) return res.status(400).json({ error: 'Missing stopId' });
 
-    console.log(`Processing Route Stop: ${stopId}`);
-
-    const routeId  = await fetchStopRouteId(stopId);
+    const routeId = await fetchStopRouteId(stopId);
     if (!routeId) {
       return res.status(200).json({ message: 'No route connected to this stop yet', stopId });
     }
 
     const driverIds = await fetchRouteDriverIds(routeId);
     if (driverIds.length === 0) {
-      return res.status(200).json({ message: 'No driver assigned to the connected route', stopId, routeId });
+      return res.status(200).json({ message: 'No driver on connected route', stopId, routeId });
     }
 
     await updateStopDriver(stopId, driverIds);
 
-    return res.status(200).json({
-      success: true,
-      message: 'Driver synced to route stop successfully',
-      stopId, routeId, driverIds
-    });
+    return res.status(200).json({ success: true, stopId, routeId, driverIds });
+
   } catch (error) {
     console.error('Error syncing stop driver:', error);
     return res.status(500).json({ error: 'Failed to sync stop driver', details: error.message });
@@ -731,12 +518,12 @@ async function handleSyncStopDriver(req, res) {
 }
 
 // ================================================================
-// SHARED HELPERS — Driver Sync
+// DRIVER SYNC HELPERS
 // ================================================================
 
 async function fetchRouteDriverIds(routeId) {
   const ROUTES_DRIVER_COLUMN = 'board_relation_mm4fg4yp';
-  const query = `
+  const data = await mondayRequest(`
     query {
       items(ids: [${routeId}]) {
         column_values(ids: ["${ROUTES_DRIVER_COLUMN}"]) {
@@ -745,71 +532,49 @@ async function fetchRouteDriverIds(routeId) {
         }
       }
     }
-  `;
-  const response = await fetch(MONDAY_API_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_TOKEN },
-    body: JSON.stringify({ query })
-  });
-  const data = await response.json();
-  if (data.errors) throw new Error(`Monday API error fetching route: ${JSON.stringify(data.errors)}`);
+  `);
 
-  const driverCol = data.data.items[0]?.column_values?.find(c => c.id === ROUTES_DRIVER_COLUMN);
-  if (driverCol?.linked_item_ids?.length) return driverCol.linked_item_ids;
-  if (driverCol?.value) {
+  const col = data.items[0]?.column_values?.find(c => c.id === ROUTES_DRIVER_COLUMN);
+  if (col?.linked_item_ids?.length) return col.linked_item_ids;
+  if (col?.value) {
     try {
-      const parsed = JSON.parse(driverCol.value);
-      if (parsed.linkedPulseIds?.length) return parsed.linkedPulseIds.map(l => l.linkedPulseId);
-      if (Array.isArray(parsed) && parsed.length) return parsed.map(l => l.id);
+      const p = JSON.parse(col.value);
+      if (p.linkedPulseIds?.length) return p.linkedPulseIds.map(l => l.linkedPulseId);
+      if (Array.isArray(p) && p.length) return p.map(l => l.id);
     } catch (e) {}
   }
   return [];
 }
 
+// Server-side filtered — no full-board scan
 async function fetchRouteStopsForDriverSync(routeId) {
-  const query = `
+  const data = await mondayRequest(`
     query {
       boards(ids: [${ROUTE_STOPS_BOARD_ID}]) {
-        items_page(limit: 500) {
-          items {
-            id name
-            column_values(ids: ["${ROUTE_STOPS_ROUTE_COLUMN}"]) {
-              id value
-              ... on BoardRelationValue { linked_item_ids }
-            }
+        items_page(
+          limit: 500,
+          query_params: {
+            rules: [{
+              column_id: "${ROUTE_STOPS_ROUTE_COLUMN}",
+              compare_value: ["${routeId}"]
+            }]
           }
+        ) {
+          items { id name }
         }
       }
     }
-  `;
-  const response = await fetch(MONDAY_API_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_TOKEN },
-    body: JSON.stringify({ query })
-  });
-  const data = await response.json();
-  if (data.errors) throw new Error(`Monday API error: ${JSON.stringify(data.errors)}`);
-
-  return (data.data.boards[0].items_page.items || []).filter(item => {
-    const col = item.column_values.find(c => c.id === ROUTE_STOPS_ROUTE_COLUMN);
-    if (!col) return false;
-    if (col.linked_item_ids) return col.linked_item_ids.some(id => id.toString() === routeId.toString());
-    if (col.value) {
-      try {
-        const p = JSON.parse(col.value);
-        if (p.linkedPulseIds) return p.linkedPulseIds.some(l => l.linkedPulseId.toString() === routeId.toString());
-        if (Array.isArray(p)) return p.some(l => l.id?.toString() === routeId.toString());
-      } catch (e) {}
-    }
-    return false;
-  });
+  `);
+  return data.boards[0].items_page.items || [];
 }
 
+// Parallel writes
 async function updateRouteStopsDriver(stops, driverIds) {
   const ROUTE_STOPS_DRIVER_COLUMN = 'board_relation_mm3va52r';
-  const columnValue = JSON.stringify({ item_ids: driverIds.length > 0 ? driverIds : [] });
-  for (const stop of stops) {
-    const mutation = `
+  const columnValue = JSON.stringify({ item_ids: driverIds.length ? driverIds : [] });
+
+  await Promise.all(stops.map(async (stop) => {
+    await mondayRequest(`
       mutation {
         change_column_value(
           item_id: ${stop.id},
@@ -818,20 +583,13 @@ async function updateRouteStopsDriver(stops, driverIds) {
           value: ${JSON.stringify(columnValue)}
         ) { id }
       }
-    `;
-    const response = await fetch(MONDAY_API_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_TOKEN },
-      body: JSON.stringify({ query: mutation })
-    });
-    const data = await response.json();
-    if (data.errors) console.error(`Failed to update driver on stop ${stop.id}:`, data.errors);
-    else console.log(`Stop ${stop.id} (${stop.name}) driver updated`);
-  }
+    `);
+    console.log(`Stop ${stop.id} (${stop.name}) driver updated`);
+  }));
 }
 
 async function fetchStopRouteId(stopId) {
-  const query = `
+  const data = await mondayRequest(`
     query {
       items(ids: [${stopId}]) {
         column_values(ids: ["${ROUTE_STOPS_ROUTE_COLUMN}"]) {
@@ -840,16 +598,9 @@ async function fetchStopRouteId(stopId) {
         }
       }
     }
-  `;
-  const response = await fetch(MONDAY_API_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_TOKEN },
-    body: JSON.stringify({ query })
-  });
-  const data = await response.json();
-  if (data.errors) throw new Error(`Monday API error: ${JSON.stringify(data.errors)}`);
+  `);
 
-  const col = data.data.items[0]?.column_values?.find(c => c.id === ROUTE_STOPS_ROUTE_COLUMN);
+  const col = data.items[0]?.column_values?.find(c => c.id === ROUTE_STOPS_ROUTE_COLUMN);
   if (col?.linked_item_ids?.length) return col.linked_item_ids[0];
   if (col?.value) {
     try {
@@ -863,23 +614,15 @@ async function fetchStopRouteId(stopId) {
 
 async function updateStopDriver(stopId, driverIds) {
   const ROUTE_STOPS_DRIVER_COLUMN = 'board_relation_mm3va52r';
-  const columnValue = JSON.stringify({ item_ids: driverIds });
-  const mutation = `
+  await mondayRequest(`
     mutation {
       change_column_value(
         item_id: ${stopId},
         board_id: ${ROUTE_STOPS_BOARD_ID},
         column_id: "${ROUTE_STOPS_DRIVER_COLUMN}",
-        value: ${JSON.stringify(columnValue)}
+        value: ${JSON.stringify(JSON.stringify({ item_ids: driverIds }))}
       ) { id }
     }
-  `;
-  const response = await fetch(MONDAY_API_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_TOKEN },
-    body: JSON.stringify({ query: mutation })
-  });
-  const data = await response.json();
-  if (data.errors) throw new Error(`Failed to update driver on stop ${stopId}: ${JSON.stringify(data.errors)}`);
+  `);
   console.log(`Stop ${stopId} driver updated`);
 }
