@@ -8,7 +8,11 @@
  *
  * Endpoint: POST /api/bulk-import-upcoming
  *
- * Body (all fields optional):
+ * Also handles GET requests as a diagnostic test (replaces test-bulk-search.js):
+ *   GET /api/bulk-import-upcoming?prefix=26-&maxResults=200
+ *   → Returns raw Flex search results classified by type. No monday.com writes.
+ *
+ * Body (all fields optional, POST only):
  * {
  *   "prefix":          "26-",    // Flex search term — default "26-"
  *   "maxResults":      200,      // Flex results per page — default 200
@@ -388,9 +392,46 @@ export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
   if (req.method === 'OPTIONS') return res.status(200).end();
-  if (req.method === 'GET')     return res.status(200).json({ status: 'ok', endpoint: 'bulk-import-upcoming' });
   if (req.body?.challenge)      return res.status(200).json({ challenge: req.body.challenge });
-  if (req.method !== 'POST')    return res.status(405).json({ error: 'Use POST' });
+
+  // ── GET = diagnostic test mode (replaces test-bulk-search.js) ─────────────
+  if (req.method === 'GET') {
+    if (!FLEX_API_KEY) return res.status(500).json({ error: 'FLEX_API_KEY not configured' });
+    const prefix        = req.query.prefix       ?? '26-';
+    const maxResults    = parseInt(req.query.maxResults ?? '200', 10);
+    const includeClosed = req.query.includeClosed === 'true';
+    try {
+      const allResults = await searchFlex(prefix, maxResults, includeClosed);
+      const buckets    = { quotes: [], eventFolders: [], equipmentLists: [], unknown: [] };
+      for (const r of allResults) {
+        const type  = classifyDomain(r);
+        const entry = {
+          id:          r.id || r.elementId || r.uuid || null,
+          name:        r.name || r.displayString || r.displayName || '(no name)',
+          barcode:     r.barcode || null,
+          rawDomain:   r.domainId || r.domain || r.type || null,
+          classifiedAs: type
+        };
+        if      (type === 'quote')          buckets.quotes.push(entry);
+        else if (type === 'event-folder')   buckets.eventFolders.push(entry);
+        else if (type === 'equipment-list') buckets.equipmentLists.push(entry);
+        else                                buckets.unknown.push(entry);
+      }
+      return res.status(200).json({
+        mode: 'diagnostic — GET only, no writes',
+        searchPrefix: prefix, maxResultsRequested: maxResults, includeClosed,
+        totalRawResults: allResults.length,
+        hitSearchLimit:  allResults.length >= maxResults,
+        breakdown: { quotes: buckets.quotes.length, eventFolders: buckets.eventFolders.length, equipmentLists: buckets.equipmentLists.length, unknown: buckets.unknown.length },
+        quotes: buckets.quotes, eventFolders: buckets.eventFolders, equipmentLists: buckets.equipmentLists, unknown: buckets.unknown,
+        rawSample: allResults.slice(0, 3)
+      });
+    } catch (err) {
+      return res.status(500).json({ error: 'Diagnostic failed', details: err.message });
+    }
+  }
+
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Use GET (diagnostic) or POST (import)' });
 
   if (!FLEX_API_KEY)    return res.status(500).json({ error: 'FLEX_API_KEY not configured' });
   if (!MONDAY_API_KEY)  return res.status(500).json({ error: 'MONDAY_API_KEY not configured' });
