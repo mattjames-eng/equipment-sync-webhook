@@ -233,8 +233,9 @@ async function fetchExistingFlexNumbers() {
 
 // ── Fetch header data for a quote UUID ────────────────────────────────────────
 // FIX: header-data requires codeList param — matches create-project-from-quote.js line 407
+// FIX 2: parentElementId must be in codeList to get the event folder UUID
 async function fetchHeaderData(quoteUUID) {
-  return flexGet(`/api/element/${quoteUUID}/header-data?codeList=elementNumber,name,clientId,venueId,eventDate,plannedStartDate,plannedEndDate,totalPrice,notes,equipmentList`);
+  return flexGet(`/api/element/${quoteUUID}/header-data?codeList=elementNumber,name,clientId,venueId,eventDate,plannedStartDate,plannedEndDate,totalPrice,notes,equipmentList,parentElementId`);
 }
 
 // ── Find equipment list for a quote (same fallback chain as create-project) ───
@@ -290,8 +291,17 @@ async function processQuote(quoteResult, options) {
     // FIX: codeList returns totalPrice, not budgetedRevenue
     const budget = extractNumber(hd.totalPrice || hd.budgetedRevenue || hd.resolvedBudgetedRevenue);
 
+    // ── Skip empty shell quotes (numbered drafts with no real data) ────────
+    // These are Flex drafts with no name, client, or eventDate — not real events
+    const hasRealData = hd.clientId?.data || hd.eventDate?.data || hd.name?.data;
+    if (!hasRealData) {
+      console.log(`[bulk-import] ⏩ Skipping empty shell quote: "${quoteName}" (no client/date/name data)`);
+      return { status: 'skipped', name: quoteName, flexNum, reason: 'empty shell — no event data in Flex' };
+    }
+
     // ── Resolve Event Folder UUID (parent) ─────────────────────────────────
-    let eventFolderUUID = extractUuid(hd.parentElementId) || extractUuid(hd.data?.parentElementId);
+    // FIX: parentElementId is wrapped as { data: { id: "uuid", ... } } — must extract from .data
+    let eventFolderUUID = extractUuid(hd.parentElementId?.data) || extractUuid(hd.parentElementId);
     if (!eventFolderUUID) {
       try {
         const elem = await flexGet(`/api/element/${quoteUUID}`);
