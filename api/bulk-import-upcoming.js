@@ -232,8 +232,9 @@ async function fetchExistingFlexNumbers() {
 }
 
 // ── Fetch header data for a quote UUID ────────────────────────────────────────
+// FIX: header-data requires codeList param — matches create-project-from-quote.js line 407
 async function fetchHeaderData(quoteUUID) {
-  return flexGet(`/api/element/${quoteUUID}/header-data`);
+  return flexGet(`/api/element/${quoteUUID}/header-data?codeList=elementNumber,name,clientId,venueId,eventDate,plannedStartDate,plannedEndDate,totalPrice,notes,equipmentList`);
 }
 
 // ── Find equipment list for a quote (same fallback chain as create-project) ───
