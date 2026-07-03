@@ -10,9 +10,26 @@
     }
   ],
   "functions": {
-    "api/calculate-route-mileage.js":    { "maxDuration": 60 },
-    "api/generate-bol.js":              { "maxDuration": 60 },
-    "api/create-project-from-quote.js": { "maxDuration": 60 },
-    "api/tasks-handler.js":             { "maxDuration": 60 }
-  }
+    "api/calculate-route-mileage.js": {
+      "maxDuration": 60
+    },
+    "api/generate-bol.js": {
+      "maxDuration": 60
+    },
+    "api/create-project-from-quote.js": {
+      "maxDuration": 60
+    },
+    "api/tasks-handler.js": {
+      "maxDuration": 60
+    },
+    "api/bulk-import-upcoming.js": {
+      "maxDuration": 60
+    }
+  },
+  "crons": [
+    {
+      "path": "/api/bulk-import-upcoming",
+      "schedule": "0 14 * * *"
+    }
+  ]
 }
