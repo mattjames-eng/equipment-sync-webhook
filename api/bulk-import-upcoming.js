@@ -61,11 +61,12 @@ const COL = {
 };
 
 // ── Domain Classifier (mirrors create-project-from-quote.js) ─────────────────
+// FIX: added 'simple-project-element' → event-folder (confirmed from live Flex response)
 function classifyDomain(result) {
   const domain = (result.domainId || result.domain || result.type || '').toLowerCase();
-  if (['equipment-list', 'pull-sheet', 'pullsheet'].includes(domain))             return 'equipment-list';
-  if (['project', 'event-folder', 'event_folder', 'folder'].includes(domain))    return 'event-folder';
-  if (['quote', 'financial-document', 'financial_document', 'financialdocument'].includes(domain)) return 'quote';
+  if (['equipment-list', 'pull-sheet', 'pullsheet'].includes(domain))                                   return 'equipment-list';
+  if (['project', 'event-folder', 'event_folder', 'folder', 'simple-project-element'].includes(domain)) return 'event-folder';
+  if (['quote', 'financial-document', 'financial_document', 'financialdocument'].includes(domain))      return 'quote';
   return 'unknown';
 }
 
@@ -248,9 +249,11 @@ async function findEquipmentListUUID(quoteUUID) {
 // ─────────────────────────────────────────────────────────────────────────────
 async function processQuote(quoteResult, options) {
   const { dryRun, resolveContacts } = options;
-  const quoteName  = quoteResult.name || quoteResult.displayName || '(unnamed)';
-  const quoteUUID  = quoteResult.id   || quoteResult.elementId   || quoteResult.uuid;
-  const flexNum    = quoteResult.name?.match(/^\d{2}-\d+/)?.[0] || quoteName;
+  // FIX: Flex returns name=null on numbered quotes — use displayString as fallback
+  const quoteName  = quoteResult.name || quoteResult.displayString || quoteResult.displayName || '(unnamed)';
+  const quoteUUID  = quoteResult.id   || quoteResult.elementId     || quoteResult.uuid;
+  // FIX: de-dupe key is the barcode field (e.g. "26-0132"), not parsed from name
+  const flexNum    = quoteResult.barcode || quoteResult.name?.match(/^\d{2}-\d+/)?.[0] || quoteName;
 
   console.log(`[bulk-import] Processing: "${quoteName}" (UUID: ${quoteUUID})`);
 
@@ -422,8 +425,10 @@ export default async function handler(req, res) {
     console.log(`[bulk-import] ${existingNums.size} existing projects in monday.com`);
 
     const newQuotes = quotes.filter(q => {
-      const num = (q.name || '').match(/^\d{2}-\d+/)?.[0];
-      if (!num) return true; // no number extracted — include to be safe
+      // FIX: use barcode as the canonical quote number (e.g. "26-0132")
+      // name is null on many Flex results — barcode is always populated
+      const num = q.barcode || (q.name || '').match(/^\d{2}-\d+/)?.[0];
+      if (!num) return true; // no number found — include to be safe
       return !existingNums.has(num.toLowerCase());
     });
 
