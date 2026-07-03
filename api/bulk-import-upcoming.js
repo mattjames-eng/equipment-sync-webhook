@@ -267,10 +267,18 @@ async function processQuote(quoteResult, options) {
     const hd = await fetchHeaderData(quoteUUID);
 
     // ── Extract dates ──────────────────────────────────────────────────────
-    const eventDate  = toMondayDate(hd.eventDate  || hd.showStartDate);
-    const prepDate   = toMondayDate(hd.prepDate   || hd.loadInDate);
-    const returnDate = toMondayDate(hd.returnDate || hd.loadOutDate);
-    const today      = new Date().toISOString().split('T')[0];
+    // FIX: header-data wraps dates in { data: "2026-...", fieldType: "date" } objects.
+    //      Use deepExtractName() + regex like create-project-from-quote.js does (lines 471-488).
+    const today = new Date().toISOString().split('T')[0];
+    function extractDate(field) {
+      const raw = deepExtractName(field);
+      if (!raw) return null;
+      const m = raw.match(/(\d{4}-\d{2}-\d{2})/);
+      return m ? m[1] : null;
+    }
+    const eventDate  = extractDate(hd.eventDate  || hd.showStartDate);
+    const prepDate   = extractDate(hd.plannedStartDate || hd.prepDate   || hd.loadInDate);
+    const returnDate = extractDate(hd.plannedEndDate   || hd.returnDate || hd.loadOutDate);
 
     // Skip events in the past (eventDate < today)
     if (eventDate && eventDate < today) {
@@ -279,7 +287,8 @@ async function processQuote(quoteResult, options) {
     }
 
     // ── Extract budget ─────────────────────────────────────────────────────
-    const budget = extractNumber(hd.budgetedRevenue || hd.resolvedBudgetedRevenue);
+    // FIX: codeList returns totalPrice, not budgetedRevenue
+    const budget = extractNumber(hd.totalPrice || hd.budgetedRevenue || hd.resolvedBudgetedRevenue);
 
     // ── Resolve Event Folder UUID (parent) ─────────────────────────────────
     let eventFolderUUID = extractUuid(hd.parentElementId) || extractUuid(hd.data?.parentElementId);
@@ -294,12 +303,13 @@ async function processQuote(quoteResult, options) {
     const equipListUUID = await findEquipmentListUUID(quoteUUID);
 
     // ── Extract contact UUIDs from header data ─────────────────────────────
-    const clientUUID = extractUuid(hd.data?.client || hd.clientId);
-    const venueUUID  = extractUuid(hd.data?.venue  || hd.venueId);
+    // FIX: codeList returns hd.clientId / hd.venueId (not hd.data.client / hd.data.venue)
+    const clientUUID = extractUuid(hd.clientId || hd.data?.client);
+    const venueUUID  = extractUuid(hd.venueId  || hd.data?.venue);
 
     // ── Resolve human-readable names ───────────────────────────────────────
-    let clientName = deepExtractName(hd.data?.client) || deepExtractName(hd.clientName) || 'Unknown Client';
-    let venueName  = deepExtractName(hd.data?.venue)  || deepExtractName(hd.venueName)  || 'Unknown Venue';
+    let clientName = deepExtractName(hd.clientId) || deepExtractName(hd.data?.client) || deepExtractName(hd.clientName) || 'Unknown Client';
+    let venueName  = deepExtractName(hd.venueId)  || deepExtractName(hd.data?.venue)  || deepExtractName(hd.venueName)  || 'Unknown Venue';
 
     if (resolveContacts && clientUUID && clientName === 'Unknown Client') {
       clientName = await resolveContactName(clientUUID, 'Unknown Client');
