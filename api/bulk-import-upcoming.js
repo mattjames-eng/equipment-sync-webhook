@@ -415,9 +415,39 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.body?.challenge)      return res.status(200).json({ challenge: req.body.challenge });
 
-  // ── GET = diagnostic test mode (replaces test-bulk-search.js) ─────────────
+  // ── GET = cron trigger (Vercel Cron) OR diagnostic mode ──────────────────
   if (req.method === 'GET') {
     if (!FLEX_API_KEY) return res.status(500).json({ error: 'FLEX_API_KEY not configured' });
+
+    // ── Cron mode: triggered by Vercel Cron scheduler ─────────────────────
+    // Vercel sends Authorization: Bearer <CRON_SECRET> on every cron invocation.
+    // We validate it here so random GETs can't trigger real imports.
+    const cronSecret    = process.env.CRON_SECRET;
+    const authHeader    = req.headers['authorization'] ?? '';
+    const isCronRequest = cronSecret && authHeader === `Bearer ${cronSecret}`;
+
+    if (isCronRequest) {
+      if (!MONDAY_API_KEY) return res.status(500).json({ error: 'MONDAY_API_KEY not configured' });
+      console.log('[bulk-import] ⏰ Cron triggered — running full import (dryRun=false)');
+      try {
+        const result = await runImport({
+          prefix:          '26-',
+          maxResults:      200,
+          includeClosed:   false,
+          dryRun:          false,
+          resolveContacts: true,
+          batchSize:       5,
+          limit:           30,
+        });
+        console.log(`[bulk-import] ✅ Cron complete — created: ${result.results.created}, skipped: ${result.results.skipped}, errors: ${result.results.errors}`);
+        return res.status(200).json({ triggered: 'cron', ...result });
+      } catch (err) {
+        console.error('[bulk-import] ❌ Cron failed:', err.message);
+        return res.status(500).json({ error: 'Cron import failed', details: err.message });
+      }
+    }
+
+    // ── Diagnostic mode: GET without cron secret = raw Flex search results ─
     const prefix        = req.query.prefix       ?? '26-';
     const maxResults    = parseInt(req.query.maxResults ?? '200', 10);
     const includeClosed = req.query.includeClosed === 'true';
@@ -461,102 +491,100 @@ export default async function handler(req, res) {
   let body = req.body;
   if (typeof body === 'string') { try { body = JSON.parse(body); } catch { body = {}; } }
 
-  const prefix          = body.prefix          ?? '26-';
-  const maxResults      = body.maxResults       ?? 200;
-  const includeClosed   = body.includeClosed    ?? false;
-  const dryRun          = body.dryRun           ?? false;
-  const resolveContacts = body.resolveContacts  ?? true;
-  const batchSize       = Math.min(body.batchSize ?? 5, 10); // cap at 10 for safety
-  const limit           = body.limit            ?? 30;       // max new projects per run
-
-  console.log(`[bulk-import] 🚀 Starting — prefix="${prefix}", maxResults=${maxResults}, dryRun=${dryRun}, resolveContacts=${resolveContacts}, limit=${limit}`);
-
   try {
-    // ── PHASE 1: Discover quotes from Flex ────────────────────────────────
-    console.log('[bulk-import] Phase 1: Searching Flex...');
-    const allResults = await searchFlex(prefix, maxResults, includeClosed);
-    const hitLimit   = allResults.length >= maxResults;
-
-    // Filter to quotes only — we don't create projects for event folders or equipment lists
-    const quotes = allResults.filter(r => classifyDomain(r) === 'quote');
-    console.log(`[bulk-import] Found ${allResults.length} total Flex results → ${quotes.length} quotes`);
-
-    // ── PHASE 2: De-dupe against existing Projects board ──────────────────
-    console.log('[bulk-import] Phase 2: Loading existing Projects...');
-    const existingNums = await fetchExistingFlexNumbers();
-    console.log(`[bulk-import] ${existingNums.size} existing projects in monday.com`);
-
-    const newQuotes = quotes.filter(q => {
-      // FIX: use barcode as the canonical quote number (e.g. "26-0132")
-      // name is null on many Flex results — barcode is always populated
-      const num = q.barcode || (q.name || '').match(/^\d{2}-\d+/)?.[0];
-      if (!num) return true; // no number found — include to be safe
-      return !existingNums.has(num.toLowerCase());
+    const summary = await runImport({
+      prefix:          body.prefix          ?? '26-',
+      maxResults:      body.maxResults       ?? 200,
+      includeClosed:   body.includeClosed    ?? false,
+      dryRun:          body.dryRun           ?? false,
+      resolveContacts: body.resolveContacts  ?? true,
+      batchSize:       Math.min(body.batchSize ?? 5, 10),
+      limit:           body.limit            ?? 30,
     });
-
-    const alreadyExists = quotes.length - newQuotes.length;
-    console.log(`[bulk-import] ${newQuotes.length} new quotes to import (${alreadyExists} already in monday.com)`);
-
-    // Apply per-run limit
-    const toProcess = newQuotes.slice(0, limit);
-    const truncated = newQuotes.length > limit;
-
-    if (dryRun) {
-      console.log('[bulk-import] 🔍 DRY RUN — processing without writing...');
-    }
-
-    // ── PHASE 3: Process in batches ────────────────────────────────────────
-    const results   = { created: [], skipped: [], errors: [], dryRun: [] };
-    const options   = { dryRun, resolveContacts };
-
-    for (let i = 0; i < toProcess.length; i += batchSize) {
-      const batch = toProcess.slice(i, i + batchSize);
-      console.log(`[bulk-import] Batch ${Math.floor(i / batchSize) + 1} — processing ${batch.length} quotes`);
-
-      const batchResults = await Promise.all(batch.map(q => processQuote(q, options)));
-
-      for (const r of batchResults) {
-        if (r.status === 'created')  results.created.push(r);
-        else if (r.status === 'dry-run')  results.dryRun.push(r);
-        else if (r.status === 'skipped') results.skipped.push(r);
-        else                              results.errors.push(r);
-      }
-
-      // Breathe between batches to avoid monday.com rate limits
-      if (i + batchSize < toProcess.length) {
-        await new Promise(r => setTimeout(r, 500));
-      }
-    }
-
-    // ── PHASE 4: Report ────────────────────────────────────────────────────
-    const summary = {
-      success:           true,
-      dryRun,
-      searchPrefix:      prefix,
-      flexTotalResults:  allResults.length,
-      flexQuotesFound:   quotes.length,
-      hitSearchLimit:    hitLimit,        // true = raise maxResults or run again
-      alreadyInMonday:   alreadyExists,
-      newQuotesFound:    newQuotes.length,
-      processedThisRun:  toProcess.length,
-      truncatedToLimit:  truncated,       // true = run again to get the rest
-      remainingToImport: truncated ? newQuotes.length - limit : 0,
-      results: {
-        created:  results.created.length,
-        skipped:  results.skipped.length,  // past events filtered out
-        errors:   results.errors.length,
-        ...(dryRun && { preview: results.dryRun })
-      },
-      createdProjects: results.created,
-      skippedDetails:  results.skipped,
-      errorDetails:    results.errors
-    };
-
-    console.log(`[bulk-import] ✅ Done — Created: ${results.created.length}, Skipped: ${results.skipped.length}, Errors: ${results.errors.length}`);
     return res.status(200).json(summary);
-
   } catch (err) {
     console.error('[bulk-import] 💥 Fatal error:', err);
     return res.status(500).json({ error: 'Bulk import failed', details: err.message });
   }
+}
+
+// ── Core import logic — shared by POST handler and cron GET trigger ──────────
+async function runImport({ prefix, maxResults, includeClosed, dryRun, resolveContacts, batchSize, limit }) {
+  console.log(`[bulk-import] 🚀 Starting — prefix="${prefix}", maxResults=${maxResults}, dryRun=${dryRun}, resolveContacts=${resolveContacts}, limit=${limit}`);
+
+  // ── PHASE 1: Discover quotes from Flex ──────────────────────────────────
+  console.log('[bulk-import] Phase 1: Searching Flex...');
+  const allResults = await searchFlex(prefix, maxResults, includeClosed);
+  const hitLimit   = allResults.length >= maxResults;
+
+  const quotes = allResults.filter(r => classifyDomain(r) === 'quote');
+  console.log(`[bulk-import] Found ${allResults.length} total Flex results → ${quotes.length} quotes`);
+
+  // ── PHASE 2: De-dupe against existing Projects board ────────────────────
+  console.log('[bulk-import] Phase 2: Loading existing Projects...');
+  const existingNums = await fetchExistingFlexNumbers();
+  console.log(`[bulk-import] ${existingNums.size} existing projects in monday.com`);
+
+  const newQuotes = quotes.filter(q => {
+    const num = q.barcode || (q.name || '').match(/^\d{2}-\d+/)?.[0];
+    if (!num) return true;
+    return !existingNums.has(num.toLowerCase());
+  });
+
+  const alreadyExists = quotes.length - newQuotes.length;
+  console.log(`[bulk-import] ${newQuotes.length} new quotes to import (${alreadyExists} already in monday.com)`);
+
+  const toProcess = newQuotes.slice(0, limit);
+  const truncated = newQuotes.length > limit;
+
+  if (dryRun) console.log('[bulk-import] 🔍 DRY RUN — processing without writing...');
+
+  // ── PHASE 3: Process in batches ──────────────────────────────────────────
+  const results = { created: [], skipped: [], errors: [], dryRun: [] };
+  const options = { dryRun, resolveContacts };
+
+  for (let i = 0; i < toProcess.length; i += batchSize) {
+    const batch = toProcess.slice(i, i + batchSize);
+    console.log(`[bulk-import] Batch ${Math.floor(i / batchSize) + 1} — processing ${batch.length} quotes`);
+
+    const batchResults = await Promise.all(batch.map(q => processQuote(q, options)));
+
+    for (const r of batchResults) {
+      if      (r.status === 'created')  results.created.push(r);
+      else if (r.status === 'dry-run')  results.dryRun.push(r);
+      else if (r.status === 'skipped')  results.skipped.push(r);
+      else                              results.errors.push(r);
+    }
+
+    if (i + batchSize < toProcess.length) {
+      await new Promise(r => setTimeout(r, 500));
+    }
+  }
+
+  // ── PHASE 4: Build summary ────────────────────────────────────────────────
+  const summary = {
+    success:           true,
+    dryRun,
+    searchPrefix:      prefix,
+    flexTotalResults:  allResults.length,
+    flexQuotesFound:   quotes.length,
+    hitSearchLimit:    hitLimit,
+    alreadyInMonday:   alreadyExists,
+    newQuotesFound:    newQuotes.length,
+    processedThisRun:  toProcess.length,
+    truncatedToLimit:  truncated,
+    remainingToImport: truncated ? newQuotes.length - limit : 0,
+    results: {
+      created: results.created.length,
+      skipped: results.skipped.length,
+      errors:  results.errors.length,
+      ...(dryRun && { preview: results.dryRun })
+    },
+    createdProjects: results.created,
+    skippedDetails:  results.skipped,
+    errorDetails:    results.errors
+  };
+
+  console.log(`[bulk-import] ✅ Done — Created: ${results.created.length}, Skipped: ${results.skipped.length}, Errors: ${results.errors.length}`);
+  return summary;
 }
