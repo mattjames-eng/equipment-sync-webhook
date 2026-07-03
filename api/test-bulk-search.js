@@ -18,10 +18,11 @@ const FLEX_BASE_URL = process.env.FLEX_BASE_URL || 'https://anticstudios.flexren
 const FLEX_API_KEY  = process.env.FLEX_API_KEY_QUOTES || process.env.FLEX_API_KEY;
 
 // Domain classification — matches your existing create-project-from-quote logic
+// FIX: added 'simple-project-element' as event-folder (confirmed from test-bulk-search response)
 function classifyDomain(result) {
   const domain = (result.domainId || result.domain || result.type || '').toLowerCase();
-  if (['equipment-list', 'pull-sheet', 'pullsheet'].includes(domain))         return 'equipment-list';
-  if (['project', 'event-folder', 'event_folder', 'folder'].includes(domain)) return 'event-folder';
+  if (['equipment-list', 'pull-sheet', 'pullsheet'].includes(domain))                              return 'equipment-list';
+  if (['project', 'event-folder', 'event_folder', 'folder', 'simple-project-element'].includes(domain)) return 'event-folder';
   if (['quote', 'financial-document', 'financial_document', 'financialdocument'].includes(domain)) return 'quote';
   return domain || 'unknown';
 }
@@ -92,9 +93,10 @@ export default async function handler(req, res) {
     for (const r of results) {
       const type = classifyDomain(r);
       const entry = {
-        id:          r.id || r.elementId || r.uuid || null,
-        name:        r.name || r.displayName || '(no name)',
-        domain:      r.domainId || r.domain || r.type || null,
+        id:           r.id || r.elementId || r.uuid || null,
+        name:         r.name || r.displayString || r.displayName || '(no name)', // FIX: use displayString when name is null
+        barcode:      r.barcode || null,        // FIX: quote number lives here (e.g. "26-0132")
+        domain:       r.domainId || r.domain || r.type || null,
         classifiedAs: type
       };
 
