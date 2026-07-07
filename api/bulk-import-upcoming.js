@@ -407,6 +407,185 @@ async function processQuote(quoteResult, options) {
 // ─────────────────────────────────────────────────────────────────────────────
 // MAIN HANDLER
 // ─────────────────────────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
+// GEOCODE-LOCATIONS ACTION
+//
+// Reads the Address (long_text) column on the Contacts & Companies board
+// and populates the Location column via Nominatim (free, no API key).
+//
+// Usage: GET /api/bulk-import-upcoming?action=geocode-locations
+//        GET /api/bulk-import-upcoming?action=geocode-locations&batch=0
+//        GET /api/bulk-import-upcoming?action=geocode-locations&batch=1
+//        GET /api/bulk-import-upcoming?action=geocode-locations&dryRun=true
+//
+// Vercel Hobby = 60s limit. Each batch processes 40 unique addresses (~44s).
+// Repeat with batch=0, 1, 2... until response says done: true.
+// ══════════════════════════════════════════════════════════════════════════════
+const GEOCODE_ADDRESS_COL  = 'long_text_mm3vkzc6';
+const GEOCODE_LOCATION_COL = 'location_mm50h12r';
+const GEOCODE_BATCH_SIZE   = 40;
+
+function cleanAddressForGeocode(raw) {
+  let addr = raw.trim();
+  // Multi-line: take only the first meaningful line
+  const lines = addr.split(/\n/).map(l => l.trim()).filter(Boolean);
+  if (lines.length > 1) addr = lines[0];
+  // Strip parenthetical notes: "(Operated by ...)"
+  addr = addr.replace(/\s*\(.*?\)\s*/g, '').trim();
+  // Strip "Label: " prefixes like "Corporate HQ: " or "Venue: "
+  addr = addr.replace(/^[A-Za-z &\/]+:\s*/i, '').trim();
+  return addr || raw.trim();
+}
+
+async function geocodeAddress(rawAddress) {
+  const addr = cleanAddressForGeocode(rawAddress);
+  const params = new URLSearchParams({ q: addr, format: 'json', limit: '1', addressdetails: '1' });
+  const url = `https://nominatim.openstreetmap.org/search?${params}`;
+  const res = await fetch(url, {
+    headers: { 'User-Agent': 'AnticStudios/ShowFlow (matt.james@anticstudios.com)' }
+  });
+  if (!res.ok) throw new Error(`Nominatim HTTP ${res.status}`);
+  const data = await res.json();
+  if (!data || data.length === 0) return null;
+  const r = data[0];
+  return {
+    address:          r.display_name,
+    lat:              String(r.lat),
+    lng:              String(r.lon),
+    countryShortName: (r.address?.country_code || 'us').toUpperCase()
+  };
+}
+
+async function writeLocationColumn(itemIds, geo) {
+  // Build the escaped JSON value for the location column
+  const colVal = JSON.stringify({
+    address:          geo.address,
+    lat:              geo.lat,
+    lng:              geo.lng,
+    countryShortName: geo.countryShortName
+  }).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+
+  // Update in chunks of 20 (GraphQL complexity limit)
+  for (let i = 0; i < itemIds.length; i += 20) {
+    const chunk = itemIds.slice(i, i + 20);
+    const mutations = chunk
+      .map((id, idx) => `m${idx}: change_column_value(board_id: ${CONTACTS_BOARD_ID}, item_id: ${id}, column_id: "${GEOCODE_LOCATION_COL}", value: "${colVal}") { id }`)
+      .join('\n');
+    await mondayRequest(`mutation { ${mutations} }`);
+  }
+}
+
+async function fetchContactsWithAddresses() {
+  const items = [];
+  let cursor = null;
+  do {
+    const cursorClause = cursor ? `, cursor: "${cursor}"` : '';
+    const data = await mondayRequest(`
+      query {
+        boards(ids: [${CONTACTS_BOARD_ID}]) {
+          items_page(limit: 500${cursorClause}) {
+            cursor
+            items { id column_values(ids: ["${GEOCODE_ADDRESS_COL}"]) { id text } }
+          }
+        }
+      }
+    `);
+    const page = data?.boards?.[0]?.items_page;
+    for (const item of (page?.items || [])) {
+      const addr = item.column_values?.[0]?.text?.trim();
+      if (addr) items.push({ id: item.id, address: addr });
+    }
+    cursor = page?.cursor || null;
+  } while (cursor);
+  return items;
+}
+
+async function handleGeocodeLocations(req, res) {
+  const batchNum  = parseInt(req.query.batch ?? '0', 10);
+  const isDryRun  = req.query.dryRun === 'true';
+
+  // Fetch all contacts with an address
+  const allItems = await fetchContactsWithAddresses();
+
+  // Group item IDs by unique address text
+  const addrMap = {};
+  for (const { id, address } of allItems) {
+    if (!addrMap[address]) addrMap[address] = [];
+    addrMap[address].push(id);
+  }
+  const uniqueAddrs = Object.keys(addrMap);
+  const totalBatches = Math.ceil(uniqueAddrs.length / GEOCODE_BATCH_SIZE);
+
+  // Dry run — just report stats
+  if (isDryRun) {
+    return res.json({
+      ok: true, dryRun: true,
+      totalItemsWithAddress: allItems.length,
+      uniqueAddresses:       uniqueAddrs.length,
+      totalBatches,
+      batchSize:             GEOCODE_BATCH_SIZE,
+      sampleAddresses:       uniqueAddrs.slice(0, 8),
+      howToRun:              `Call ?action=geocode-locations&batch=0 through ?action=geocode-locations&batch=${totalBatches - 1}`
+    });
+  }
+
+  const start = batchNum * GEOCODE_BATCH_SIZE;
+  if (start >= uniqueAddrs.length) {
+    return res.json({ ok: true, done: true, message: 'Batch offset beyond address list — all done!' });
+  }
+
+  const batchAddrs = uniqueAddrs.slice(start, start + GEOCODE_BATCH_SIZE);
+  const geocoded   = [];
+  const failed     = [];
+  let   itemsUpdated = 0;
+
+  for (const addr of batchAddrs) {
+    const ids = addrMap[addr];
+    let geo = null;
+    try {
+      geo = await geocodeAddress(addr);
+    } catch (err) {
+      console.error(`[geocode] Error geocoding "${addr}":`, err.message);
+    }
+
+    if (geo) {
+      try {
+        await writeLocationColumn(ids, geo);
+        geocoded.push({ address: addr, lat: geo.lat, lng: geo.lng, items: ids.length });
+        itemsUpdated += ids.length;
+      } catch (err) {
+        console.error(`[geocode] Monday update failed for "${addr}":`, err.message);
+        failed.push({ address: addr, reason: `Monday update error: ${err.message}` });
+      }
+    } else {
+      failed.push({ address: addr, reason: 'No geocode result from Nominatim' });
+    }
+
+    await new Promise(r => setTimeout(r, 1100)); // Nominatim rate limit: 1 req/sec
+  }
+
+  const nextBatch = (start + GEOCODE_BATCH_SIZE < uniqueAddrs.length) ? batchNum + 1 : null;
+
+  return res.json({
+    ok:               true,
+    batch:            batchNum,
+    addressesInBatch: batchAddrs.length,
+    geocodedOk:       geocoded.length,
+    geocodedFailed:   failed.length,
+    itemsUpdated,
+    geocodedAddresses: geocoded,
+    failedAddresses:  failed,
+    nextBatch,
+    totalBatches,
+    done:             nextBatch === null,
+    message:          nextBatch !== null
+      ? `✅ Batch ${batchNum} done. Call ?action=geocode-locations&batch=${nextBatch} to continue (${totalBatches - batchNum - 1} more batch(es)).`
+      : '🎉 All done! Location column fully populated.'
+  });
+}
+
+// ── End geocode-locations block ───────────────────────────────────────────────
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin',  '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, GET, OPTIONS');
@@ -417,6 +596,17 @@ export default async function handler(req, res) {
 
   // ── GET = cron trigger (Vercel Cron) OR diagnostic mode ──────────────────
   if (req.method === 'GET') {
+    // ── Geocode-locations action ───────────────────────────────────────────
+    if (req.query.action === 'geocode-locations') {
+      if (!MONDAY_API_KEY) return res.status(500).json({ error: 'MONDAY_API_KEY not configured' });
+      try {
+        return await handleGeocodeLocations(req, res);
+      } catch (err) {
+        console.error('[geocode] Fatal:', err);
+        return res.status(500).json({ ok: false, error: err.message });
+      }
+    }
+
     if (!FLEX_API_KEY) return res.status(500).json({ error: 'FLEX_API_KEY not configured' });
 
     // ── Cron mode: triggered by Vercel Cron scheduler ─────────────────────
