@@ -447,23 +447,46 @@ async function geocodeAddress(rawAddress) {
   if (!res.ok) throw new Error(`Nominatim HTTP ${res.status}`);
   const data = await res.json();
   if (!data || data.length === 0) return null;
-  const r = data[0];
+  const r    = data[0];
+  const addr2 = r.address || {};
+  // Nominatim city can be in city, town, village, county, state depending on location type
+  const cityName   = addr2.city || addr2.town || addr2.village || addr2.county || addr2.state || null;
+  const streetName = addr2.road || addr2.pedestrian || addr2.path || null;
+  const houseNum   = addr2.house_number || null;
+  const countryName  = addr2.country || null;
+  const countryShort = (addr2.country_code || 'us').toUpperCase();
   return {
-    address:          r.display_name,
-    lat:              String(r.lat),
-    lng:              String(r.lon),
-    countryShortName: (r.address?.country_code || 'us').toUpperCase()
+    address:      r.display_name,
+    lat:          String(r.lat),
+    lng:          String(r.lon),
+    countryName,
+    countryShort,
+    cityName,
+    streetName,
+    houseNum,
   };
 }
 
 async function writeLocationColumn(itemIds, geo) {
-  // Build the escaped JSON value for the location column
-  const colVal = JSON.stringify({
-    address:          geo.address,
-    lat:              geo.lat,
-    lng:              geo.lng,
-    countryShortName: geo.countryShortName
-  }).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  // Build the location value using monday.com's required nested schema
+  const locObj = {
+    address: geo.address,
+    lat:     geo.lat,
+    lng:     geo.lng,
+    country: geo.countryName
+      ? { long_name: geo.countryName,  short_name: geo.countryShort || geo.countryName }
+      : null,
+    city: geo.cityName
+      ? { long_name: geo.cityName, short_name: geo.cityName }
+      : null,
+    street: geo.streetName
+      ? { long_name: geo.streetName, short_name: geo.streetName }
+      : null,
+    streetNumber: geo.houseNum
+      ? { long_name: geo.houseNum, short_name: geo.houseNum }
+      : null,
+  };
+  const colVal = JSON.stringify(locObj).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 
   // Update in chunks of 20 (GraphQL complexity limit)
   for (let i = 0; i < itemIds.length; i += 20) {
