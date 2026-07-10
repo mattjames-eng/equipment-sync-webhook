@@ -27,7 +27,8 @@
  * Created: July 2026 — bulk companion to create-project-from-quote.js
  */
 
-export const config = { api: { bodyParser: true }, maxDuration: 60 };
+export const config = { api: { bodyParser: true } };
+export const maxDuration = 60;
 
 // ── Environment ───────────────────────────────────────────────────────────────
 const FLEX_BASE_URL   = process.env.FLEX_BASE_URL || 'https://anticstudios.flexrentalsolutions.com/f5';
@@ -423,7 +424,7 @@ async function processQuote(quoteResult, options) {
 // ══════════════════════════════════════════════════════════════════════════════
 const GEOCODE_ADDRESS_COL  = 'long_text_mm3vkzc6';
 const GEOCODE_LOCATION_COL = 'location_mm50h12r';
-const GEOCODE_BATCH_SIZE   = 20;
+const GEOCODE_BATCH_SIZE   = 10;
 
 function cleanAddressForGeocode(raw) {
   let addr = raw.trim();
