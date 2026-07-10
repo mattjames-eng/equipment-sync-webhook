@@ -525,89 +525,49 @@ async function fetchContactsWithAddresses() {
 }
 
 async function handleGeocodeLocations(req, res) {
-  const batchNum  = parseInt(req.query.batch ?? '0', 10);
-  const isDryRun  = req.query.dryRun === 'true';
-
-  // Fetch all contacts with an address
-  const allItems = await fetchContactsWithAddresses();
-
-  // Group item IDs by unique address text
-  const addrMap = {};
-  for (const { id, address } of allItems) {
-    if (!addrMap[address]) addrMap[address] = [];
-    addrMap[address].push(id);
-  }
-  const uniqueAddrs = Object.keys(addrMap);
-  const totalBatches = Math.ceil(uniqueAddrs.length / GEOCODE_BATCH_SIZE);
-
-  // Dry run — just report stats
-  if (isDryRun) {
+  // ── Mode 1: list=true → return address→itemIds map (no geocoding) ──────────
+  // Fast call — just fetches monday.com items and returns the mapping.
+  // Python driver calls this once to get all addresses, then loops geocode-one.
+  if (req.query.list === 'true') {
+    const allItems = await fetchContactsWithAddresses();
+    const addrMap = {};
+    for (const { id, address } of allItems) {
+      if (!addrMap[address]) addrMap[address] = [];
+      addrMap[address].push(id);
+    }
     return res.json({
-      ok: true, dryRun: true,
-      totalItemsWithAddress: allItems.length,
-      uniqueAddresses:       uniqueAddrs.length,
-      totalBatches,
-      batchSize:             GEOCODE_BATCH_SIZE,
-      sampleAddresses:       uniqueAddrs.slice(0, 8),
-      howToRun:              `Call ?action=geocode-locations&batch=0 through ?action=geocode-locations&batch=${totalBatches - 1}`
+      ok: true,
+      totalItems: allItems.length,
+      uniqueAddresses: Object.keys(addrMap).length,
+      map: addrMap
     });
   }
 
-  const start = batchNum * GEOCODE_BATCH_SIZE;
-  if (start >= uniqueAddrs.length) {
-    return res.json({ ok: true, done: true, message: 'Batch offset beyond address list — all done!' });
+  // ── Mode 2: geocode ONE address and write to monday ────────────────────────
+  // Caller passes ?address=<raw>&itemIds=<id,id,...>
+  // Each call takes ~1-2s (one Nominatim hit + one monday mutation). No timeout risk.
+  const rawAddr = req.query.address;
+  const rawIds  = req.query.itemIds;
+  if (!rawAddr || !rawIds) {
+    return res.status(400).json({ ok: false, error: 'Pass ?list=true OR ?address=<addr>&itemIds=<id,id,...>' });
   }
-
-  const batchAddrs = uniqueAddrs.slice(start, start + GEOCODE_BATCH_SIZE);
-  const geocoded   = [];
-  const failed     = [];
-  let   itemsUpdated = 0;
-
-  for (const addr of batchAddrs) {
-    const ids = addrMap[addr];
-    let geo = null;
-    try {
-      geo = await geocodeAddress(addr);
-    } catch (err) {
-      console.error(`[geocode] Error geocoding "${addr}":`, err.message);
-    }
-
-    if (geo) {
-      try {
-        await writeLocationColumn(ids, geo);
-        geocoded.push({ address: addr, lat: geo.lat, lng: geo.lng, items: ids.length });
-        itemsUpdated += ids.length;
-      } catch (err) {
-        console.error(`[geocode] Monday update failed for "${addr}":`, err.message);
-        failed.push({ address: addr, reason: `Monday update error: ${err.message}` });
-      }
-    } else {
-      failed.push({ address: addr, reason: 'No geocode result from Nominatim' });
-    }
-
-    await new Promise(r => setTimeout(r, 1100)); // Nominatim rate limit: 1 req/sec
+  const itemIds = rawIds.split(',').map(s => s.trim()).filter(Boolean);
+  let geo = null;
+  try {
+    geo = await geocodeAddress(rawAddr);
+  } catch (err) {
+    return res.json({ ok: false, address: rawAddr, reason: 'Geocode error: ' + err.message });
   }
-
-  const nextBatch = (start + GEOCODE_BATCH_SIZE < uniqueAddrs.length) ? batchNum + 1 : null;
-
-  return res.json({
-    ok:               true,
-    batch:            batchNum,
-    addressesInBatch: batchAddrs.length,
-    geocodedOk:       geocoded.length,
-    geocodedFailed:   failed.length,
-    itemsUpdated,
-    geocodedAddresses: geocoded,
-    failedAddresses:  failed,
-    nextBatch,
-    totalBatches,
-    done:             nextBatch === null,
-    message:          nextBatch !== null
-      ? `✅ Batch ${batchNum} done. Call ?action=geocode-locations&batch=${nextBatch} to continue (${totalBatches - batchNum - 1} more batch(es)).`
-      : '🎉 All done! Location column fully populated.'
-  });
+  if (!geo) {
+    return res.json({ ok: false, address: rawAddr, reason: 'No geocode result from Nominatim' });
+  }
+  try {
+    await writeLocationColumn(itemIds, geo);
+    return res.json({ ok: true, address: rawAddr, lat: geo.lat, lng: geo.lng, itemsUpdated: itemIds.length });
+  } catch (err) {
+    return res.json({ ok: false, address: rawAddr, reason: 'Monday update error: ' + err.message });
+  }
 }
-
 // ── End geocode-locations block ───────────────────────────────────────────────
 
 export default async function handler(req, res) {
