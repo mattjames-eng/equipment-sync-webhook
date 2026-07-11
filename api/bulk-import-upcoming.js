@@ -159,20 +159,6 @@ async function resolveContactName(uuid, fallback) {
   }
 }
 
-// ── Resolve contact UUID → { name, email } via Flex identity endpoint ─────────
-async function resolveContactIdentity(uuid) {
-  if (!uuid) return null;
-  try {
-    const data = await flexGet(`/api/contact/${uuid}/identity`);
-    return {
-      name:  data.name || data.preferredDisplayString || null,
-      email: data.email || data.emailAddress || data.primaryEmail || null,
-    };
-  } catch {
-    return null;
-  }
-}
-
 // ── Find monday.com user by email address ─────────────────────────────────────
 async function findMondayUserByEmail(email) {
   if (!email) return null;
@@ -260,7 +246,7 @@ async function fetchExistingFlexNumbers() {
 // FIX: header-data requires codeList param — matches create-project-from-quote.js line 407
 // FIX 2: parentElementId must be in codeList to get the event folder UUID
 async function fetchHeaderData(quoteUUID) {
-  return flexGet(`/api/element/${quoteUUID}/header-data?codeList=elementNumber,name,clientId,venueId,personResponsible,eventDate,plannedStartDate,plannedEndDate,totalPrice,notes,equipmentList,parentElementId`);
+  return flexGet(`/api/element/${quoteUUID}/header-data?codeList=elementNumber,name,clientId,venueId,personResponsibleId,personResponsibleDefaultEmailAddress,eventDate,plannedStartDate,plannedEndDate,totalPrice,notes,equipmentList,parentElementId`);
 }
 
 // ── Find equipment list for a quote (same fallback chain as create-project) ───
@@ -341,7 +327,7 @@ async function processQuote(quoteResult, options) {
     // FIX: codeList returns hd.clientId / hd.venueId (not hd.data.client / hd.data.venue)
     const clientUUID            = extractUuid(hd.clientId          || hd.data?.client);
     const venueUUID             = extractUuid(hd.venueId           || hd.data?.venue);
-    const personResponsibleUUID = extractUuid(hd.personResponsible || hd.data?.personResponsible);
+    const personResponsibleEmail = hd.personResponsibleDefaultEmailAddress?.data || null;
 
     // ── Resolve human-readable names ───────────────────────────────────────
     let clientName = deepExtractName(hd.clientId) || deepExtractName(hd.data?.client) || deepExtractName(hd.clientName) || 'Unknown Client';
@@ -354,20 +340,19 @@ async function processQuote(quoteResult, options) {
       venueName = await resolveContactName(venueUUID, 'Unknown Venue');
     }
 
-    // ── Resolve Account Manager (personResponsible) → monday.com user ────────
+    // ── Resolve Account Manager via personResponsibleDefaultEmailAddress ─────
     let accountManagerUserId = parseInt(PM_DEFAULT_ID);
-    if (personResponsibleUUID) {
-      const amIdentity = await resolveContactIdentity(personResponsibleUUID);
-      console.log(`[bulk-import] 👤 Person Responsible:`, amIdentity);
-      if (amIdentity?.email) {
-        const amUserId = await findMondayUserByEmail(amIdentity.email);
-        if (amUserId) {
-          accountManagerUserId = parseInt(amUserId);
-          console.log(`[bulk-import] ✅ AM resolved: ${amIdentity.name} → monday user ${amUserId}`);
-        } else {
-          console.log(`[bulk-import] ⚠️ No monday user matched AM email "${amIdentity.email}" — using default`);
-        }
+    console.log(`[bulk-import] 👤 Person Responsible email from Flex: ${personResponsibleEmail}`);
+    if (personResponsibleEmail) {
+      const amUserId = await findMondayUserByEmail(personResponsibleEmail);
+      if (amUserId) {
+        accountManagerUserId = parseInt(amUserId);
+        console.log(`[bulk-import] ✅ AM resolved: ${personResponsibleEmail} → monday user ${amUserId}`);
+      } else {
+        console.log(`[bulk-import] ⚠️ No monday user matched AM email "${personResponsibleEmail}" — using default`);
       }
+    } else {
+      console.log(`[bulk-import] ℹ️ No personResponsibleDefaultEmailAddress in Flex — using default`);
     }
 
     // ── Find monday.com Contact item IDs (optional) ────────────────────────
