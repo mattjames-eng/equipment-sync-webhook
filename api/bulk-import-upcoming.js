@@ -377,7 +377,6 @@ async function processQuote(quoteResult, options) {
       [COL.clientNameText]:  clientName,
       [COL.venueNameText]:   venueName,
       [COL.pullsheetStatus]: { label: 'Not Synced' },
-      [COL.projectPhase]:    { label: 'Design' },
       [COL.lastEquipSync]:   today,
       [COL.accountManager]:  { personsAndTeams: [{ id: accountManagerUserId, kind: 'person' }] }
     };
