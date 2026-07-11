@@ -21,6 +21,9 @@
     },
     "api/bulk-import-upcoming.js": {
       "maxDuration": 60
+    },
+    "api/contracts/generate.js": {
+      "maxDuration": 60
     }
   },
   "crons": [
