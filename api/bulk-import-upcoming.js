@@ -159,6 +159,31 @@ async function resolveContactName(uuid, fallback) {
   }
 }
 
+// ── Resolve contact UUID → { name, email } via Flex identity endpoint ─────────
+async function resolveContactIdentity(uuid) {
+  if (!uuid) return null;
+  try {
+    const data = await flexGet(`/api/contact/${uuid}/identity`);
+    return {
+      name:  data.name || data.preferredDisplayString || null,
+      email: data.email || data.emailAddress || data.primaryEmail || null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+// ── Find monday.com user by email address ─────────────────────────────────────
+async function findMondayUserByEmail(email) {
+  if (!email) return null;
+  try {
+    const data = await mondayRequest(`query { users(emails: ["${email}"]) { id email } }`);
+    return data?.users?.[0]?.id || null;
+  } catch {
+    return null;
+  }
+}
+
 // ── Find existing contact item in monday Contacts board by name ───────────────
 async function findContactInMonday(name) {
   if (!name || name.includes('Unknown')) return null;
@@ -235,7 +260,7 @@ async function fetchExistingFlexNumbers() {
 // FIX: header-data requires codeList param — matches create-project-from-quote.js line 407
 // FIX 2: parentElementId must be in codeList to get the event folder UUID
 async function fetchHeaderData(quoteUUID) {
-  return flexGet(`/api/element/${quoteUUID}/header-data?codeList=elementNumber,name,clientId,venueId,eventDate,plannedStartDate,plannedEndDate,totalPrice,notes,equipmentList,parentElementId`);
+  return flexGet(`/api/element/${quoteUUID}/header-data?codeList=elementNumber,name,clientId,venueId,personResponsible,eventDate,plannedStartDate,plannedEndDate,totalPrice,notes,equipmentList,parentElementId`);
 }
 
 // ── Find equipment list for a quote (same fallback chain as create-project) ───
@@ -314,8 +339,9 @@ async function processQuote(quoteResult, options) {
 
     // ── Extract contact UUIDs from header data ─────────────────────────────
     // FIX: codeList returns hd.clientId / hd.venueId (not hd.data.client / hd.data.venue)
-    const clientUUID = extractUuid(hd.clientId || hd.data?.client);
-    const venueUUID  = extractUuid(hd.venueId  || hd.data?.venue);
+    const clientUUID            = extractUuid(hd.clientId          || hd.data?.client);
+    const venueUUID             = extractUuid(hd.venueId           || hd.data?.venue);
+    const personResponsibleUUID = extractUuid(hd.personResponsible || hd.data?.personResponsible);
 
     // ── Resolve human-readable names ───────────────────────────────────────
     let clientName = deepExtractName(hd.clientId) || deepExtractName(hd.data?.client) || deepExtractName(hd.clientName) || 'Unknown Client';
@@ -326,6 +352,22 @@ async function processQuote(quoteResult, options) {
     }
     if (resolveContacts && venueUUID && venueName === 'Unknown Venue') {
       venueName = await resolveContactName(venueUUID, 'Unknown Venue');
+    }
+
+    // ── Resolve Account Manager (personResponsible) → monday.com user ────────
+    let accountManagerUserId = parseInt(PM_DEFAULT_ID);
+    if (personResponsibleUUID) {
+      const amIdentity = await resolveContactIdentity(personResponsibleUUID);
+      console.log(`[bulk-import] 👤 Person Responsible:`, amIdentity);
+      if (amIdentity?.email) {
+        const amUserId = await findMondayUserByEmail(amIdentity.email);
+        if (amUserId) {
+          accountManagerUserId = parseInt(amUserId);
+          console.log(`[bulk-import] ✅ AM resolved: ${amIdentity.name} → monday user ${amUserId}`);
+        } else {
+          console.log(`[bulk-import] ⚠️ No monday user matched AM email "${amIdentity.email}" — using default`);
+        }
+      }
     }
 
     // ── Find monday.com Contact item IDs (optional) ────────────────────────
@@ -353,7 +395,7 @@ async function processQuote(quoteResult, options) {
       [COL.pullsheetStatus]: { label: 'Not Synced' },
       [COL.projectPhase]:    { label: 'Design' },
       [COL.lastEquipSync]:   today,
-      [COL.accountManager]:  { personsAndTeams: [{ id: parseInt(PM_DEFAULT_ID), kind: 'person' }] }
+      [COL.accountManager]:  { personsAndTeams: [{ id: accountManagerUserId, kind: 'person' }] }
     };
 
     if (eventDate)  columnValues[COL.eventDate]  = { date: eventDate };
