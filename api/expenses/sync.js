@@ -4,14 +4,20 @@
 //
 // Routes:
 //   POST /api/expenses/sync    (webhook: subitem column change / create)
-//   POST /api/expenses/recalc  (button: manual recalculate from project)
+//   POST /api/expenses/recalc  (status trigger: manual recalculate)
+//
+// Recalc flow (button chain):
+//   1. User clicks "Recalculate Spend" button
+//   2. Automation sets "Sync Expenses" status → "Recalculate"
+//   3. User-created automation fires this webhook on status change
+//   4. Endpoint sums expenses, writes Actual Spend, resets status → blank
 //
 // Webhook triggers (on parent board 18417272549):
 //   - change_subitem_column_value
 //   - create_subitem
 //
 // NOTE: monday.com has no delete_subitem webhook event.
-// Zero out Amount before deleting, or use the Recalculate button.
+// Zero out Amount before deleting, or hit the Recalculate Spend button.
 //
 // Boards:
 //   Project Expenses parent:  18417272549
@@ -21,6 +27,7 @@
 //   Expenses → Project relation: board_relation_mm46qsc5
 //   Subitem Amount:              numeric_mm4799q6
 //   Projects Actual Spend:       numeric_mm3xrd3e
+//   Projects Sync Expenses:      color_mm55zfv7
 // ================================================================
 
 const MONDAY_API_KEY      = process.env.MONDAY_API_KEY;
@@ -28,6 +35,7 @@ const MONDAY_API_URL      = 'https://api.monday.com/v2';
 const PROJECTS_BOARD_ID   = '18415679761';
 const EXPENSES_BOARD_ID   = '18417272549';
 const ACTUAL_SPEND_COL    = 'numeric_mm3xrd3e';
+const SYNC_STATUS_COL     = 'color_mm55zfv7';
 const AMOUNT_COL          = 'numeric_mm4799q6';
 const PROJECT_RELATION    = 'board_relation_mm46qsc5';
 
@@ -98,6 +106,26 @@ async function recalcForExpenseItem(expenseItemId) {
   return { projectId, totalSpend: rounded, expenseCount: subitems.length };
 }
 
+// ── Reset Sync Expenses status to blank ─────────────────────────
+async function resetSyncStatus(projectId) {
+  try {
+    await mondayQuery(
+      `mutation($boardId: ID!, $itemId: ID!, $values: JSON!) {
+        change_multiple_column_values(board_id: $boardId, item_id: $itemId, column_values: $values) { id }
+      }`,
+      {
+        boardId: PROJECTS_BOARD_ID,
+        itemId:  projectId.toString(),
+        values:  JSON.stringify({ [SYNC_STATUS_COL]: { "label": "" } })
+      }
+    );
+    console.log(`🔄 Sync Expenses status reset to blank for project ${projectId}`);
+  } catch (e) {
+    // Non-fatal — don't fail the whole request if reset fails
+    console.warn(`⚠️ Failed to reset sync status: ${e.message}`);
+  }
+}
+
 // ── Main handler ────────────────────────────────────────────────
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -111,9 +139,7 @@ export default async function handler(req, res) {
   const route = req.query?.route;
   const event = req.body?.event || req.body || {};
 
-  // ── ROUTE: recalc (triggered by button on Projects board) ─────
-  // Event contains the project item ID. Find its linked expense item,
-  // then sum all expense subitems and write back.
+  // ── ROUTE: recalc (triggered by Sync Expenses status change) ──
   if (route === 'recalc') {
     const projectId = event.pulseId || event.itemId;
     if (!projectId) {
@@ -123,27 +149,7 @@ export default async function handler(req, res) {
 
     try {
       // Find the expense parent item linked to this project
-      const searchResult = await mondayQuery(
-        `query($boardId: ID!) {
-          items_page(
-            board_id: $boardId,
-            limit: 1,
-            query_params: {
-              rules: [{
-                column_id: "${PROJECT_RELATION}",
-                compare_value: ["${projectId}"],
-                operator: any_of
-              }]
-            }
-          ) {
-            items { id }
-          }
-        }`,
-        { boardId: EXPENSES_BOARD_ID }
-      );
-
-      // Inline the project ID into the query since variables don't work in compare_value for relations
-      const searchResult2 = await mondayQuery(`
+      const searchResult = await mondayQuery(`
         query {
           items_page(
             board_id: ${EXPENSES_BOARD_ID},
@@ -161,11 +167,10 @@ export default async function handler(req, res) {
         }
       `);
 
-      const expenseItems = searchResult2.data?.items_page?.items || [];
+      const expenseItems = searchResult.data?.items_page?.items || [];
 
       if (expenseItems.length === 0) {
         console.warn(`⚠️ No expense item found for project ${projectId} — writing $0`);
-        // Write $0 so the project shows accurate (no expenses) rather than stale data
         await mondayQuery(
           `mutation($boardId: ID!, $itemId: ID!, $values: JSON!) {
             change_multiple_column_values(board_id: $boardId, item_id: $itemId, column_values: $values) { id }
@@ -176,10 +181,12 @@ export default async function handler(req, res) {
             values:  JSON.stringify({ [ACTUAL_SPEND_COL]: 0 })
           }
         );
+        await resetSyncStatus(projectId);
         return res.status(200).json({ success: true, projectId, totalSpend: 0, expenseCount: 0 });
       }
 
       const result = await recalcForExpenseItem(expenseItems[0].id);
+      await resetSyncStatus(projectId);
       return res.status(200).json({ success: true, ...result });
 
     } catch (err) {
@@ -205,9 +212,6 @@ export default async function handler(req, res) {
 
   try {
     const result = await recalcForExpenseItem(parentExpenseItemId);
-    if (result.skipped) {
-      return res.status(200).json({ success: true, ...result });
-    }
     return res.status(200).json({ success: true, ...result });
   } catch (err) {
     console.error('❌ Expense sync failed:', err.message);
