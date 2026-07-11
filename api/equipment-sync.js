@@ -48,10 +48,10 @@ async function mondayMutation(query) {
 }
 
 // ================================================================
-// HELPER: Update Portal Status + optional error text on the item
+// HELPER: Write optional error text on the item (Portal Status column removed)
 // ================================================================
 async function updateMondayStatus(itemId, boardId, statusLabel, errorText = '') {
-  const cols = { color_mm43kvp3: { label: statusLabel } };
+  const cols = {};
   if (errorText) cols.text_mm3zvvqk = errorText.substring(0, 500);
   try {
     await mondayMutation(`
