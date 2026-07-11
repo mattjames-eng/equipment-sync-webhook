@@ -118,6 +118,47 @@ async function fetchContactNameFromFlex(uuid, fallbackDefault) {
 }
 
 // ================================================================
+// HELPER: Resolves a contact UUID to { name, email } via Flex Identity
+// ================================================================
+async function fetchContactIdentityFromFlex(uuid) {
+    if (!uuid) return null;
+    try {
+        const res = await fetch(`${FLEX_BASE_URL}/api/contact/${uuid}/identity`, {
+            headers: { 'X-Auth-Token': FLEX_API_KEY, 'Accept': 'application/json' }
+        });
+        if (res.ok) {
+            const data = await res.json();
+            return {
+                name:  data.name || data.preferredDisplayString || null,
+                email: data.email || data.emailAddress || data.primaryEmail || null
+            };
+        }
+    } catch (e) {
+        console.log(`⚠️ Identity fetch failed for UUID: ${uuid}`);
+    }
+    return null;
+}
+
+// ================================================================
+// HELPER: Find monday.com user by email address
+// ================================================================
+async function findMondayUserByEmail(email) {
+    if (!email) return null;
+    try {
+        const response = await fetch(MONDAY_API_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_KEY },
+            body: JSON.stringify({ query: `query { users(emails: ["${email}"]) { id email } }` })
+        });
+        const result = await response.json();
+        return result.data?.users?.[0]?.id || null;
+    } catch (e) {
+        console.log(`⚠️ Monday user lookup failed for: ${email}`);
+        return null;
+    }
+}
+
+// ================================================================
 // HELPER: Scan monday Contacts registry board directly
 // ================================================================
 async function findContactInMondayRegistry(searchText) {
@@ -404,7 +445,7 @@ export default async function handler(req, res) {
         console.log(`  📋 Equip List   : ${equipmentListUUID || '❌ NOT FOUND'}`);
 
         // ===== STEP 2: Fetch Flex quote header data =====
-        const dataUrl = `${FLEX_BASE_URL}/api/element/${internalId}/header-data?codeList=elementNumber,name,clientId,venueId,eventDate,plannedStartDate,plannedEndDate,totalPrice,notes,equipmentList`;
+        const dataUrl = `${FLEX_BASE_URL}/api/element/${internalId}/header-data?codeList=elementNumber,name,clientId,venueId,personResponsible,eventDate,plannedStartDate,plannedEndDate,totalPrice,notes,equipmentList`;
         const dataResponse = await fetch(dataUrl, {
             headers: { 'X-Auth-Token': FLEX_API_KEY, 'Accept': 'application/json' }
         });
@@ -419,8 +460,9 @@ export default async function handler(req, res) {
         }
 
         // ===== STEP 3: Precision isolate the real wrapped 36-character UUID strings =====
-        const clientUuid = extractContactUuid(data?.clientId);
-        const venueUuid  = extractContactUuid(data?.venueId);
+        const clientUuid              = extractContactUuid(data?.clientId);
+        const venueUuid               = extractContactUuid(data?.venueId);
+        const personResponsibleUuid   = extractContactUuid(data?.personResponsible);
 
         // ===== STEP 4: Resolve true corporate titles =====
         const clientFallback = deepExtractName(data?.clientId) || '';
@@ -439,6 +481,26 @@ export default async function handler(req, res) {
 
         console.log(`🎯 RESOLVED IDENTITY -> Client: "${clientResolvedName}" | Venue: "${venueResolvedName}"`);
 
+        // ===== STEP 4.5: Resolve personResponsible → monday.com user =====
+        let accountManagerId = parseInt(PM_DEFAULT_ID, 10);
+        if (personResponsibleUuid) {
+            const amIdentity = await fetchContactIdentityFromFlex(personResponsibleUuid);
+            console.log(`👤 Person Responsible identity:`, amIdentity);
+            if (amIdentity?.email) {
+                const amUserId = await findMondayUserByEmail(amIdentity.email);
+                if (amUserId) {
+                    accountManagerId = parseInt(amUserId, 10);
+                    console.log(`✅ Account Manager resolved: ${amIdentity.name} (${amIdentity.email}) → monday user ${amUserId}`);
+                } else {
+                    console.log(`⚠️ No monday user matched email "${amIdentity.email}" — falling back to PM default`);
+                }
+            } else {
+                console.log(`⚠️ personResponsible identity returned no email — falling back to PM default`);
+            }
+        } else {
+            console.log(`ℹ️ No personResponsible in Flex data — using PM default`);
+        }
+
         // ===== STEP 5: Scan monday registry + duplicate check =====
         const [matchedClientId, matchedVenueId, existingProjectId] = await Promise.all([
             findContactInMondayRegistry(clientResolvedName),
@@ -451,7 +513,7 @@ export default async function handler(req, res) {
             text_mm3x2yr6:             quoteNumber,
             text_mm435rt8:             clientResolvedName,
             text_mm43r22q:             venueResolvedName,
-            multiple_person_mm3xmbb2:  { personsAndTeams: [{ id: parseInt(PM_DEFAULT_ID, 10), kind: 'person' }] },
+            multiple_person_mm3xmbb2:  { personsAndTeams: [{ id: accountManagerId, kind: 'person' }] },
             numeric_mm3xzncg:          totalEstimate,
             long_text_mm3xfve1:        notesText,
             color_mm3x4534:            { label: "Design" },
