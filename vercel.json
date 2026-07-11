@@ -7,6 +7,10 @@
     {
       "source": "/api/sync-crew-user-contracts",
       "destination": "/api/sync-crew-user?route=contracts"
+    },
+    {
+      "source": "/api/expenses/recalc",
+      "destination": "/api/expenses/sync?route=recalc"
     }
   ],
   "functions": {
