@@ -59,7 +59,6 @@ const COL = {
   venueRelation:     'board_relation_mm3xrm02',
   clientNameText:    'text_mm435rt8',
   venueNameText:     'text_mm43r22q',
-  handoffStage:      'color_mm43yjp9',   // "New" label
   accountManager:    'multiple_person_mm3xmbb2',
   pullsheetStatus:   'color_mm3y3bxj',   // "Not Synced"
   projectPhase:      'color_mm3x4534',   // "Design"
@@ -351,7 +350,6 @@ async function processQuote(quoteResult, options) {
       [COL.flexEquipListID]: equipListUUID   || '',
       [COL.clientNameText]:  clientName,
       [COL.venueNameText]:   venueName,
-      [COL.handoffStage]:    { label: 'New' },
       [COL.pullsheetStatus]: { label: 'Not Synced' },
       [COL.projectPhase]:    { label: 'Design' },
       [COL.lastEquipSync]:   today,
