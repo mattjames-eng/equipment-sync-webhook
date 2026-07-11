@@ -61,7 +61,6 @@ const COL = {
   venueNameText:     'text_mm43r22q',
   accountManager:    'multiple_person_mm3xmbb2',
   pullsheetStatus:   'color_mm3y3bxj',   // "Not Synced"
-  projectPhase:      'color_mm3x4534',   // "Design"
 };
 
 // ── Domain Classifier (mirrors create-project-from-quote.js) ─────────────────
