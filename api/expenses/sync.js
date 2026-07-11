@@ -2,14 +2,19 @@
 // Project Expenses → Actual Spend Sync
 // Vercel Serverless Function
 //
-// Trigger: monday.com automation fires when any expense subitem
-//          Amount column changes (create, update, delete).
+// Triggers (all on parent board 18417272549):
+//   - change_subitem_column_value  (amount edited)
+//   - create_subitem               (new expense line added)
+//
+// NOTE: monday.com has no delete_subitem webhook event. If a crew
+// member deletes an expense line, set Amount to $0 first, then
+// delete — or use the recalc button (if added) to force a refresh.
 //
 // Flow:
-//   1. Receive subitem event → extract parentItemId (expense item)
-//   2. Fetch expense item → get linked Project ID + all subitem Amounts
-//   3. Sum all Amounts
-//   4. Write total to Actual Spend (numeric_mm3xrd3e) on Projects board
+//   1. Receive event → extract parentItemId (the expense parent item)
+//   2. For column-change events, skip if changed column ≠ Amount
+//   3. Fetch expense parent → get linked Project + all subitem Amounts
+//   4. Sum amounts → write to Actual Spend on Projects board
 //
 // Boards:
 //   Project Expenses parent:  18417272549
@@ -22,13 +27,12 @@
 //   Projects Actual Spend:       numeric_mm3xrd3e
 // ================================================================
 
-const MONDAY_API_KEY      = process.env.MONDAY_API_KEY;
-const MONDAY_API_URL      = 'https://api.monday.com/v2';
-const PROJECTS_BOARD_ID   = '18415679761';
-const EXPENSES_BOARD_ID   = '18417272549';
-const ACTUAL_SPEND_COL    = 'numeric_mm3xrd3e';
-const AMOUNT_COL          = 'numeric_mm4799q6';
-const PROJECT_RELATION    = 'board_relation_mm46qsc5';
+const MONDAY_API_KEY    = process.env.MONDAY_API_KEY;
+const MONDAY_API_URL    = 'https://api.monday.com/v2';
+const PROJECTS_BOARD_ID = '18415679761';
+const ACTUAL_SPEND_COL  = 'numeric_mm3xrd3e';
+const AMOUNT_COL        = 'numeric_mm4799q6';
+const PROJECT_RELATION  = 'board_relation_mm46qsc5';
 
 // ── monday GraphQL helper ────────────────────────────────────────
 async function mondayQuery(query, variables = {}) {
@@ -61,8 +65,16 @@ export default async function handler(req, res) {
 
   const event = req.body?.event || req.body || {};
 
-  // monday sends parentItemId for subitem events
-  const parentExpenseItemId = event.parentItemId || event.pulseId;
+  // ── Early exit: column changed but it wasn't Amount ────────────
+  // monday fires change_subitem_column_value for ALL subitem column
+  // edits (vendor, category, notes, etc.). Skip non-Amount changes.
+  if (event.columnId && event.columnId !== AMOUNT_COL) {
+    console.log(`⏭️ Skipping — column ${event.columnId} is not Amount`);
+    return res.status(200).json({ success: true, skipped: true, reason: 'Non-amount column change' });
+  }
+
+  // parentItemId is the expense parent item on board 18417272549
+  const parentExpenseItemId = event.parentItemId;
 
   if (!parentExpenseItemId) {
     console.error('❌ No parentItemId in payload:', JSON.stringify(event));
@@ -72,8 +84,7 @@ export default async function handler(req, res) {
   console.log(`📥 Expense sync triggered — expense item: ${parentExpenseItemId}`);
 
   try {
-    // ── STEP 1: Fetch the expense parent item ───────────────────
-    // Get the linked project ID and all subitem amounts in one query
+    // ── STEP 1: Fetch expense parent + all subitem amounts ───────
     const fetchResult = await mondayQuery(
       `query($itemId: [ID!]) {
         items(ids: $itemId) {
@@ -103,7 +114,7 @@ export default async function handler(req, res) {
       return res.status(404).json({ success: false, error: 'Expense item not found' });
     }
 
-    // ── STEP 2: Extract linked project ID ───────────────────────
+    // ── STEP 2: Get linked project ───────────────────────────────
     const relationCol = expenseItem.column_values?.[0];
     const linkedIds   = relationCol?.linked_item_ids || [];
 
@@ -115,15 +126,15 @@ export default async function handler(req, res) {
     const projectId = linkedIds[0];
     console.log(`🔗 Linked project: ${projectId}`);
 
-    // ── STEP 3: Sum all subitem amounts ─────────────────────────
-    const subitems  = expenseItem.subitems || [];
+    // ── STEP 3: Sum all subitem amounts ──────────────────────────
+    const subitems   = expenseItem.subitems || [];
     const totalSpend = subitems.reduce((sum, subitem) => {
-      const amountVal = subitem.column_values?.[0]?.number;
-      return sum + (typeof amountVal === 'number' ? amountVal : 0);
+      const amount = subitem.column_values?.[0]?.number;
+      return sum + (typeof amount === 'number' ? amount : 0);
     }, 0);
 
     const rounded = Math.round(totalSpend * 100) / 100;
-    console.log(`💰 ${subitems.length} expense lines totalling $${rounded}`);
+    console.log(`💰 ${subitems.length} expense line(s) → $${rounded}`);
 
     // ── STEP 4: Write Actual Spend to Projects board ─────────────
     await mondayQuery(
@@ -141,8 +152,13 @@ export default async function handler(req, res) {
       }
     );
 
-    console.log(`✅ Actual Spend updated → $${rounded} on project ${projectId}`);
-    return res.status(200).json({ success: true, projectId, totalSpend: rounded, expenseCount: subitems.length });
+    console.log(`✅ Actual Spend → $${rounded} on project ${projectId}`);
+    return res.status(200).json({
+      success: true,
+      projectId,
+      totalSpend: rounded,
+      expenseCount: subitems.length
+    });
 
   } catch (err) {
     console.error('❌ Expense sync failed:', err.message);
