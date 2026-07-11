@@ -19,9 +19,6 @@
     "api/create-project-from-quote.js": {
       "maxDuration": 60
     },
-    "api/tasks-handler.js": {
-      "maxDuration": 60
-    },
     "api/bulk-import-upcoming.js": {
       "maxDuration": 60
     }
