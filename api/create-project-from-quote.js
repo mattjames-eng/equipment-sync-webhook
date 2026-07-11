@@ -489,8 +489,6 @@ export default async function handler(req, res) {
             multiple_person_mm3xmbb2:  { personsAndTeams: [{ id: accountManagerId, kind: 'person' }] },
             numeric_mm3xzncg:          totalEstimate,
             long_text_mm3xfve1:        notesText,
-            color_mm3x4534:            { label: "Design" },
-            color_mm3xhnjc:            { label: "Medium" },
             date_mm3z1vqz:             { date: new Date().toISOString().split('T')[0] },
             color_mm3y3bxj:            { label: "Synced" },
 
