@@ -252,11 +252,23 @@ async function fetchRouteStops(routeId) {
 
 // ================================================================
 // SORT STOPS by date + time
+// Handles missing dates/times gracefully — stops without dates sort last
+// so they don't corrupt the leg order for stops that do have dates.
 // ================================================================
 function sortRouteStops(stops) {
-  return [...stops].sort((a, b) =>
-    new Date(`${a.date} ${a.time}`) - new Date(`${b.date} ${b.time}`)
-  );
+  return [...stops].sort((a, b) => {
+    const dateA = a.date ? new Date(`${a.date} ${a.time || '00:00'}`) : null;
+    const dateB = b.date ? new Date(`${b.date} ${b.time || '00:00'}`) : null;
+
+    // Both valid → compare normally
+    if (dateA && dateB) return dateA - dateB;
+    // Only A is missing → A goes last
+    if (!dateA && dateB) return 1;
+    // Only B is missing → B goes last
+    if (dateA && !dateB) return -1;
+    // Both missing → preserve original array order (stable)
+    return 0;
+  });
 }
 
 // ================================================================
@@ -522,7 +534,7 @@ async function handleSyncStopDriver(req, res) {
 // ================================================================
 
 async function fetchRouteDriverIds(routeId) {
-  const ROUTES_DRIVER_COLUMN = 'board_relation_mm4fg4yp';
+  const ROUTES_DRIVER_COLUMN = 'board_relation_mm4ny8kc'; // Driver column on Routes board
   const data = await mondayRequest(`
     query {
       items(ids: [${routeId}]) {
