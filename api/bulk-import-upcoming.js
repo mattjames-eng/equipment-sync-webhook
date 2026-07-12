@@ -56,8 +56,6 @@ const COL = {
   lastEquipSync:     'date_mm3z1vqz',
   clientRelation:    'board_relation_mm3x8evw',
   venueRelation:     'board_relation_mm3xrm02',
-  clientNameText:    'text_mm435rt8',
-  venueNameText:     'text_mm43r22q',
   pullsheetStatus:   'color_mm3y3bxj',   // "Not Synced"
 };
 
@@ -167,10 +165,36 @@ async function findMondayUserByEmail(email) {
   }
 }
 
-// ── Find existing contact item in monday Contacts board by name ───────────────
-async function findContactInMonday(name) {
-  if (!name || name.includes('Unknown')) return null;
-  const safe = name.trim().replace(/"/g, '\\"');
+// ── Find contact in monday Contacts board ─────────────────────────────────────
+// Primary:  match by Flex Contact UUID (text_mm56w1vz) — exact, instant
+// Fallback: full-text name search — for contacts not yet synced from Flex
+async function findContactByFlexUuid(flexUuid, nameFallback) {
+  // Primary: UUID match via Flex Contact ID column
+  if (flexUuid) {
+    try {
+      const data = await mondayRequest(`
+        query {
+          items_page_by_column_values(
+            limit: 5,
+            board_id: ${CONTACTS_BOARD_ID},
+            columns: [{ column_id: "text_mm56w1vz", column_values: ["${flexUuid}"] }]
+          ) { items { id name } }
+        }
+      `);
+      const items = data?.items_page_by_column_values?.items || [];
+      if (items.length > 0) {
+        console.log(`[bulk-import] ✅ Contact matched by Flex UUID: "${items[0].name}" (${flexUuid})`);
+        return items[0].id;
+      }
+    } catch (e) {
+      console.warn(`[bulk-import] ⚠️ UUID contact lookup failed for ${flexUuid}:`, e.message);
+    }
+  }
+
+  // Fallback: name search (contacts not yet synced from Flex)
+  if (!nameFallback || nameFallback.includes('Unknown')) return null;
+  const safe = nameFallback.trim().replace(/"/g, '\\"');
+  console.log(`[bulk-import] 🔍 UUID miss — falling back to name search for: "${nameFallback}"`);
   try {
     const data = await mondayRequest(`
       query {
@@ -182,11 +206,15 @@ async function findContactInMonday(name) {
       }
     `);
     const items = data?.boards?.[0]?.items_page?.items || [];
-    const exact = items.find(i => i.name.trim().toLowerCase() === name.trim().toLowerCase());
-    return exact ? exact.id : null;
+    const exact = items.find(i => i.name.trim().toLowerCase() === nameFallback.trim().toLowerCase());
+    if (exact) {
+      console.log(`[bulk-import] ✅ Contact matched by name fallback: "${exact.name}"`);
+      return exact.id;
+    }
   } catch {
     return null;
   }
+  return null;
 }
 
 // ── Search Flex for all upcoming events by prefix ─────────────────────────────
@@ -343,8 +371,8 @@ async function processQuote(quoteResult, options) {
     let venueItemId  = null;
     if (resolveContacts) {
       [clientItemId, venueItemId] = await Promise.all([
-        findContactInMonday(clientName),
-        findContactInMonday(venueName)
+        findContactByFlexUuid(clientUUID, clientName),
+        findContactByFlexUuid(venueUUID,  venueName)
       ]);
     }
 
@@ -358,8 +386,6 @@ async function processQuote(quoteResult, options) {
       [COL.flexProjectUUID]: eventFolderUUID || '',
       [COL.flexQuoteUUID]:   quoteUUID       || '',
       [COL.flexEquipListID]: equipListUUID   || '',
-      [COL.clientNameText]:  clientName,
-      [COL.venueNameText]:   venueName,
       [COL.pullsheetStatus]: { label: 'Not Synced' },
       [COL.lastEquipSync]:   today,
     };
