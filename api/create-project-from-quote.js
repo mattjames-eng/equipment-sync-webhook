@@ -136,29 +136,51 @@ async function findMondayUserByEmail(email) {
 }
 
 // ================================================================
-// HELPER: Scan monday Contacts registry board directly
+// HELPER: Find contact in monday Contacts board
+// Primary:  match by Flex Contact UUID (text_mm56w1vz) — exact, instant
+// Fallback: full-text name search — for contacts not yet synced from Flex
 // ================================================================
-async function findContactInMondayRegistry(searchText) {
-    if (!searchText || searchText.trim() === '' || searchText.includes('Unknown')) return null;
-    const safeName = searchText.trim();
-    console.log(`🔍 Scanning master contacts index for: "${safeName}"`);
+async function findContactByFlexUuid(flexUuid, nameFallback) {
+    // Primary: UUID match via Flex Contact ID column
+    if (flexUuid) {
+        try {
+            const response = await fetch(MONDAY_API_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_KEY },
+                body: JSON.stringify({ query: `query { items_page_by_column_values(limit: 5, board_id: ${CONTACTS_BOARD_ID}, columns: [{ column_id: "text_mm56w1vz", column_values: ["${flexUuid}"] }]) { items { id name } } }` })
+            });
+            const result = await response.json();
+            const items = result.data?.items_page_by_column_values?.items || [];
+            if (items.length > 0) {
+                console.log(`✅ Contact matched by Flex UUID: "${items[0].name}" (${flexUuid})`);
+                return items[0].id;
+            }
+        } catch (e) {
+            console.warn(`⚠️ UUID contact lookup failed for ${flexUuid}:`, e.message);
+        }
+    }
 
-    const query = `query { boards(ids: [${CONTACTS_BOARD_ID}]) { items_page(limit: 50, query_params: { term: "${safeName.replace(/"/g, '\\"')}" }) { items { id name } } } }`;
-
+    // Fallback: name search (contacts not yet synced from Flex)
+    if (!nameFallback || nameFallback.trim() === '' || nameFallback.includes('Unknown')) return null;
+    const safeName = nameFallback.trim();
+    console.log(`🔍 UUID miss — falling back to name search for: "${safeName}"`);
     try {
         const response = await fetch(MONDAY_API_URL, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_KEY },
-            body: JSON.stringify({ query })
+            body: JSON.stringify({ query: `query { boards(ids: [${CONTACTS_BOARD_ID}]) { items_page(limit: 50, query_params: { term: "${safeName.replace(/"/g, '\\"')}" }) { items { id name } } } }` })
         });
         const result = await response.json();
         const items = result.data?.boards?.[0]?.items_page?.items || [];
         const exactMatch = items.find(item => item.name.trim().toLowerCase() === safeName.toLowerCase());
-        return exactMatch ? exactMatch.id : null;
+        if (exactMatch) {
+            console.log(`✅ Contact matched by name fallback: "${exactMatch.name}"`);
+            return exactMatch.id;
+        }
     } catch (e) {
-        console.error(`❌ Contacts registry lookup timeout:`, e);
-        return null;
+        console.error(`❌ Name fallback contact lookup failed:`, e);
     }
+    return null;
 }
 
 // ================================================================
@@ -461,16 +483,14 @@ export default async function handler(req, res) {
 
         // ===== STEP 5: Scan monday registry + duplicate check =====
         const [matchedClientId, matchedVenueId, existingProjectId] = await Promise.all([
-            findContactInMondayRegistry(clientResolvedName),
-            findContactInMondayRegistry(venueResolvedName),
+            findContactByFlexUuid(clientUuid, clientResolvedName),
+            findContactByFlexUuid(venueUuid,  venueResolvedName),
             findExistingProjectByFlexNumber(quoteNumber)
         ]);
 
         // ===== STEP 6: Build the unified row mapping data frame object =====
         const columnValues = {
             text_mm3x2yr6:             quoteNumber,
-            text_mm435rt8:             clientResolvedName,
-            text_mm43r22q:             venueResolvedName,
             numeric_mm3xzncg:          totalEstimate,
             long_text_mm3xfve1:        notesText,
             date_mm3z1vqz:             { date: new Date().toISOString().split('T')[0] },
