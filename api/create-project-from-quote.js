@@ -35,7 +35,6 @@ const FLEX_API_KEY  = process.env.FLEX_API_KEY_QUOTES || process.env.FLEX_API_KE
 
 const PROJECTS_BOARD_ID = '18415679761';
 const CONTACTS_BOARD_ID = '18415573401';
-const PM_DEFAULT_ID     = process.env.PM_DEFAULT_MONDAY_USER_ID || '102097223';
 
 const GOOGLE_APPS_SCRIPT_URL = process.env.GOOGLE_APPS_SCRIPT_URL || null;
 
@@ -459,20 +458,6 @@ export default async function handler(req, res) {
 
         console.log(`🎯 RESOLVED IDENTITY -> Client: "${clientResolvedName}" | Venue: "${venueResolvedName}"`);
 
-        // ===== STEP 4.5: Resolve personResponsibleDefaultEmailAddress → monday.com user =====
-        let accountManagerId = parseInt(PM_DEFAULT_ID, 10);
-        console.log(`👤 Person Responsible email from Flex: ${personResponsibleEmail}`);
-        if (personResponsibleEmail) {
-            const amUserId = await findMondayUserByEmail(personResponsibleEmail);
-            if (amUserId) {
-                accountManagerId = parseInt(amUserId, 10);
-                console.log(`✅ Account Manager resolved: ${personResponsibleEmail} → monday user ${amUserId}`);
-            } else {
-                console.log(`⚠️ No monday user matched email "${personResponsibleEmail}" — falling back to PM default`);
-            }
-        } else {
-            console.log(`ℹ️ No personResponsibleDefaultEmailAddress in Flex data — using PM default`);
-        }
 
         // ===== STEP 5: Scan monday registry + duplicate check =====
         const [matchedClientId, matchedVenueId, existingProjectId] = await Promise.all([
@@ -486,7 +471,6 @@ export default async function handler(req, res) {
             text_mm3x2yr6:             quoteNumber,
             text_mm435rt8:             clientResolvedName,
             text_mm43r22q:             venueResolvedName,
-            multiple_person_mm3xmbb2:  { personsAndTeams: [{ id: accountManagerId, kind: 'person' }] },
             numeric_mm3xzncg:          totalEstimate,
             long_text_mm3xfve1:        notesText,
             date_mm3z1vqz:             { date: new Date().toISOString().split('T')[0] },
