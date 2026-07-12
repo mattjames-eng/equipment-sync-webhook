@@ -28,12 +28,22 @@
     },
     "api/contracts/generate.js": {
       "maxDuration": 60
+    },
+    "api/contacts/push-to-flex.js": {
+      "maxDuration": 30
+    },
+    "api/contacts/pull-from-flex.js": {
+      "maxDuration": 60
     }
   },
   "crons": [
     {
       "path": "/api/bulk-import-upcoming",
       "schedule": "0 14 * * *"
+    },
+    {
+      "path": "/api/contacts/pull-from-flex",
+      "schedule": "5 14 * * *"
     }
   ]
 }
