@@ -99,7 +99,7 @@ async function writeFlexIdToMonday(itemId, flexUUID) {
         board_id: ${CONTACTS_BOARD_ID},
         item_id: ${itemId},
         column_id: "${COL.flexContactId}",
-        value: "${flexUUID}"
+        value: "\"${flexUUID}\""
       ) { id }
     }
   `;
