@@ -191,6 +191,8 @@ async function createFlexContact(payload) {
 // ================================================================
 async function updateFlexContact(flexUUID, payload) {
   console.log(`📤 Updating Flex contact: ${flexUUID} ("${payload.name}")`);
+  // Flex requires the contact id in the PUT body as well as the URL
+  const bodyWithId = { ...payload, id: flexUUID };
   const response = await fetch(`${FLEX_BASE_URL}/api/contact/${flexUUID}?updateBaseContactOnly=false`, {
     method: 'PUT',
     headers: {
@@ -198,7 +200,7 @@ async function updateFlexContact(flexUUID, payload) {
       'Content-Type': 'application/json',
       'Accept': 'application/json',
     },
-    body: JSON.stringify(payload),
+    body: JSON.stringify(bodyWithId),
   });
 
   if (!response.ok) {
