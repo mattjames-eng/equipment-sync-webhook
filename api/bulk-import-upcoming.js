@@ -35,7 +35,6 @@ const FLEX_BASE_URL   = process.env.FLEX_BASE_URL || 'https://anticstudios.flexr
 const FLEX_API_KEY    = process.env.FLEX_API_KEY_QUOTES || process.env.FLEX_API_KEY;
 const MONDAY_API_URL  = 'https://api.monday.com/v2';
 const MONDAY_API_KEY  = process.env.MONDAY_API_KEY;
-const PM_DEFAULT_ID   = process.env.PM_DEFAULT_MONDAY_USER_ID || '102097223';
 
 // ── Board / Group IDs ─────────────────────────────────────────────────────────
 const PROJECTS_BOARD_ID  = '18415679761';
@@ -59,7 +58,6 @@ const COL = {
   venueRelation:     'board_relation_mm3xrm02',
   clientNameText:    'text_mm435rt8',
   venueNameText:     'text_mm43r22q',
-  accountManager:    'multiple_person_mm3xmbb2',
   pullsheetStatus:   'color_mm3y3bxj',   // "Not Synced"
 };
 
@@ -339,20 +337,6 @@ async function processQuote(quoteResult, options) {
       venueName = await resolveContactName(venueUUID, 'Unknown Venue');
     }
 
-    // ── Resolve Account Manager via personResponsibleDefaultEmailAddress ─────
-    let accountManagerUserId = parseInt(PM_DEFAULT_ID);
-    console.log(`[bulk-import] 👤 Person Responsible email from Flex: ${personResponsibleEmail}`);
-    if (personResponsibleEmail) {
-      const amUserId = await findMondayUserByEmail(personResponsibleEmail);
-      if (amUserId) {
-        accountManagerUserId = parseInt(amUserId);
-        console.log(`[bulk-import] ✅ AM resolved: ${personResponsibleEmail} → monday user ${amUserId}`);
-      } else {
-        console.log(`[bulk-import] ⚠️ No monday user matched AM email "${personResponsibleEmail}" — using default`);
-      }
-    } else {
-      console.log(`[bulk-import] ℹ️ No personResponsibleDefaultEmailAddress in Flex — using default`);
-    }
 
     // ── Find monday.com Contact item IDs (optional) ────────────────────────
     let clientItemId = null;
@@ -378,7 +362,6 @@ async function processQuote(quoteResult, options) {
       [COL.venueNameText]:   venueName,
       [COL.pullsheetStatus]: { label: 'Not Synced' },
       [COL.lastEquipSync]:   today,
-      [COL.accountManager]:  { personsAndTeams: [{ id: accountManagerUserId, kind: 'person' }] }
     };
 
     if (eventDate)  columnValues[COL.eventDate]  = { date: eventDate };
