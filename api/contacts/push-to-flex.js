@@ -93,13 +93,14 @@ function parseColumnValues(columnValues) {
 // HELPER: Write Flex Contact ID back to Monday item
 // ================================================================
 async function writeFlexIdToMonday(itemId, flexUUID) {
+  // Use change_multiple_column_values — more reliable for text columns
+  const columnValues = JSON.stringify({ [COL.flexContactId]: flexUUID });
   const mutation = `
     mutation {
-      change_column_value(
+      change_multiple_column_values(
         board_id: ${CONTACTS_BOARD_ID},
         item_id: ${itemId},
-        column_id: "${COL.flexContactId}",
-        value: ${JSON.stringify(flexUUID)}
+        column_values: ${JSON.stringify(columnValues)}
       ) { id }
     }
   `;
@@ -110,10 +111,10 @@ async function writeFlexIdToMonday(itemId, flexUUID) {
   });
   const result = await response.json();
   if (result.errors) {
-    console.error('❌ Failed to write Flex Contact ID to Monday:', result.errors);
-  } else {
-    console.log(`✅ Flex Contact ID written to Monday item ${itemId}: ${flexUUID}`);
+    // Throw so the caller surfaces the error in the HTTP response
+    throw new Error(`Monday write-back failed: ${JSON.stringify(result.errors)}`);
   }
+  console.log(`✅ Flex Contact ID written to Monday item ${itemId}: ${flexUUID}`);
 }
 
 // ================================================================
