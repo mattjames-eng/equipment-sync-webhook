@@ -384,7 +384,7 @@ export default async function handler(req, res) {
 
     // ─── Pagination controls (for chunked full-sync runs) ──────
     const startPage   = parseInt(query.startPage   || body.startPage   || '0',  10);
-    const pagesPerRun = parseInt(query.pagesPerRun || body.pagesPerRun || '20', 10);
+    const pagesPerRun = parseInt(query.pagesPerRun || body.pagesPerRun || '3',  10);
 
     console.log(fullSync
       ? `🔁 Full sync mode — all Flex contacts (startPage=${startPage}, pagesPerRun=${pagesPerRun})`
@@ -410,17 +410,18 @@ export default async function handler(req, res) {
         break;
       }
 
-      for (const contact of contacts) {
-        try {
-          const outcome = await processFlexContact(contact);
-          results[outcome.action] = (results[outcome.action] || 0) + 1;
-          results.details.push(outcome);
-        } catch (e) {
-          console.error(`❌ Error processing Flex contact ${contact.id}:`, e.message);
+      // Process all contacts on this page in parallel for speed
+      const pageResults = await Promise.allSettled(contacts.map(c => processFlexContact(c)));
+      pageResults.forEach((r, i) => {
+        if (r.status === 'fulfilled') {
+          results[r.value.action] = (results[r.value.action] || 0) + 1;
+          results.details.push(r.value);
+        } else {
+          console.error(`❌ Error processing Flex contact ${contacts[i].id}:`, r.reason?.message);
           results.errors++;
-          results.details.push({ action: 'error', flexId: contact.id, name: contact.name, error: e.message });
+          results.details.push({ action: 'error', flexId: contacts[i].id, name: contacts[i].name, error: r.reason?.message });
         }
-      }
+      });
 
       pagesProcessed++;
 
@@ -433,7 +434,7 @@ export default async function handler(req, res) {
         keepGoing = false;
       } else {
         page++;
-        if (page >= startPage + 20) {
+        if (page >= startPage + pagesPerRun) {
           console.log('⚠️ Absolute page cap reached — stopping.');
           keepGoing = false;
         }
