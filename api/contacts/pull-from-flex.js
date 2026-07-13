@@ -177,7 +177,7 @@ function buildMondayColumnValues(flexContact) {
       addrObj.country,
     ].filter(Boolean);
     if (parts.length > 0) {
-      cols[COL.address] = JSON.stringify(parts.join('\n'));
+      cols[COL.address] = parts.join('\n');
     }
   }
 
@@ -385,7 +385,6 @@ export default async function handler(req, res) {
     // ─── Pagination controls (for chunked full-sync runs) ──────
     const startPage   = parseInt(query.startPage   || body.startPage   || '0',  10);
     const pagesPerRun = parseInt(query.pagesPerRun || body.pagesPerRun || '20', 10);
-    const pageSize    = parseInt(query.pageSize    || body.pageSize    || '25', 10);
 
     console.log(fullSync
       ? `🔁 Full sync mode — all Flex contacts (startPage=${startPage}, pagesPerRun=${pagesPerRun})`
@@ -400,7 +399,7 @@ export default async function handler(req, res) {
     let keepGoing     = true;
 
     while (keepGoing) {
-      const { contacts, rawCount } = await fetchFlexContacts(sinceISO, page, pageSize);
+      const { contacts, rawCount } = await fetchFlexContacts(sinceISO, page, 100);
       lastRawCount = rawCount;
 
       console.log(`  📄 Page ${page}: ${rawCount} raw, ${contacts.length} in window`);
@@ -441,7 +440,7 @@ export default async function handler(req, res) {
       }
     }
 
-    const hasMore  = lastRawCount >= pageSize && pagesProcessed >= pagesPerRun;
+    const hasMore  = lastRawCount >= 100 && pagesProcessed >= pagesPerRun;
     const nextPage = hasMore ? page + 1 : null;
 
     const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
