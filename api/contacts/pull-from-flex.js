@@ -177,7 +177,7 @@ function buildMondayColumnValues(flexContact) {
       addrObj.country,
     ].filter(Boolean);
     if (parts.length > 0) {
-      cols[COL.address] = parts.join('\n');
+      cols[COL.address] = JSON.stringify(parts.join('\n'));
     }
   }
 
@@ -358,6 +358,390 @@ async function processFlexContact(flexContact) {
 // ================================================================
 // MAIN HANDLER
 // ================================================================
+// ============================================================================
+// PO SYNC — Flex Rental POs (RPO-) and Purchase POs (PPO-) → monday.com
+// Route: POST /api/contacts/pull-from-flex?route=pos
+// URL alias: POST /api/pos/pull-from-flex  (via vercel.json rewrite)
+// ============================================================================
+
+// ── Board / Group IDs ─────────────────────────────────────────────────────────
+const RENTAL_PO_BOARD_ID      = '18421660479';
+const RENTAL_PO_ACTIVE_GROUP  = 'group_mm57c3y5';  // Active
+const RENTAL_PO_DONE_GROUP    = 'group_mm578khs';  // Completed
+const RENTAL_PO_HOLD_GROUP    = 'group_mm57k644';  // On Hold
+
+const PURCHASE_PO_BOARD_ID     = '18421660481';
+const PURCHASE_PO_ACTIVE_GROUP = 'group_mm57nqk9'; // Active
+const PURCHASE_PO_DONE_GROUP   = 'group_mm57vjj2'; // Received
+const PURCHASE_PO_HOLD_GROUP   = 'group_mm57hrnr'; // On Hold
+
+// ── Rental PO Column IDs ──────────────────────────────────────────────────────
+const RPO_COL = {
+  docNumber:    'text_mm5797r7',
+  status:       'color_mm57je6p',
+  project:      'board_relation_mm571y7r',
+  vendor:       'board_relation_mm573b8h',
+  dateExpected: 'date_mm57vxxc',
+  returnDate:   'date_mm57xda8',
+  period:       'timerange_mm579gb8',
+  notes:        'long_text_mm57w1p6',
+  flexUUID:     'text_mm5738bk',
+  lastSynced:   'date_mm57djxq',
+};
+
+// ── Purchase PO Column IDs ────────────────────────────────────────────────────
+const PPO_COL = {
+  docNumber:        'text_mm579qkq',
+  status:           'color_mm57m944',
+  project:          'board_relation_mm577rxk',
+  vendor:           'board_relation_mm5782gc',
+  expectedDelivery: 'date_mm5733jm',
+  notes:            'long_text_mm57webg',
+  flexUUID:         'text_mm572tag',
+  lastSynced:       'date_mm57d9pj',
+};
+
+const PROJECTS_BOARD_ID = '18415679761';
+// CONTACTS_BOARD_ID already defined at top of file
+
+// ── Projects board UUID columns (used for parentId-based project lookup) ────────
+// Flex POs have a parentId pointing to either the Quote or the Pullsheet.
+// We try to match that UUID against these two columns before falling back to name.
+const PROJ_QUOTE_UUID_COL = 'text_mm4cwasc';  // Quote UUID
+const PROJ_EQUIP_UUID_COL = 'text_mm3y7xwa';  // Equipment List / Pullsheet UUID
+
+// Flex headerFieldTypeIds that the list-row-data endpoint accepts.
+// 'plannedEndDate' is requested explicitly because it is not in the default payload.
+// Labor POs (and any other non-RPO/PPO doc types) are skipped client-side by prefix.
+const FLEX_PO_FIELD_TYPES = [
+  'name', 'documentNumber', 'statusId', 'vendorCompany',
+  'plannedStartDate', 'plannedEndDate',
+].join(',');
+
+// ── Flex status name → monday status label ────────────────────────────────────
+function _mapRPOStatus(s) {
+  s = (s || '').toLowerCase();
+  if (s.includes('tentative'))                              return 'Tentative';
+  if (s.includes('confirmed'))                              return 'Confirmed';
+  if (s.includes('active') || s.includes('out'))            return 'Active / Out';
+  if (s.includes('return') || s.includes('complete') || s.includes('received')) return 'Returned';
+  if (s.includes('closed') || s.includes('cancel'))         return 'Closed';
+  if (s.includes('hold'))                                   return 'On Hold';
+  return 'Tentative';
+}
+
+function _mapPPOStatus(s) {
+  s = (s || '').toLowerCase();
+  if (s.includes('tentative') || s.includes('draft'))       return 'Draft';
+  if (s.includes('submit'))                                 return 'Submitted';
+  if (s.includes('order') || s.includes('confirmed'))       return 'Ordered';
+  if (s.includes('expect'))                                 return 'Expected';
+  if (s.includes('receiv') || s.includes('complete'))       return 'Received';
+  if (s.includes('closed') || s.includes('cancel'))         return 'Closed';
+  return 'Draft';
+}
+
+function _resolveRPOGroup(statusLabel) {
+  if (['Returned','Closed'].includes(statusLabel)) return RENTAL_PO_DONE_GROUP;
+  if (['On Hold'].includes(statusLabel))           return RENTAL_PO_HOLD_GROUP;
+  return RENTAL_PO_ACTIVE_GROUP;
+}
+
+function _resolvePPOGroup(statusLabel) {
+  if (['Received','Closed'].includes(statusLabel)) return PURCHASE_PO_DONE_GROUP;
+  return PURCHASE_PO_ACTIVE_GROUP;
+}
+
+// Extract "{Project Name}" from "{Vendor} - {Project Name}" convention
+function _extractProjectName(poName) {
+  const idx = (poName || '').indexOf(' - ');
+  if (idx === -1) return null;
+  const name = poName.substring(idx + 3).trim();
+  return name.length > 0 ? name : null;
+}
+
+function _formatDate(iso) {
+  return iso ? iso.substring(0, 10) : null;
+}
+
+// Caches to avoid repeated monday lookups within a single sync run
+const _poProjectUUIDCache = {};  // parentId (UUID) → monday item id
+const _poProjectNameCache = {};  // parsed project name → monday item id
+const _poVendorCache      = {};
+
+// ── Primary: match by parentId UUID against Projects board UUID columns ────────
+// Flex POs have parentId = UUID of either the parent Quote or parent Pullsheet.
+// We try Quote UUID column first, then Equipment List UUID column.
+async function _findProjectByParentUUID(parentId) {
+  if (!parentId) return null;
+  if (_poProjectUUIDCache[parentId] !== undefined) return _poProjectUUIDCache[parentId];
+
+  for (const colId of [PROJ_QUOTE_UUID_COL, PROJ_EQUIP_UUID_COL]) {
+    const result = await mondayQueryPO(`
+      query {
+        items_page_by_column_values(
+          limit: 3, board_id: ${PROJECTS_BOARD_ID},
+          columns: [{ column_id: "${colId}", column_values: ["${parentId}"] }]
+        ) { items { id name } }
+      }
+    `);
+    const match = result.data?.items_page_by_column_values?.items?.[0] || null;
+    if (match) {
+      console.log(`  🔗 Project via UUID (${colId === PROJ_QUOTE_UUID_COL ? 'Quote' : 'Pullsheet'}): "${match.name}"`);
+      _poProjectUUIDCache[parentId] = parseInt(match.id);
+      return _poProjectUUIDCache[parentId];
+    }
+  }
+
+  _poProjectUUIDCache[parentId] = null;
+  return null;
+}
+
+// ── Fallback: match by parsed name when UUID lookup finds nothing ──────────────
+// Name convention: "{Vendor abbrev} - {Project Name}"
+// e.g. "Legacy - Nocturnal Valley 2026" → search for "Nocturnal Valley 2026"
+async function _findProjectByNameFallback(poName) {
+  const parsedName = _extractProjectName(poName);
+  if (!parsedName) return null;
+  const key = parsedName.toLowerCase().trim();
+  if (_poProjectNameCache[key] !== undefined) return _poProjectNameCache[key];
+  const safe = parsedName.replace(/"/g, '\\"');
+  const result = await mondayQueryPO(`
+    query {
+      boards(ids: [${PROJECTS_BOARD_ID}]) {
+        items_page(limit: 10, query_params: { term: "${safe}" }) {
+          items { id name }
+        }
+      }
+    }
+  `);
+  const items = result.data?.boards?.[0]?.items_page?.items || [];
+  const match = items.find(i =>
+    i.name.toLowerCase().includes(key) || key.includes(i.name.toLowerCase().trim())
+  );
+  _poProjectNameCache[key] = match ? parseInt(match.id) : null;
+  if (match) console.log(`  🔗 Project via name: "${parsedName}" → "${match.name}"`);
+  else       console.log(`  ⚠️  Project not found: parentId has no UUID match, name parse failed for "${parsedName}"`);
+  return _poProjectNameCache[key];
+}
+
+async function _findVendorByName(vendorName) {
+  if (!vendorName) return null;
+  const key = vendorName.toLowerCase().trim();
+  if (_poVendorCache[key] !== undefined) return _poVendorCache[key];
+  const safe = vendorName.replace(/"/g, '\\"');
+  const result = await mondayQueryPO(`
+    query {
+      boards(ids: [${CONTACTS_BOARD_ID}]) {
+        items_page(limit: 10, query_params: { term: "${safe}" }) {
+          items { id name }
+        }
+      }
+    }
+  `);
+  const items = result.data?.boards?.[0]?.items_page?.items || [];
+  const exact   = items.find(i => i.name.toLowerCase().trim() === key);
+  const partial = items.find(i => i.name.toLowerCase().includes(key) || key.includes(i.name.toLowerCase()));
+  const match   = exact || partial || null;
+  _poVendorCache[key] = match ? parseInt(match.id) : null;
+  if (match) console.log(`  🔗 Vendor: "${vendorName}" → "${match.name}"`);
+  else       console.log(`  ⚠️  Vendor not found: "${vendorName}"`);
+  return _poVendorCache[key];
+}
+
+// Dedicated monday helper for PO sync (uses same credentials)
+async function mondayQueryPO(query) {
+  const response = await fetch(MONDAY_API_URL, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_KEY },
+    body:    JSON.stringify({ query }),
+  });
+  const result = await response.json();
+  if (result.errors) console.error('Monday PO query errors:', JSON.stringify(result.errors));
+  return result;
+}
+
+async function _findPOByFlexUUID(boardId, uuidColId, flexUUID) {
+  const result = await mondayQueryPO(`
+    query {
+      items_page_by_column_values(
+        limit: 3, board_id: ${boardId},
+        columns: [{ column_id: "${uuidColId}", column_values: ["${flexUUID}"] }]
+      ) { items { id } }
+    }
+  `);
+  return result.data?.items_page_by_column_values?.items?.[0] || null;
+}
+
+async function _fetchAllFlexPOs() {
+  const all = [];
+  let page = 0;
+  while (true) {
+    // Use 'page' / 'size' (Flex pageable convention), request parentId via headerFieldTypeIds.
+    // Note: parentId is always returned in ReceivingElementRowData regardless of headerFieldTypeIds.
+    // We include plannedEndDate explicitly since it is not in the default payload.
+    const url = `${FLEX_BASE_URL}/api/receiving/list-row-data?page=${page}&size=100&headerFieldTypeIds=${FLEX_PO_FIELD_TYPES}`;
+    const res = await fetch(url, {
+      headers: { 'X-Auth-Token': FLEX_API_KEY, 'Accept': 'application/json' },
+    });
+    if (!res.ok) throw new Error(`Flex PO list error ${res.status}: ${await res.text()}`);
+    const data = await res.json();
+    const content = data.content || [];
+    all.push(...content);
+    console.log(`  📄 Flex POs page ${page}: ${content.length} records (total pages: ${data.totalPages ?? '?'})`);
+    if (content.length < 100 || page + 1 >= (data.totalPages || 1)) break;
+    page++;
+  }
+  return all;
+}
+
+async function _buildRPOCols(po, today) {
+  // statusId from list-row-data is a plain string (confirmed by ReceivingElementRowData schema)
+  const statusName = typeof po.statusId === 'object' ? po.statusId?.name : (po.statusId || '');
+  const label      = _mapRPOStatus(statusName);
+
+  // Project: UUID-first (parentId → Quote or Pullsheet UUID in Projects board),
+  // fallback to name parsing if UUID lookup returns nothing.
+  const projId = po.parentId
+    ? (await _findProjectByParentUUID(po.parentId) ?? await _findProjectByNameFallback(po.name))
+    : await _findProjectByNameFallback(po.name);
+
+  const vendorId = await _findVendorByName(po.vendorCompany);
+
+  const start = _formatDate(po.plannedStartDate);
+  const end   = _formatDate(po.plannedEndDate);  // present when headerFieldTypeIds includes 'plannedEndDate'
+  const cols  = {
+    [RPO_COL.docNumber]:  po.documentNumber || '',
+    [RPO_COL.status]:     { label },
+    [RPO_COL.flexUUID]:   po.id,
+    [RPO_COL.lastSynced]: { date: today },
+  };
+  if (start) cols[RPO_COL.dateExpected] = { date: start };
+  if (end)   cols[RPO_COL.returnDate]   = { date: end };
+  if (start && end) cols[RPO_COL.period] = { from: start, to: end };
+  if (vendorId) cols[RPO_COL.vendor]  = { item_ids: [vendorId] };
+  if (projId)   cols[RPO_COL.project] = { item_ids: [projId] };
+  return { colsJSON: JSON.stringify(cols), group: _resolveRPOGroup(label) };
+}
+
+async function _buildPPOCols(po, today) {
+  const statusName = typeof po.statusId === 'object' ? po.statusId?.name : (po.statusId || '');
+  const label      = _mapPPOStatus(statusName);
+
+  // Same UUID-first, name-fallback pattern
+  const projId = po.parentId
+    ? (await _findProjectByParentUUID(po.parentId) ?? await _findProjectByNameFallback(po.name))
+    : await _findProjectByNameFallback(po.name);
+
+  const vendorId = await _findVendorByName(po.vendorCompany);
+
+  const delivery = _formatDate(po.plannedStartDate);
+  const cols = {
+    [PPO_COL.docNumber]:  po.documentNumber || '',
+    [PPO_COL.status]:     { label },
+    [PPO_COL.flexUUID]:   po.id,
+    [PPO_COL.lastSynced]: { date: today },
+  };
+  if (delivery)  cols[PPO_COL.expectedDelivery] = { date: delivery };
+  if (vendorId)  cols[PPO_COL.vendor]  = { item_ids: [vendorId] };
+  if (projId)    cols[PPO_COL.project] = { item_ids: [projId] };
+  return { colsJSON: JSON.stringify(cols), group: _resolvePPOGroup(label) };
+}
+
+async function _processPO(po, today, dryRun, stats) {
+  const docNum = po.documentNumber || '';
+  const isRPO  = docNum.startsWith('RPO-');
+  const isPPO  = docNum.startsWith('PPO-');
+  if (!isRPO && !isPPO) { stats.skipped++; return; }
+
+  const boardId  = isRPO ? RENTAL_PO_BOARD_ID    : PURCHASE_PO_BOARD_ID;
+  const uuidCol  = isRPO ? RPO_COL.flexUUID       : PPO_COL.flexUUID;
+
+  console.log(`\n📄 ${docNum} — "${po.name}"`);
+
+  const { colsJSON, group } = isRPO
+    ? await _buildRPOCols(po, today)
+    : await _buildPPOCols(po, today);
+
+  const existing = await _findPOByFlexUUID(boardId, uuidCol, po.id);
+  const safeName = (po.name || docNum).replace(/"/g, '\\"');
+
+  if (existing) {
+    if (!dryRun) await mondayQueryPO(`
+      mutation {
+        change_multiple_column_values(
+          board_id: ${boardId}, item_id: ${existing.id},
+          column_values: ${JSON.stringify(colsJSON)}
+        ) { id }
+      }
+    `);
+    console.log(`  🔄 Updated ${existing.id}`);
+    stats.updated++;
+  } else {
+    if (!dryRun) await mondayQueryPO(`
+      mutation {
+        create_item(
+          board_id: ${boardId}, group_id: "${group}",
+          item_name: "${safeName}", column_values: ${JSON.stringify(colsJSON)}
+        ) { id }
+      }
+    `);
+    console.log(`  ✅ Created in ${group}`);
+    stats.created++;
+  }
+}
+
+async function handlePOSync(req, res) {
+  if (req.method === 'GET') {
+    return res.status(200).json({
+      status: 'ok', route: 'pos',
+      boards: { rentalPOs: RENTAL_PO_BOARD_ID, purchasePOs: PURCHASE_PO_BOARD_ID },
+    });
+  }
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+
+  const dryRun = req.query?.dryRun === 'true' || req.body?.dryRun === true;
+  const today  = new Date().toISOString().substring(0, 10);
+  console.log(`\n🚀 PO sync started${dryRun ? ' (DRY RUN)' : ''} — ${today}`);
+
+  const stats  = { created: 0, updated: 0, skipped: 0, errors: 0, total: 0 };
+  const errors = [];
+
+  try {
+    const allPOs = await _fetchAllFlexPOs();
+    stats.total  = allPOs.length;
+    const rpos   = allPOs.filter(p => (p.documentNumber || '').startsWith('RPO-'));
+    const ppos   = allPOs.filter(p => (p.documentNumber || '').startsWith('PPO-'));
+    console.log(`📊 ${allPOs.length} POs: ${rpos.length} RPOs, ${ppos.length} PPOs`);
+
+    for (let i = 0; i < allPOs.length; i += 5) {
+      await Promise.all(
+        allPOs.slice(i, i + 5).map(po =>
+          _processPO(po, today, dryRun, stats).catch(err => {
+            console.error(`❌ ${po.documentNumber}:`, err.message);
+            errors.push({ doc: po.documentNumber, error: err.message });
+            stats.errors++;
+          })
+        )
+      );
+    }
+
+    console.log(`✅ PO sync done — created: ${stats.created}, updated: ${stats.updated}, errors: ${stats.errors}`);
+    return res.status(200).json({
+      ok: true, dryRun, today, stats,
+      summary: { rpos: rpos.length, ppos: ppos.length },
+      ...(errors.length > 0 && { errors }),
+    });
+  } catch (err) {
+    console.error('❌ PO sync fatal:', err);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+}
+
+// ============================================================================
+// END PO SYNC
+// ============================================================================
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -365,6 +749,11 @@ export default async function handler(req, res) {
 
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method === 'GET')     return res.status(200).json({ status: 'ok', endpoint: 'pull-from-flex' });
+
+  // ── PO sync sub-route ──────────────────────────────────────────────────────
+  // Reached via: POST /api/contacts/pull-from-flex?route=pos
+  // Rewritten from:  POST /api/pos/pull-from-flex  (vercel.json rewrite)
+  if ((req.query?.route || '') === 'pos') return handlePOSync(req, res);
 
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
@@ -382,25 +771,18 @@ export default async function handler(req, res) {
       ? null
       : new Date(Date.now() - hoursBack * 60 * 60 * 1000).toISOString();
 
-    // ─── Pagination controls (for chunked full-sync runs) ──────
-    const startPage   = parseInt(query.startPage   || body.startPage   || '0',  10);
-    const pagesPerRun = parseInt(query.pagesPerRun || body.pagesPerRun || '3',  10);
-
     console.log(fullSync
-      ? `🔁 Full sync mode — all Flex contacts (startPage=${startPage}, pagesPerRun=${pagesPerRun})`
+      ? `🔁 Full sync mode — all Flex contacts`
       : `⏱️ Lookback: ${hoursBack}h (since ${sinceISO})`
     );
 
     // ─── Paginate through Flex contacts ───────────────────────
     const results = { created: 0, updated: 0, linked: 0, skipped: 0, errors: 0, details: [] };
-    let page          = startPage;
-    let pagesProcessed = 0;
-    let lastRawCount  = 0;
-    let keepGoing     = true;
+    let page = 0;
+    let keepGoing = true;
 
     while (keepGoing) {
       const { contacts, rawCount } = await fetchFlexContacts(sinceISO, page, 100);
-      lastRawCount = rawCount;
 
       console.log(`  📄 Page ${page}: ${rawCount} raw, ${contacts.length} in window`);
 
@@ -410,56 +792,41 @@ export default async function handler(req, res) {
         break;
       }
 
-      // Process contacts in parallel chunks of 10 to avoid rate limiting
-      const CHUNK_SIZE = 10;
-      for (let i = 0; i < contacts.length; i += CHUNK_SIZE) {
-        const chunk = contacts.slice(i, i + CHUNK_SIZE);
-        const chunkResults = await Promise.allSettled(chunk.map(c => processFlexContact(c)));
-        chunkResults.forEach((r, j) => {
-          if (r.status === 'fulfilled') {
-            results[r.value.action] = (results[r.value.action] || 0) + 1;
-            results.details.push(r.value);
-          } else {
-            console.error(`❌ Error processing Flex contact ${chunk[j].id}:`, r.reason?.message);
-            results.errors++;
-            results.details.push({ action: 'error', flexId: chunk[j].id, name: chunk[j].name, error: r.reason?.message });
-          }
-        });
+      for (const contact of contacts) {
+        try {
+          const outcome = await processFlexContact(contact);
+          results[outcome.action] = (results[outcome.action] || 0) + 1;
+          results.details.push(outcome);
+        } catch (e) {
+          console.error(`❌ Error processing Flex contact ${contact.id}:`, e.message);
+          results.errors++;
+          results.details.push({ action: 'error', flexId: contact.id, name: contact.name, error: e.message });
+        }
       }
 
-      pagesProcessed++;
-
+      // Stop if we got fewer than a full page (last page) or exceeded date window
       if (rawCount < 100) {
-        // Last Flex page — no more data
-        keepGoing = false;
-      } else if (pagesProcessed >= pagesPerRun) {
-        // Hit per-run page cap — caller can resume with nextPage
-        console.log(`⏸️ pagesPerRun cap (${pagesPerRun}) reached at Flex page ${page}.`);
         keepGoing = false;
       } else {
         page++;
-        if (page >= startPage + pagesPerRun) {
-          console.log('⚠️ Absolute page cap reached — stopping.');
+        // Safety: cap at 20 pages (2000 contacts) per run to avoid runaway cron
+        if (page >= 20) {
+          console.log('⚠️ Page cap reached (20) — stopping. Run again or use ?full=true for more.');
           keepGoing = false;
         }
       }
     }
 
-    const hasMore  = lastRawCount >= 100 && pagesProcessed >= pagesPerRun;
-    const nextPage = hasMore ? page + 1 : null;
-
     const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
     const summary = {
       ok: true,
-      elapsed:  `${elapsed}s`,
-      window:   fullSync ? `full (page ${startPage}–${startPage + pagesProcessed - 1})` : `${hoursBack}h`,
+      elapsed: `${elapsed}s`,
+      window: fullSync ? 'full' : `${hoursBack}h`,
       created:  results.created,
       updated:  results.updated,
       linked:   results.linked,
       skipped:  results.skipped,
       errors:   results.errors,
-      hasMore,
-      nextPage,
     };
 
     console.log('\n📊 pull-from-flex complete:', summary);
