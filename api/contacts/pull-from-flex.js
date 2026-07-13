@@ -387,6 +387,7 @@ const RPO_COL = {
   notes:        'long_text_mm57w1p6',
   flexUUID:     'text_mm5738bk',
   lastSynced:   'date_mm57djxq',
+  total:        'numeric_mm573mez',
 };
 
 // ── Purchase PO Column IDs ────────────────────────────────────────────────────
@@ -399,6 +400,7 @@ const PPO_COL = {
   notes:            'long_text_mm57webg',
   flexUUID:         'text_mm572tag',
   lastSynced:       'date_mm57d9pj',
+  total:            'numeric_mm57ps47',
 };
 
 const PROJECTS_BOARD_ID = '18415679761';
@@ -462,6 +464,26 @@ function _extractProjectName(poName) {
 
 function _formatDate(iso) {
   return iso ? iso.substring(0, 10) : null;
+}
+
+// Fetch the total dollar amount for a Flex document.
+// GET /api/financial-document/{documentId}/document-total → plain number
+async function _fetchFlexPOTotal(documentId) {
+  try {
+    const url = `${FLEX_BASE_URL}/api/financial-document/${documentId}/document-total`;
+    const res = await fetch(url, {
+      headers: { 'X-Auth-Token': FLEX_API_KEY, 'Accept': 'application/json' },
+    });
+    if (!res.ok) {
+      console.warn(`  ⚠️  Could not fetch total for ${documentId}: HTTP ${res.status}`);
+      return null;
+    }
+    const val = await res.json();
+    return typeof val === 'number' ? val : null;
+  } catch (e) {
+    console.warn(`  ⚠️  Total fetch error for ${documentId}:`, e.message);
+    return null;
+  }
 }
 
 // Caches to avoid repeated monday lookups within a single sync run
@@ -607,6 +629,7 @@ async function _buildRPOCols(po, today) {
     : await _findProjectByNameFallback(po.name);
 
   const vendorId = await _findVendorByName(po.vendorCompany);
+  const total    = await _fetchFlexPOTotal(po.id);
 
   const start = _formatDate(po.plannedStartDate);
   const end   = _formatDate(po.plannedEndDate);  // present when headerFieldTypeIds includes 'plannedEndDate'
@@ -616,11 +639,12 @@ async function _buildRPOCols(po, today) {
     [RPO_COL.flexUUID]:   po.id,
     [RPO_COL.lastSynced]: { date: today },
   };
-  if (start) cols[RPO_COL.dateExpected] = { date: start };
-  if (end)   cols[RPO_COL.returnDate]   = { date: end };
-  if (start && end) cols[RPO_COL.period] = { from: start, to: end };
-  if (vendorId) cols[RPO_COL.vendor]  = { item_ids: [vendorId] };
-  if (projId)   cols[RPO_COL.project] = { item_ids: [projId] };
+  if (start)          cols[RPO_COL.dateExpected] = { date: start };
+  if (end)            cols[RPO_COL.returnDate]   = { date: end };
+  if (start && end)   cols[RPO_COL.period]       = { from: start, to: end };
+  if (vendorId)       cols[RPO_COL.vendor]       = { item_ids: [vendorId] };
+  if (projId)         cols[RPO_COL.project]      = { item_ids: [projId] };
+  if (total !== null) cols[RPO_COL.total]        = total;
   return { colsJSON: JSON.stringify(cols), group: _resolveRPOGroup(label) };
 }
 
@@ -634,6 +658,7 @@ async function _buildPPOCols(po, today) {
     : await _findProjectByNameFallback(po.name);
 
   const vendorId = await _findVendorByName(po.vendorCompany);
+  const total    = await _fetchFlexPOTotal(po.id);
 
   const delivery = _formatDate(po.plannedStartDate);
   const cols = {
@@ -642,9 +667,10 @@ async function _buildPPOCols(po, today) {
     [PPO_COL.flexUUID]:   po.id,
     [PPO_COL.lastSynced]: { date: today },
   };
-  if (delivery)  cols[PPO_COL.expectedDelivery] = { date: delivery };
-  if (vendorId)  cols[PPO_COL.vendor]  = { item_ids: [vendorId] };
-  if (projId)    cols[PPO_COL.project] = { item_ids: [projId] };
+  if (delivery)       cols[PPO_COL.expectedDelivery] = { date: delivery };
+  if (vendorId)       cols[PPO_COL.vendor]           = { item_ids: [vendorId] };
+  if (projId)         cols[PPO_COL.project]          = { item_ids: [projId] };
+  if (total !== null) cols[PPO_COL.total]            = total;
   return { colsJSON: JSON.stringify(cols), group: _resolvePPOGroup(label) };
 }
 
