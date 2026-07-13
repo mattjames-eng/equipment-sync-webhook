@@ -410,18 +410,22 @@ export default async function handler(req, res) {
         break;
       }
 
-      // Process all contacts on this page in parallel for speed
-      const pageResults = await Promise.allSettled(contacts.map(c => processFlexContact(c)));
-      pageResults.forEach((r, i) => {
-        if (r.status === 'fulfilled') {
-          results[r.value.action] = (results[r.value.action] || 0) + 1;
-          results.details.push(r.value);
-        } else {
-          console.error(`❌ Error processing Flex contact ${contacts[i].id}:`, r.reason?.message);
-          results.errors++;
-          results.details.push({ action: 'error', flexId: contacts[i].id, name: contacts[i].name, error: r.reason?.message });
-        }
-      });
+      // Process contacts in parallel chunks of 10 to avoid rate limiting
+      const CHUNK_SIZE = 10;
+      for (let i = 0; i < contacts.length; i += CHUNK_SIZE) {
+        const chunk = contacts.slice(i, i + CHUNK_SIZE);
+        const chunkResults = await Promise.allSettled(chunk.map(c => processFlexContact(c)));
+        chunkResults.forEach((r, j) => {
+          if (r.status === 'fulfilled') {
+            results[r.value.action] = (results[r.value.action] || 0) + 1;
+            results.details.push(r.value);
+          } else {
+            console.error(`❌ Error processing Flex contact ${chunk[j].id}:`, r.reason?.message);
+            results.errors++;
+            results.details.push({ action: 'error', flexId: chunk[j].id, name: chunk[j].name, error: r.reason?.message });
+          }
+        });
+      }
 
       pagesProcessed++;
 
