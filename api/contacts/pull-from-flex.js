@@ -382,18 +382,25 @@ export default async function handler(req, res) {
       ? null
       : new Date(Date.now() - hoursBack * 60 * 60 * 1000).toISOString();
 
+    // ─── Pagination controls (for chunked full-sync runs) ──────
+    const startPage   = parseInt(query.startPage   || body.startPage   || '0',  10);
+    const pagesPerRun = parseInt(query.pagesPerRun || body.pagesPerRun || '20', 10);
+
     console.log(fullSync
-      ? `🔁 Full sync mode — all Flex contacts`
+      ? `🔁 Full sync mode — all Flex contacts (startPage=${startPage}, pagesPerRun=${pagesPerRun})`
       : `⏱️ Lookback: ${hoursBack}h (since ${sinceISO})`
     );
 
     // ─── Paginate through Flex contacts ───────────────────────
     const results = { created: 0, updated: 0, linked: 0, skipped: 0, errors: 0, details: [] };
-    let page = 0;
-    let keepGoing = true;
+    let page          = startPage;
+    let pagesProcessed = 0;
+    let lastRawCount  = 0;
+    let keepGoing     = true;
 
     while (keepGoing) {
       const { contacts, rawCount } = await fetchFlexContacts(sinceISO, page, 100);
+      lastRawCount = rawCount;
 
       console.log(`  📄 Page ${page}: ${rawCount} raw, ${contacts.length} in window`);
 
@@ -415,29 +422,39 @@ export default async function handler(req, res) {
         }
       }
 
-      // Stop if we got fewer than a full page (last page) or exceeded date window
+      pagesProcessed++;
+
       if (rawCount < 100) {
+        // Last Flex page — no more data
+        keepGoing = false;
+      } else if (pagesProcessed >= pagesPerRun) {
+        // Hit per-run page cap — caller can resume with nextPage
+        console.log(`⏸️ pagesPerRun cap (${pagesPerRun}) reached at Flex page ${page}.`);
         keepGoing = false;
       } else {
         page++;
-        // Safety: cap at 20 pages (2000 contacts) per run to avoid runaway cron
-        if (page >= 20) {
-          console.log('⚠️ Page cap reached (20) — stopping. Run again or use ?full=true for more.');
+        if (page >= startPage + 20) {
+          console.log('⚠️ Absolute page cap reached — stopping.');
           keepGoing = false;
         }
       }
     }
 
+    const hasMore  = lastRawCount >= 100 && pagesProcessed >= pagesPerRun;
+    const nextPage = hasMore ? page + 1 : null;
+
     const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
     const summary = {
       ok: true,
-      elapsed: `${elapsed}s`,
-      window: fullSync ? 'full' : `${hoursBack}h`,
+      elapsed:  `${elapsed}s`,
+      window:   fullSync ? `full (page ${startPage}–${startPage + pagesProcessed - 1})` : `${hoursBack}h`,
       created:  results.created,
       updated:  results.updated,
       linked:   results.linked,
       skipped:  results.skipped,
       errors:   results.errors,
+      hasMore,
+      nextPage,
     };
 
     console.log('\n📊 pull-from-flex complete:', summary);
