@@ -11,6 +11,10 @@
     {
       "source": "/api/expenses/recalc",
       "destination": "/api/expenses/sync?route=recalc"
+    },
+    {
+      "source": "/api/pos/pull-from-flex",
+      "destination": "/api/contacts/pull-from-flex?route=pos"
     }
   ],
   "functions": {
@@ -44,6 +48,10 @@
     {
       "path": "/api/contacts/pull-from-flex",
       "schedule": "5 11 * * *"
+    },
+    {
+      "path": "/api/pos/pull-from-flex",
+      "schedule": "15 11 * * *"
     }
   ]
 }
