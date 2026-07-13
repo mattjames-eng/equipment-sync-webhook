@@ -15,10 +15,6 @@
     {
       "source": "/api/pos/pull-from-flex",
       "destination": "/api/contacts/pull-from-flex?route=pos"
-    },
-    {
-      "source": "/api/contacts/cleanup-addresses",
-      "destination": "/api/contacts/push-to-flex?route=cleanup"
     }
   ],
   "functions": {
