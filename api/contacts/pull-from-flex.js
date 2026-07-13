@@ -905,6 +905,131 @@ async function handleGeocodeRoute(req, res) {
   });
 }
 
+
+// ================================================================
+// DEDUP ROUTE: remove duplicate items in New Additions group
+// GET  ?route=dedup-group — dry run (shows what would be deleted)
+// POST ?route=dedup-group — live run (deletes duplicates)
+//
+// Groups items by normalized name. For each group with >1 item:
+//   - Scores each by number of non-empty column values
+//   - Keeps highest scorer (tiebreak: lowest item ID = oldest)
+//   - Deletes the rest
+// Skips generic/ambiguous names: N/A, Quote, Cash Deposit, etc.
+// ================================================================
+const SKIP_NAMES = new Set(['n/a', 'quote', 'cash deposit', 'internal quote', 'do not use', 'test']);
+
+function normalizeName(name) {
+  return (name || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function isGenericName(name) {
+  const n = (name || '').trim().toLowerCase();
+  for (const skip of SKIP_NAMES) {
+    if (n === skip || n.startsWith(skip)) return true;
+  }
+  return false;
+}
+
+function scoreItem(item) {
+  let score = 0;
+  for (const cv of (item.column_values || [])) {
+    const v = cv.text || cv.value;
+    if (v && v.trim() && v !== 'null' && v !== '{}') score++;
+  }
+  return score;
+}
+
+async function deleteMondayItem(itemId) {
+  const mutation = `mutation { delete_item(item_id: ${itemId}) { id } }`;
+  const res = await fetch(MONDAY_API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_KEY },
+    body: JSON.stringify({ query: mutation }),
+  });
+  const result = await res.json();
+  if (result.errors) throw new Error('Delete failed: ' + JSON.stringify(result.errors));
+}
+
+async function handleDedupGroupRoute(req, res) {
+  const dryRun = req.method === 'GET';
+  console.log('\n🔍 dedup-group | mode: ' + (dryRun ? 'DRY RUN' : 'LIVE'));
+
+  // Fetch all items in group with all column values
+  const allItems = await getAllNewAdditionsItems();
+  console.log('Total items in group:', allItems.length);
+
+  // Group by normalized name — skip generic names
+  const groups = {};
+  const skipped = [];
+  for (const item of allItems) {
+    if (isGenericName(item.name)) { skipped.push(item.name); continue; }
+    const key = normalizeName(item.name);
+    if (!groups[key]) groups[key] = [];
+    groups[key].push(item);
+  }
+
+  const dupGroups = Object.values(groups).filter(g => g.length > 1);
+  console.log('Duplicate groups found:', dupGroups.length, '| Skipped (generic):', skipped.length);
+
+  const toDelete = [];
+  const toKeep   = [];
+
+  for (const group of dupGroups) {
+    // Sort: highest score first, tiebreak lowest itemId (oldest)
+    group.sort((a, b) => {
+      const diff = scoreItem(b) - scoreItem(a);
+      if (diff !== 0) return diff;
+      return parseInt(a.id) - parseInt(b.id);
+    });
+    toKeep.push({ name: group[0].name, itemId: group[0].id, score: scoreItem(group[0]) });
+    for (const dup of group.slice(1)) {
+      toDelete.push({ name: dup.name, itemId: dup.id, score: scoreItem(dup) });
+    }
+  }
+
+  if (dryRun) {
+    return res.status(200).json({
+      mode: 'dry_run',
+      summary: {
+        totalInGroup:    allItems.length,
+        uniqueNames:     Object.keys(groups).length,
+        skippedGeneric:  skipped.length,
+        dupGroups:       dupGroups.length,
+        wouldDelete:     toDelete.length,
+        wouldKeep:       toKeep.length,
+      },
+      keep:   toKeep,
+      delete: toDelete,
+    });
+  }
+
+  // Live — delete in batches of 10
+  const results = [];
+  for (let i = 0; i < toDelete.length; i += 10) {
+    const chunk = toDelete.slice(i, i + 10);
+    const settled = await Promise.allSettled(chunk.map(async item => {
+      await deleteMondayItem(item.itemId);
+      console.log('  🗑️  deleted', item.name, item.itemId);
+      return { ...item, status: 'deleted' };
+    }));
+    settled.forEach(r => results.push(r.status === 'fulfilled' ? r.value : { status: 'error', error: r.reason?.message }));
+  }
+
+  return res.status(200).json({
+    mode: 'live',
+    summary: {
+      totalInGroup:  allItems.length,
+      dupGroups:     dupGroups.length,
+      deleted:       results.filter(r => r.status === 'deleted').length,
+      errors:        results.filter(r => r.status === 'error').length,
+      skippedGeneric: skipped.length,
+    },
+    kept:    toKeep,
+    deleted: results,
+  });
+}
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -916,6 +1041,12 @@ export default async function handler(req, res) {
   if (req.query && req.query.route === 'geocode') {
     try { return await handleGeocodeRoute(req, res); }
     catch (err) { console.error('❌ geocode error:', err); return res.status(500).json({ error: err.message }); }
+  }
+
+  // ── DEDUP GROUP ROUTE ─────────────────────────────────────────
+  if (req.query && req.query.route === 'dedup-group') {
+    try { return await handleDedupGroupRoute(req, res); }
+    catch (err) { console.error('❌ dedup-group error:', err); return res.status(500).json({ error: err.message }); }
   }
 
   if (req.method === 'GET')     return res.status(200).json({ status: 'ok', endpoint: 'pull-from-flex' });
