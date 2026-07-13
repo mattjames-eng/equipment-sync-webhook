@@ -39,11 +39,11 @@
   "crons": [
     {
       "path": "/api/bulk-import-upcoming",
-      "schedule": "0 14 * * *"
+      "schedule": "0 11 * * *"
     },
     {
       "path": "/api/contacts/pull-from-flex",
-      "schedule": "5 14 * * *"
+      "schedule": "5 11 * * *"
     }
   ]
 }
