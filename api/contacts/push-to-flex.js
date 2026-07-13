@@ -44,16 +44,18 @@ const COL = {
 // Returns { items: [...], nextCursor: string|null }
 // ================================================================
 async function getMondayItemsWithoutFlexId(cursor, limit) {
-  const cursorClause = cursor ? `, cursor: "${cursor}"` : '';
+  // Monday API rule: query_params and cursor are mutually exclusive.
+  // First request uses query_params (filter); subsequent requests use cursor only.
+  const paginationClause = cursor
+    ? `cursor: "${cursor}"`
+    : `query_params: { rules: [{ column_id: "${COL.flexContactId}", compare_value: [], operator: is_empty }] }`;
+
   const query = `
     query {
       boards(ids: [${CONTACTS_BOARD_ID}]) {
         items_page(
           limit: ${limit}
-          ${cursorClause}
-          query_params: {
-            rules: [{ column_id: "${COL.flexContactId}", compare_value: [], operator: is_empty }]
-          }
+          ${paginationClause}
         ) {
           cursor
           items {
