@@ -498,114 +498,6 @@ async function findFlexContactByExternalNumber(mondayItemId) {
 
 
 // ================================================================
-// CLEANUP ROUTE: address deduplication across all linked contacts
-// GET  ?route=cleanup        — dry run (no changes)
-// POST ?route=cleanup        — live delete
-// GET  ?route=cleanup&page=N — paginate (25/page)
-// ================================================================
-const FLEX_UUID_COL_CLEANUP = 'text_mm56w1vz';
-const CLEANUP_BATCH         = 25;
-const CLEANUP_CONCURRENCY   = 5;
-
-function scoreAddress(addr) {
-  let score = 0;
-  if (addr.defaultMailing)  score += 3;
-  if (addr.defaultShipping) score += 2;
-  for (const f of ['line1', 'city', 'stateOrProvince', 'postalCode', 'country']) {
-    if (addr[f] && addr[f].trim()) score += 1;
-  }
-  return score;
-}
-
-function pickBestAddress(addresses) {
-  return addresses.slice().sort((a, b) => {
-    const diff = scoreScore(b) - scoreScore(a);
-    if (diff !== 0) return diff;
-    if (a.ordinal !== b.ordinal) return (a.ordinal ?? 999) - (b.ordinal ?? 999);
-    return new Date(a.createdDate || 0) - new Date(b.createdDate || 0);
-  })[0];
-  function scoreScore(x) { return scoreAddress(x); }
-}
-
-async function getContactsWithFlexId(cursor, limit) {
-  const clause = cursor
-    ? `cursor: "${cursor}"`
-    : `query_params: { rules: [{ column_id: "${FLEX_UUID_COL_CLEANUP}", compare_value: [], operator: is_not_empty }] }`;
-  const q = `query { boards(ids: [${CONTACTS_BOARD_ID}]) { items_page(limit: ${limit} ${clause}) { cursor items { id name column_values(ids: ["${FLEX_UUID_COL_CLEANUP}"]) { id text } } } } }`;
-  const res = await fetch(MONDAY_API_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_KEY },
-    body: JSON.stringify({ query: q }),
-  });
-  const result = await res.json();
-  const page = result.data?.boards?.[0]?.items_page;
-  if (!page) throw new Error('Monday query failed: ' + JSON.stringify(result.errors));
-  return { items: page.items || [], nextCursor: page.cursor || null };
-}
-
-async function cleanupOneContact(name, flexId, dryRun) {
-  const addrs = await fetchFlexAddresses(flexId);
-  if (addrs.length <= 1) return { name, flexId, status: 'ok', addressCount: addrs.length, deleted: 0 };
-  const best   = pickBestAddress(addrs);
-  const extras = addrs.filter(a => a.id !== best.id).map(a => a.id);
-  if (dryRun) {
-    return { name, flexId, status: 'would_delete', addressCount: addrs.length,
-      kept: { id: best.id, line1: best.line1, city: best.city, score: scoreAddress(best) },
-      deleted: extras.length };
-  }
-  await deleteFlexAddresses(flexId, extras);
-  return { name, flexId, status: 'cleaned', addressCount: addrs.length,
-    kept: { id: best.id, line1: best.line1, city: best.city, score: scoreAddress(best) },
-    deleted: extras.length };
-}
-
-async function handleCleanupRoute(req, res) {
-  const dryRun = req.method === 'GET';
-  const page   = parseInt(req.query && req.query.page ? req.query.page : '1');
-  console.log('\n🧹 cleanup | mode: ' + (dryRun ? 'DRY RUN' : 'LIVE') + ' | page: ' + page);
-
-  let cursor = null, pageNum = 0;
-  while (true) {
-    pageNum++;
-    const { items, nextCursor } = await getContactsWithFlexId(cursor, CLEANUP_BATCH);
-    if (pageNum === page) {
-      const results = [];
-      for (let i = 0; i < items.length; i += CLEANUP_CONCURRENCY) {
-        const chunk = items.slice(i, i + CLEANUP_CONCURRENCY);
-        const settled = await Promise.allSettled(chunk.map(c => {
-          const flexId = (c.column_values.find(v => v.id === FLEX_UUID_COL_CLEANUP) || {}).text;
-          const fid = flexId && flexId.trim();
-          if (!fid) return Promise.resolve({ name: c.name, status: 'no_uuid', deleted: 0 });
-          return cleanupOneContact(c.name, fid, dryRun);
-        }));
-        settled.forEach(r => results.push(r.status === 'fulfilled' ? r.value : { status: 'exception', error: r.reason && r.reason.message }));
-      }
-      const totalDeleted = results.reduce((s, r) => s + (r.deleted || 0), 0);
-      const hasMore = items.length === CLEANUP_BATCH && !!nextCursor;
-      return res.status(200).json({
-        mode: dryRun ? 'dry_run' : 'live', page, hasMore, nextPage: hasMore ? page + 1 : null,
-        summary: {
-          contactsProcessed: results.length,
-          alreadyClean:  results.filter(r => r.status === 'ok').length,
-          deduplicated:  results.filter(r => r.status === 'cleaned' || r.status === 'would_delete').length,
-          addressesRemoved: totalDeleted,
-          errors: results.filter(r => ['fetch_error','delete_error','exception'].includes(r.status)).length,
-        },
-        detail: results,
-      });
-    }
-    if (!nextCursor || items.length < CLEANUP_BATCH) {
-      return res.status(200).json({
-        mode: dryRun ? 'dry_run' : 'live', page, hasMore: false, nextPage: null,
-        summary: { contactsProcessed: 0, alreadyClean: 0, deduplicated: 0, addressesRemoved: 0, errors: 0 },
-        detail: [], message: 'Only ' + (pageNum - 1) + ' page(s) available',
-      });
-    }
-    cursor = nextCursor;
-  }
-}
-
-// ================================================================
 // MAIN HANDLER
 // ================================================================
 export default async function handler(req, res) {
@@ -614,12 +506,6 @@ export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
   if (req.method === 'OPTIONS') return res.status(200).end();
-
-  // ── CLEANUP ROUTE ─────────────────────────────────────────────
-  if (req.query && req.query.route === 'cleanup') {
-    try { return await handleCleanupRoute(req, res); }
-    catch (err) { console.error('❌ cleanup error:', err); return res.status(500).json({ error: err.message }); }
-  }
 
 
   // ── BULK SYNC MODE ──────────────────────────────────────────────
