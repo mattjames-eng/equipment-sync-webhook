@@ -768,12 +768,156 @@ async function handlePOSync(req, res) {
 // END PO SYNC
 // ============================================================================
 
+
+// ================================================================
+// GEOCODE ROUTE: enrich New Additions group with location data
+// GET  ?route=geocode  — dry run (shows what would be geocoded)
+// POST ?route=geocode  — live run (writes to Monday location column)
+// Skips contacts that already have a location value.
+// ================================================================
+const GOOGLE_MAPS_KEY   = process.env.ROUTES_V2_API_KEY;
+const LOCATION_COL      = 'location_mm50h12r';
+const GEOCODE_CONCURRENCY = 5;
+
+async function geocodeAddress(rawAddress) {
+  const url = 'https://maps.googleapis.com/maps/api/geocode/json?address='
+    + encodeURIComponent(rawAddress) + '&key=' + GOOGLE_MAPS_KEY;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('Geocode HTTP ' + res.status);
+  const data = await res.json();
+  if (data.status !== 'OK' || !data.results?.length) {
+    throw new Error('Geocode status: ' + data.status + (data.error_message ? ' — ' + data.error_message : ''));
+  }
+  const r = data.results[0];
+  const countryComp = (r.address_components || []).find(c => c.types.includes('country'));
+  return {
+    lat:              r.geometry.location.lat,
+    lng:              r.geometry.location.lng,
+    address:          r.formatted_address,
+    countryShortName: countryComp?.short_name || '',
+    placeId:          r.place_id || '',
+  };
+}
+
+async function writeLocationToMonday(itemId, loc) {
+  const val = JSON.stringify({ lat: loc.lat, lng: loc.lng, address: loc.address, countryShortName: loc.countryShortName });
+  const mutation = `mutation {
+    change_column_value(
+      board_id: ${CONTACTS_BOARD_ID},
+      item_id: ${itemId},
+      column_id: "${LOCATION_COL}",
+      value: ${JSON.stringify(val)}
+    ) { id }
+  }`;
+  const res = await fetch(MONDAY_API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_KEY },
+    body: JSON.stringify({ query: mutation }),
+  });
+  const result = await res.json();
+  if (result.errors) throw new Error('Monday location write failed: ' + JSON.stringify(result.errors));
+}
+
+async function getAllNewAdditionsItems() {
+  const all = [];
+  let cursor = null;
+  do {
+    const clause = cursor ? `cursor: "${cursor}"` : `query_params: {
+      rules: [{ column_id: "group", compare_value: ["${NEW_ADDITIONS_GROUP}"], operator: any_of }]
+    }`;
+    const q = `query {
+      boards(ids: [${CONTACTS_BOARD_ID}]) {
+        items_page(limit: 100 ${clause}) {
+          cursor
+          items {
+            id name
+            column_values(ids: ["${COL.address}", "${LOCATION_COL}"]) { id text value }
+          }
+        }
+      }
+    }`;
+    const res = await fetch(MONDAY_API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_KEY },
+      body: JSON.stringify({ query: q }),
+    });
+    const result = await res.json();
+    const page = result.data?.boards?.[0]?.items_page;
+    if (!page) throw new Error('Monday group fetch failed: ' + JSON.stringify(result.errors));
+    all.push(...(page.items || []));
+    cursor = page.cursor || null;
+  } while (cursor);
+  return all;
+}
+
+async function handleGeocodeRoute(req, res) {
+  const dryRun = req.method === 'GET';
+  console.log('\n📍 geocode-new | mode: ' + (dryRun ? 'DRY RUN' : 'LIVE'));
+
+  const allItems = await getAllNewAdditionsItems();
+
+  // Only process items that have an address but no location yet
+  const toGeocode = allItems.filter(item => {
+    const addr = (item.column_values?.find(c => c.id === COL.address) || {}).text?.trim();
+    const loc  = (item.column_values?.find(c => c.id === LOCATION_COL) || {}).text?.trim();
+    return addr && !loc;
+  });
+
+  const alreadyDone = allItems.length - toGeocode.length;
+  console.log(`📋 ${allItems.length} in group | ${toGeocode.length} to geocode | ${alreadyDone} already have location`);
+
+  const results = [];
+  for (let i = 0; i < toGeocode.length; i += GEOCODE_CONCURRENCY) {
+    const chunk = toGeocode.slice(i, i + GEOCODE_CONCURRENCY);
+    const settled = await Promise.allSettled(chunk.map(async item => {
+      const rawAddr = (item.column_values?.find(c => c.id === COL.address) || {}).text?.trim();
+      if (dryRun) {
+        return { name: item.name, itemId: item.id, status: 'would_geocode', address: rawAddr };
+      }
+      try {
+        const loc = await geocodeAddress(rawAddr);
+        await writeLocationToMonday(item.id, loc);
+        console.log(`  ✅ "${item.name}" → ${loc.lat},${loc.lng} (${loc.address})`);
+        return { name: item.name, itemId: item.id, status: 'geocoded',
+          location: { lat: loc.lat, lng: loc.lng, address: loc.address } };
+      } catch (err) {
+        console.warn(`  ⚠️  "${item.name}": ${err.message}`);
+        return { name: item.name, itemId: item.id, status: 'error', error: err.message, address: rawAddr };
+      }
+    }));
+    settled.forEach(r => results.push(r.status === 'fulfilled' ? r.value : { status: 'exception', error: r.reason?.message }));
+    // Polite pause between chunks on live runs
+    if (!dryRun && i + GEOCODE_CONCURRENCY < toGeocode.length) {
+      await new Promise(ok => setTimeout(ok, 250));
+    }
+  }
+
+  return res.status(200).json({
+    mode: dryRun ? 'dry_run' : 'live',
+    summary: {
+      totalInGroup:    allItems.length,
+      alreadyGeocoded: alreadyDone,
+      processed:       results.length,
+      geocoded:        results.filter(r => r.status === 'geocoded' || r.status === 'would_geocode').length,
+      errors:          results.filter(r => r.status === 'error' || r.status === 'exception').length,
+    },
+    detail: results,
+  });
+}
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
   if (req.method === 'OPTIONS') return res.status(200).end();
+
+  // ── GEOCODE ROUTE ──────────────────────────────────────────────
+  if (req.query && req.query.route === 'geocode') {
+    try { return await handleGeocodeRoute(req, res); }
+    catch (err) { console.error('❌ geocode error:', err); return res.status(500).json({ error: err.message }); }
+  }
+
   if (req.method === 'GET')     return res.status(200).json({ status: 'ok', endpoint: 'pull-from-flex' });
 
   // ── PO sync sub-route ──────────────────────────────────────────────────────
