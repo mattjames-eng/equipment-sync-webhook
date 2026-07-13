@@ -40,6 +40,86 @@ const COL = {
 };
 
 // ================================================================
+// HELPER: Fetch a page of Monday contacts that have NO Flex Contact ID
+// Returns { items: [...], nextCursor: string|null }
+// ================================================================
+async function getMondayItemsWithoutFlexId(cursor, limit) {
+  const cursorClause = cursor ? `, cursor: "${cursor}"` : '';
+  const query = `
+    query {
+      boards(ids: [${CONTACTS_BOARD_ID}]) {
+        items_page(
+          limit: ${limit}
+          ${cursorClause}
+          query_params: {
+            rules: [{ column_id: "${COL.flexContactId}", compare_value: [], operator: is_empty }]
+          }
+        ) {
+          cursor
+          items {
+            id
+            name
+            column_values(ids: [
+              "${COL.flexContactId}",
+              "${COL.flexContactType}",
+              "${COL.address}",
+              "${COL.email}",
+              "${COL.phone}",
+              "${COL.usualContact}"
+            ]) {
+              id value text
+            }
+          }
+        }
+      }
+    }
+  `;
+
+  const response = await fetch(MONDAY_API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_KEY },
+    body: JSON.stringify({ query }),
+  });
+  const result = await response.json();
+  const page = result.data?.boards?.[0]?.items_page;
+  if (!page) throw new Error(`Monday items_page query failed: ${JSON.stringify(result.errors)}`);
+  return {
+    items: page.items || [],
+    nextCursor: page.cursor || null,
+  };
+}
+
+// ================================================================
+// HELPER: Sync a single Monday contact to Flex (create + write UUID back)
+// Used by both the webhook handler and the bulk sync mode
+// ================================================================
+async function syncContactToFlex(item) {
+  const columns = parseColumnValues(item.column_values);
+  const existingFlexId = columns[COL.flexContactId]?.text?.trim();
+
+  // Safety check — skip if UUID somehow already present
+  if (existingFlexId) {
+    console.log(`⏭️ Skipping "${item.name}" — already linked (${existingFlexId})`);
+    return { action: 'skipped', itemId: item.id, flexId: existingFlexId };
+  }
+
+  const payload = buildFlexPayload(item, columns, item.id);
+
+  // Check if already in Flex by externalNumber (Monday item ID) — prevents duplicate creates
+  const existingByExternal = await findFlexContactByExternalNumber(item.id);
+  if (existingByExternal) {
+    console.log(`⚠️ Found existing Flex contact by externalNumber for "${item.name}" — linking`);
+    await writeFlexIdToMonday(item.id, existingByExternal);
+    return { action: 'linked', itemId: item.id, flexId: existingByExternal };
+  }
+
+  // Create in Flex and write UUID back to Monday
+  const flexId = await createFlexContact(payload);
+  await writeFlexIdToMonday(item.id, flexId);
+  return { action: 'created', itemId: item.id, flexId };
+}
+
+// ================================================================
 // HELPER: Fetch full column values for a monday item
 // ================================================================
 async function getMondayItem(itemId) {
@@ -237,10 +317,56 @@ async function findFlexContactByExternalNumber(mondayItemId) {
 // ================================================================
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
   if (req.method === 'OPTIONS') return res.status(200).end();
+
+  // ── BULK SYNC MODE ──────────────────────────────────────────────
+  // GET /api/contacts/push-to-flex?bulk=true&cursor=<cursor>&batchSize=10
+  // Pages through all Monday contacts with no Flex UUID, creates each
+  // in Flex, and writes the UUID back. Call repeatedly until hasMore=false.
+  if (req.method === 'GET' && req.query?.bulk === 'true') {
+    const cursor    = req.query.cursor   || null;
+    const batchSize = Math.min(parseInt(req.query.batchSize) || 10, 20);
+
+    console.log(`\n📦 Bulk push-to-flex | cursor: ${cursor || 'start'} | batchSize: ${batchSize}`);
+
+    try {
+      const { items, nextCursor } = await getMondayItemsWithoutFlexId(cursor, batchSize);
+      console.log(`📋 Found ${items.length} contacts without Flex UUID`);
+
+      // Process all contacts in parallel — each is independent
+      const results = await Promise.allSettled(items.map(item => syncContactToFlex(item)));
+
+      const successes = [];
+      const errors    = [];
+      results.forEach((r, i) => {
+        if (r.status === 'fulfilled') {
+          successes.push(r.value);
+        } else {
+          errors.push({ itemId: items[i].id, name: items[i].name, error: r.reason?.message });
+          console.error(`❌ Failed "${items[i].name}" (${items[i].id}): ${r.reason?.message}`);
+        }
+      });
+
+      const hasMore = items.length === batchSize && !!nextCursor;
+
+      console.log(`✅ Batch done: ${successes.length} synced, ${errors.length} errors, hasMore: ${hasMore}`);
+
+      return res.status(200).json({
+        processed:   successes.length,
+        errors,
+        hasMore,
+        nextCursor:  hasMore ? nextCursor : null,
+        batchDetail: successes,
+      });
+
+    } catch (err) {
+      console.error(`❌ Bulk sync error:`, err);
+      return res.status(500).json({ error: err.message });
+    }
+  }
 
   // monday.com webhook challenge handshake
   if (req.body?.challenge) {
@@ -293,22 +419,9 @@ export default async function handler(req, res) {
       return res.status(200).json({ ok: true, action: 'updated', flexId: existingFlexId, itemId });
 
     } else {
-      // New contact in Monday — check Flex first to prevent duplication
-      // (race condition: if it was just created in Flex before Monday wrote the UUID back)
-      const existingByExternal = await findFlexContactByExternalNumber(itemId);
-      if (existingByExternal) {
-        console.log(`⚠️ Found existing Flex contact by externalNumber — writing UUID back to Monday`);
-        await writeFlexIdToMonday(itemId, existingByExternal);
-        return res.status(200).json({ ok: true, action: 'linked', flexId: existingByExternal, itemId });
-      }
-
-      // Genuinely new — create in Flex
-      const flexId = await createFlexContact(payload);
-
-      // Write UUID back to Monday
-      await writeFlexIdToMonday(itemId, flexId);
-
-      return res.status(200).json({ ok: true, action: 'created', flexId, itemId });
+      // New contact in Monday — use shared helper (handles externalNumber check + create + writeback)
+      const result = await syncContactToFlex(item);
+      return res.status(200).json({ ok: true, ...result });
     }
 
   } catch (err) {
