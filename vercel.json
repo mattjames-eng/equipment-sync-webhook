@@ -15,6 +15,10 @@
     {
       "source": "/api/pos/pull-from-flex",
       "destination": "/api/contacts/pull-from-flex?route=pos"
+    },
+    {
+      "source": "/api/contacts/geocode-new",
+      "destination": "/api/contacts/pull-from-flex?route=geocode"
     }
   ],
   "functions": {
