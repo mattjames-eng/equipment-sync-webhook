@@ -1,6 +1,6 @@
 /**
  * Monday → Flex Contact Sync (Push Direction)
- * 
+ *
  * Fires when a contact is created or updated in the Contacts & Companies board.
  * Pushes the contact to Flex Rental Solutions and writes the Flex UUID back
  * to the "Flex Contact ID" column to complete the loop.
@@ -10,6 +10,13 @@
  *     so we UPDATE Flex rather than creating a duplicate.
  *   - If "Flex Contact ID" is empty → contact was created manually in Monday,
  *     so we CREATE in Flex and write the UUID back.
+ *
+ * Address handling:
+ *   - On CREATE: send parsed address fields in the POST body
+ *   - On UPDATE: fetch existing addresses via GET /api/address/contact-addresses,
+ *     then PUT the first one (update in place) — never append
+ *   - Duplicate cleanup: DELETE /api/address/contact-addresses/{contactId} with
+ *     array of extra address IDs before updating
  *
  * Monday webhook events handled:
  *   - create_item  → creates new contact in Flex
@@ -29,9 +36,9 @@ const CONTACTS_BOARD_ID = '18415573401';
 
 // Column IDs on Contacts & Companies board
 const COL = {
-  flexContactId:   'text_mm56w1vz',     // Flex UUID — written by sync, never by agents
-  flexContactType: 'dropdown_mm56cf0c', // Client | Venue | Other
-  companyType:     'dropdown_mm3vm6jh', // 20-value Company Type dropdown
+  flexContactId:   'text_mm56w1vz',
+  flexContactType: 'dropdown_mm56cf0c',
+  companyType:     'dropdown_mm3vm6jh',
   address:         'long_text_mm3vkzc6',
   email:           'email_mm3vezw3',
   phone:           'phone_mm3vwfvj',
@@ -40,12 +47,195 @@ const COL = {
 };
 
 // ================================================================
+// HELPER: Parse a free-text address into Flex ContactAddress fields
+// Handles formats like:
+//   "1846 S Cochran Ave\nLos Angeles, CA 90019\nUS"
+//   "1846 S Cochran Ave, Los Angeles, CA 90019"
+//   "1846 S Cochran Ave" (street only)
+// ================================================================
+function parseAddress(raw) {
+  if (!raw || !raw.trim()) return null;
+
+  // Normalize: collapse multiple newlines, trim each line
+  const lines = raw.split(/\n/).map(l => l.trim()).filter(Boolean);
+
+  // If only one line, try comma-splitting
+  if (lines.length === 1 && lines[0].includes(',')) {
+    const parts = lines[0].split(',').map(s => s.trim());
+    lines.length = 0;
+    lines.push(...parts);
+  }
+
+  const addr = {
+    line1: '',
+    city: '',
+    stateOrProvince: '',
+    postalCode: '',
+    country: '',
+    defaultShipping: true,
+    defaultMailing: true,
+  };
+
+  // Line 0 → street
+  addr.line1 = lines[0] || '';
+
+  // Line 1 → "City, State ZIP" or "City, State, ZIP"
+  if (lines[1]) {
+    // Match: "Los Angeles, CA 90019" or "Los Angeles, California, 90019"
+    const cityStateZip = lines[1].match(/^(.+?),\s*([A-Za-z\s]+?)\s*,?\s*(\d{5}(?:-\d{4})?)?$/);
+    if (cityStateZip) {
+      addr.city           = cityStateZip[1].trim();
+      addr.stateOrProvince = cityStateZip[2].trim();
+      addr.postalCode     = (cityStateZip[3] || '').trim();
+    } else {
+      // Fallback: treat whole line as city
+      addr.city = lines[1];
+    }
+  }
+
+  // Line 2 → country or ZIP if not already captured
+  if (lines[2]) {
+    const isZip = /^\d{5}(-\d{4})?$/.test(lines[2].trim());
+    if (isZip && !addr.postalCode) {
+      addr.postalCode = lines[2].trim();
+    } else if (!isZip) {
+      // Normalize country
+      const c = lines[2].trim().toUpperCase();
+      addr.country = (c === 'US' || c === 'USA' || c === 'UNITED STATES') ? 'United States' : lines[2].trim();
+    }
+  }
+
+  return addr;
+}
+
+// ================================================================
+// HELPER: Fetch existing Flex addresses for a contact
+// GET /api/address/contact-addresses?contactId={id}
+// Returns array of ContactAddress objects (may be empty)
+// ================================================================
+async function fetchFlexAddresses(flexContactId) {
+  try {
+    const res = await fetch(
+      `${FLEX_BASE_URL}/api/address/contact-addresses?contactId=${encodeURIComponent(flexContactId)}`,
+      { headers: { 'X-Auth-Token': FLEX_API_KEY, 'Accept': 'application/json' } }
+    );
+    if (!res.ok) return [];
+    const data = await res.json();
+    return Array.isArray(data) ? data : [];
+  } catch (e) {
+    console.warn(`  ⚠️  fetchFlexAddresses error: ${e.message}`);
+    return [];
+  }
+}
+
+// ================================================================
+// HELPER: Delete duplicate address records, keeping only keepId
+// DELETE /api/address/contact-addresses/{contactId}  body: [id, id, ...]
+// ================================================================
+async function deleteFlexAddresses(flexContactId, idsToDelete) {
+  if (!idsToDelete.length) return;
+  console.log(`  🗑️  Deleting ${idsToDelete.length} duplicate address(es) for ${flexContactId}`);
+  try {
+    const res = await fetch(
+      `${FLEX_BASE_URL}/api/address/contact-addresses/${flexContactId}`,
+      {
+        method: 'DELETE',
+        headers: {
+          'X-Auth-Token': FLEX_API_KEY,
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
+        body: JSON.stringify(idsToDelete),
+      }
+    );
+    if (!res.ok) console.warn(`  ⚠️  Delete addresses HTTP ${res.status}`);
+    else console.log(`  ✅ Deleted duplicate addresses`);
+  } catch (e) {
+    console.warn(`  ⚠️  deleteFlexAddresses error: ${e.message}`);
+  }
+}
+
+// ================================================================
+// HELPER: Update an existing Flex address record in place
+// PUT /api/address/contact-addresses/{contactId}/{addressId}
+// ================================================================
+async function updateFlexAddress(flexContactId, addressId, addrPayload) {
+  const body = { ...addrPayload, id: addressId, contactId: flexContactId };
+  const res = await fetch(
+    `${FLEX_BASE_URL}/api/address/contact-addresses/${flexContactId}/${addressId}`,
+    {
+      method: 'PUT',
+      headers: {
+        'X-Auth-Token': FLEX_API_KEY,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      },
+      body: JSON.stringify(body),
+    }
+  );
+  if (!res.ok) {
+    const txt = await res.text();
+    console.warn(`  ⚠️  updateFlexAddress HTTP ${res.status}: ${txt}`);
+  } else {
+    console.log(`  ✅ Address updated in place (${addressId})`);
+  }
+}
+
+// ================================================================
+// HELPER: Create a new Flex address record
+// POST /api/address/contact-addresses/{contactId}
+// ================================================================
+async function createFlexAddress(flexContactId, addrPayload) {
+  const body = { ...addrPayload, contactId: flexContactId };
+  const res = await fetch(
+    `${FLEX_BASE_URL}/api/address/contact-addresses/${flexContactId}`,
+    {
+      method: 'POST',
+      headers: {
+        'X-Auth-Token': FLEX_API_KEY,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      },
+      body: JSON.stringify(body),
+    }
+  );
+  if (!res.ok) {
+    const txt = await res.text();
+    console.warn(`  ⚠️  createFlexAddress HTTP ${res.status}: ${txt}`);
+  } else {
+    console.log(`  ✅ Address created`);
+  }
+}
+
+// ================================================================
+// HELPER: Sync address for an existing Flex contact
+// - Fetches current addresses
+// - Deletes all but the first (dedup)
+// - Updates the first in place, or creates if none exist
+// ================================================================
+async function syncFlexAddress(flexContactId, addrPayload) {
+  if (!addrPayload) return;
+
+  const existing = await fetchFlexAddresses(flexContactId);
+
+  if (existing.length === 0) {
+    // No address yet — create one
+    await createFlexAddress(flexContactId, addrPayload);
+  } else {
+    // Keep the first record, delete the rest (duplicates)
+    const [keep, ...extras] = existing;
+    if (extras.length > 0) {
+      await deleteFlexAddresses(flexContactId, extras.map(a => a.id));
+    }
+    // Update the keeper in place
+    await updateFlexAddress(flexContactId, keep.id, addrPayload);
+  }
+}
+
+// ================================================================
 // HELPER: Fetch a page of Monday contacts that have NO Flex Contact ID
-// Returns { items: [...], nextCursor: string|null }
 // ================================================================
 async function getMondayItemsWithoutFlexId(cursor, limit) {
-  // Monday API rule: query_params and cursor are mutually exclusive.
-  // First request uses query_params (filter); subsequent requests use cursor only.
   const paginationClause = cursor
     ? `cursor: "${cursor}"`
     : `query_params: { rules: [{ column_id: "${COL.flexContactId}", compare_value: [], operator: is_empty }] }`;
@@ -93,13 +283,11 @@ async function getMondayItemsWithoutFlexId(cursor, limit) {
 
 // ================================================================
 // HELPER: Sync a single Monday contact to Flex (create + write UUID back)
-// Used by both the webhook handler and the bulk sync mode
 // ================================================================
 async function syncContactToFlex(item) {
   const columns = parseColumnValues(item.column_values);
   const existingFlexId = columns[COL.flexContactId]?.text?.trim();
 
-  // Safety check — skip if UUID somehow already present
   if (existingFlexId) {
     console.log(`⏭️ Skipping "${item.name}" — already linked (${existingFlexId})`);
     return { action: 'skipped', itemId: item.id, flexId: existingFlexId };
@@ -107,7 +295,6 @@ async function syncContactToFlex(item) {
 
   const payload = buildFlexPayload(item, columns, item.id);
 
-  // Check if already in Flex by externalNumber (Monday item ID) — prevents duplicate creates
   const existingByExternal = await findFlexContactByExternalNumber(item.id);
   if (existingByExternal) {
     console.log(`⚠️ Found existing Flex contact by externalNumber for "${item.name}" — linking`);
@@ -115,7 +302,6 @@ async function syncContactToFlex(item) {
     return { action: 'linked', itemId: item.id, flexId: existingByExternal };
   }
 
-  // Create in Flex and write UUID back to Monday
   const flexId = await createFlexContact(payload);
   await writeFlexIdToMonday(item.id, flexId);
   return { action: 'created', itemId: item.id, flexId };
@@ -175,7 +361,6 @@ function parseColumnValues(columnValues) {
 // HELPER: Write Flex Contact ID back to Monday item
 // ================================================================
 async function writeFlexIdToMonday(itemId, flexUUID) {
-  // Use change_multiple_column_values — more reliable for text columns
   const columnValues = JSON.stringify({ [COL.flexContactId]: flexUUID });
   const mutation = `
     mutation {
@@ -193,7 +378,6 @@ async function writeFlexIdToMonday(itemId, flexUUID) {
   });
   const result = await response.json();
   if (result.errors) {
-    // Throw so the caller surfaces the error in the HTTP response
     throw new Error(`Monday write-back failed: ${JSON.stringify(result.errors)}`);
   }
   console.log(`✅ Flex Contact ID written to Monday item ${itemId}: ${flexUUID}`);
@@ -201,41 +385,38 @@ async function writeFlexIdToMonday(itemId, flexUUID) {
 
 // ================================================================
 // HELPER: Build a Flex contact payload from Monday item data
+// NOTE: addresses are NOT included here for updates — they are
+// handled separately via syncFlexAddress() to avoid duplicates.
+// For creates, addresses ARE included in the POST body (Flex creates
+// the first address record as part of the contact creation).
 // ================================================================
-function buildFlexPayload(item, columns, mondayItemId) {
-  const flexType = columns[COL.flexContactType]?.text || '';
-  const emailText = columns[COL.email]?.text || '';
-  const phoneText = columns[COL.phone]?.text || '';
+function buildFlexPayload(item, columns, mondayItemId, includeAddress = true) {
+  const flexType    = columns[COL.flexContactType]?.text || '';
+  const emailText   = columns[COL.email]?.text || '';
+  const phoneText   = columns[COL.phone]?.text || '';
   const addressText = columns[COL.address]?.text || '';
 
   const payload = {
     name: item.name,
-    organization: true, // Contacts & Companies are orgs; individuals are in subitems
-    externalNumber: String(mondayItemId), // Store monday ID for reverse lookup
+    organization: true,
+    externalNumber: String(mondayItemId),
   };
 
-  // Nested email
   if (emailText) {
     payload.internetAddresses = [{ url: emailText, defaultEmail: true }];
   }
 
-  // Nested phone
   if (phoneText) {
-    // Monday phone format: "+1 555-867-5309" or "555-867-5309"
     const cleaned = phoneText.replace(/\s+/g, '').replace(/[()]/g, '');
     payload.phoneNumbers = [{ dialNumber: cleaned, defaultPhone: true }];
   }
 
-  // Nested address (parse from free text — best effort)
-  if (addressText) {
-    payload.addresses = [{
-      line1: addressText.split('\n')[0] || addressText,
-      defaultShipping: true,
-      defaultMailing: true,
-    }];
+  // Only include address in CREATE payloads — updates use syncFlexAddress()
+  if (includeAddress && addressText) {
+    const parsed = parseAddress(addressText);
+    if (parsed) payload.addresses = [parsed];
   }
 
-  // Notes field with source attribution
   payload.narrativeDescription = `Synced from ShowFlow monday.com | Type: ${flexType || 'Unknown'} | Item ID: ${mondayItemId}`;
 
   return payload;
@@ -269,12 +450,14 @@ async function createFlexContact(payload) {
 }
 
 // ================================================================
-// HELPER: Update existing contact in Flex
+// HELPER: Update existing contact in Flex (base fields only — no addresses)
 // ================================================================
 async function updateFlexContact(flexUUID, payload) {
   console.log(`📤 Updating Flex contact: ${flexUUID} ("${payload.name}")`);
-  // Flex requires the contact id in the PUT body as well as the URL
-  const bodyWithId = { ...payload, id: flexUUID };
+  // Strip addresses from PUT body — handled separately via syncFlexAddress()
+  const { addresses, ...basePayload } = payload;
+  const bodyWithId = { ...basePayload, id: flexUUID };
+
   const response = await fetch(`${FLEX_BASE_URL}/api/contact/${flexUUID}?updateBaseContactOnly=true`, {
     method: 'PUT',
     headers: {
@@ -295,7 +478,6 @@ async function updateFlexContact(flexUUID, payload) {
 
 // ================================================================
 // HELPER: Search Flex for contact by externalNumber (monday item ID)
-// Returns the Flex UUID if found, null otherwise
 // ================================================================
 async function findFlexContactByExternalNumber(mondayItemId) {
   try {
@@ -325,9 +507,6 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
 
   // ── BULK SYNC MODE ──────────────────────────────────────────────
-  // GET /api/contacts/push-to-flex?bulk=true&cursor=<cursor>&batchSize=10
-  // Pages through all Monday contacts with no Flex UUID, creates each
-  // in Flex, and writes the UUID back. Call repeatedly until hasMore=false.
   if (req.method === 'GET' && req.query?.bulk === 'true') {
     const cursor    = req.query.cursor   || null;
     const batchSize = Math.min(parseInt(req.query.batchSize) || 10, 20);
@@ -338,7 +517,6 @@ export default async function handler(req, res) {
       const { items, nextCursor } = await getMondayItemsWithoutFlexId(cursor, batchSize);
       console.log(`📋 Found ${items.length} contacts without Flex UUID`);
 
-      // Process all contacts in parallel — each is independent
       const results = await Promise.allSettled(items.map(item => syncContactToFlex(item)));
 
       const successes = [];
@@ -388,7 +566,6 @@ export default async function handler(req, res) {
   const itemId = event.pulseId || event.itemId;
   if (!itemId) return res.status(400).json({ error: 'Missing item ID in event' });
 
-  // Only process events from the Contacts & Companies board
   const boardId = String(event.boardId || '');
   if (boardId && boardId !== CONTACTS_BOARD_ID) {
     console.log(`⏭️ Skipping — event from board ${boardId}, not Contacts board`);
@@ -398,30 +575,33 @@ export default async function handler(req, res) {
   console.log(`\n🚀 push-to-flex triggered | event: ${event.type} | item: ${itemId}`);
 
   try {
-    // ─── Step 1: Fetch full item from Monday ───────────────────
     const item = await getMondayItem(itemId);
     if (!item) {
       console.log(`⚠️ Item ${itemId} not found in Monday — may have been deleted`);
       return res.status(200).json({ skipped: true, reason: 'item not found' });
     }
 
-    const columns = parseColumnValues(item.column_values);
+    const columns        = parseColumnValues(item.column_values);
     const existingFlexId = columns[COL.flexContactId]?.text?.trim();
+    const addressText    = columns[COL.address]?.text || '';
 
     console.log(`📋 Item: "${item.name}" | Existing Flex ID: ${existingFlexId || 'none'}`);
 
-    // ─── Step 2: Build payload ──────────────────────────────────
-    const payload = buildFlexPayload(item, columns, itemId);
-
-    // ─── Step 3: Create or Update in Flex ──────────────────────
     if (existingFlexId) {
-      // Contact already linked — this is an update from Monday back to Flex
-      console.log(`🔄 Contact already linked to Flex (${existingFlexId}) — pushing update`);
+      // ── UPDATE path ──────────────────────────────────────────
+      // Build payload WITHOUT address (handled separately)
+      const payload = buildFlexPayload(item, columns, itemId, false);
       await updateFlexContact(existingFlexId, payload);
+
+      // Sync address separately: dedup + update in place
+      const addrPayload = parseAddress(addressText);
+      await syncFlexAddress(existingFlexId, addrPayload);
+
       return res.status(200).json({ ok: true, action: 'updated', flexId: existingFlexId, itemId });
 
     } else {
-      // New contact in Monday — use shared helper (handles externalNumber check + create + writeback)
+      // ── CREATE path ──────────────────────────────────────────
+      // Address included in POST body (Flex creates it as part of contact)
       const result = await syncContactToFlex(item);
       return res.status(200).json({ ok: true, ...result });
     }
