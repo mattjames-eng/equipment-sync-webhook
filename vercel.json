@@ -19,6 +19,10 @@
     {
       "source": "/api/contacts/geocode-new",
       "destination": "/api/contacts/pull-from-flex?route=geocode"
+    },
+    {
+      "source": "/api/contacts/dedup-group",
+      "destination": "/api/contacts/pull-from-flex?route=dedup-group"
     }
   ],
   "functions": {
