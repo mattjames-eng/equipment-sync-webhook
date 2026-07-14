@@ -62,6 +62,18 @@
       "schedule": "5 11 * * *"
     },
     {
+      "path": "/api/contacts/dedup-group",
+      "schedule": "8 11 * * *"
+    },
+    {
+      "path": "/api/contacts/geocode-new",
+      "schedule": "11 11 * * *"
+    },
+    {
+      "path": "/api/contacts/sort-new",
+      "schedule": "14 11 * * *"
+    },
+    {
       "path": "/api/pos/pull-from-flex",
       "schedule": "15 11 * * *"
     }
