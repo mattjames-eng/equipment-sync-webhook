@@ -1030,6 +1030,275 @@ async function handleDedupGroupRoute(req, res) {
   });
 }
 
+
+// ================================================================
+// SORT-NEW ROUTE: classify + move New Additions into proper groups
+// GET  ?route=sort-new — dry run (shows proposed classification)
+// POST ?route=sort-new — live (sets Company Type + moves to group)
+//
+// Skips items that already have Company Type set (idempotent).
+// Classification priority:
+//   1. Keyword patterns in name
+//   2. Flex Contact Type (Client → Artist, Venue → Venue)
+//   3. Fallback → Other Services & Vendors
+// ================================================================
+
+// Company Type dropdown IDs
+const COMPANY_TYPE = {
+  ARTIST:       1,   // Artist/Performer/DJ
+  VENUE:        2,   // Venue
+  FESTIVAL:     3,   // Festival/Event Producer
+  PRODUCTION:   4,   // Production Company
+  LIGHTING:     5,   // Lighting Company
+  AUDIO:        6,   // Audio/Sound Company
+  STAGING:      7,   // Staging/Equipment Rental
+  AV:           8,   // Event Technology/AV Company
+  PROMOTER:     9,   // Promoter/Booking Agency
+  MANAGEMENT:  10,   // Artist Management/Agency
+  TRANSPORT:   11,   // Transportation/Logistics
+  VISUAL:      12,   // Visual/Creative Services
+  LABEL:       13,   // Record Label/Music Company
+  LOCAL:       14,   // Local Business/Venue Support
+  VENDOR:      15,   // Service Provider/Vendor
+  DRIVER:      16,   // Driver
+  EMPLOYEE:    17,   // Employee
+  CARRIER:     18,   // Carrier
+  FREELANCE:   19,   // Freelance Contractor
+  INTERNAL:    20,   // Internal Only
+};
+
+// Company Type → Group mapping
+const TYPE_TO_GROUP = {
+  [COMPANY_TYPE.ARTIST]:     'group_mm3vsdmn',  // Artists & Performers
+  [COMPANY_TYPE.VENUE]:      'group_mm3v505y',  // Venues
+  [COMPANY_TYPE.FESTIVAL]:   'group_mm3vb6nj',  // Festivals & Events
+  [COMPANY_TYPE.PRODUCTION]: 'group_mm3va781',  // Production Companies
+  [COMPANY_TYPE.LIGHTING]:   'group_mm3vdthn',  // Technical Services
+  [COMPANY_TYPE.AUDIO]:      'group_mm3vdthn',  // Technical Services
+  [COMPANY_TYPE.STAGING]:    'group_mm3vdthn',  // Technical Services
+  [COMPANY_TYPE.AV]:         'group_mm3vdthn',  // Technical Services
+  [COMPANY_TYPE.PROMOTER]:   'group_mm3v6p7c',  // Promoters & Booking
+  [COMPANY_TYPE.MANAGEMENT]: 'group_mm3v1f04',  // Management & Agencies
+  [COMPANY_TYPE.TRANSPORT]:  'group_mm3vr6j8',  // Transportation & Logistics
+  [COMPANY_TYPE.VISUAL]:     'group_mm3vv87y',  // Creative & Visual Services
+  [COMPANY_TYPE.LABEL]:      'group_mm3v1f04',  // Management & Agencies
+  [COMPANY_TYPE.LOCAL]:      'group_mm3vwsm1',  // Other Services & Vendors
+  [COMPANY_TYPE.VENDOR]:     'group_mm3vwsm1',  // Other Services & Vendors
+  [COMPANY_TYPE.DRIVER]:     'group_mm3vr6j8',  // Transportation & Logistics
+  [COMPANY_TYPE.EMPLOYEE]:   'group_mm3vwsm1',  // Other Services & Vendors
+  [COMPANY_TYPE.CARRIER]:    'group_mm3vr6j8',  // Transportation & Logistics
+  [COMPANY_TYPE.FREELANCE]:  'group_mm3vwsm1',  // Other Services & Vendors
+  [COMPANY_TYPE.INTERNAL]:   'group_mm3vwsm1',  // Other Services & Vendors
+};
+
+const GROUP_NAMES = {
+  'group_mm3vsdmn': 'Artists & Performers',
+  'group_mm3v505y': 'Venues',
+  'group_mm3vb6nj': 'Festivals & Events',
+  'group_mm3va781': 'Production Companies',
+  'group_mm3vdthn': 'Technical Services (Lighting/Audio/Staging)',
+  'group_mm3v6p7c': 'Promoters & Booking',
+  'group_mm3v1f04': 'Management & Agencies',
+  'group_mm3vr6j8': 'Transportation & Logistics',
+  'group_mm3vv87y': 'Creative & Visual Services',
+  'group_mm3vwsm1': 'Other Services & Vendors',
+};
+
+const COMPANY_TYPE_NAMES = {
+  1: 'Artist/Performer/DJ', 2: 'Venue', 3: 'Festival/Event Producer',
+  4: 'Production Company', 5: 'Lighting Company', 6: 'Audio/Sound Company',
+  7: 'Staging/Equipment Rental', 8: 'Event Technology/AV Company',
+  9: 'Promoter/Booking Agency', 10: 'Artist Management/Agency',
+  11: 'Transportation/Logistics', 12: 'Visual/Creative Services',
+  13: 'Record Label/Music Company', 14: 'Local Business/Venue Support',
+  15: 'Service Provider/Vendor', 16: 'Driver', 17: 'Employee',
+  18: 'Carrier', 19: 'Freelance Contractor', 20: 'Internal Only',
+};
+
+function classifyContact(name, flexContactType) {
+  const n = (name || '').toLowerCase();
+
+  // Internal / junk signals
+  if (/internal|do not use|test customer|n\/a|^quote$|^cash deposit$/.test(n))
+    return COMPANY_TYPE.INTERNAL;
+
+  // Venue
+  if (/venue|theater|theatre|hall|arena|stadium|amphitheater|ballroom/.test(n))
+    return COMPANY_TYPE.VENUE;
+  if (flexContactType === 'Venue')
+    return COMPANY_TYPE.VENUE;
+
+  // Festival / event producer
+  if (/festival|music festival|event producer|digital rising/.test(n))
+    return COMPANY_TYPE.FESTIVAL;
+
+  // Artist management / agency (check before artist to catch "Management")
+  if (/management|mgmt|agency|agencies|custom management/.test(n))
+    return COMPANY_TYPE.MANAGEMENT;
+
+  // Promoter / booking
+  if (/promoter|booking|presents|hard dance|jay goldberg events/.test(n))
+    return COMPANY_TYPE.PROMOTER;
+
+  // Production company
+  if (/production|productions|btsm|zombie productions/.test(n))
+    return COMPANY_TYPE.PRODUCTION;
+
+  // Audio / sound
+  if (/audio|sound alliance|audio alliance/.test(n))
+    return COMPANY_TYPE.AUDIO;
+
+  // AV / event tech
+  if (/interactive|av |a\/v |technology|tech(?!nical)|enttec/.test(n))
+    return COMPANY_TYPE.AV;
+
+  // Lighting
+  if (/lighting|light(?!s)/.test(n))
+    return COMPANY_TYPE.LIGHTING;
+
+  // Visual / creative
+  if (/visual|creative|design|photo|video|film|media/.test(n))
+    return COMPANY_TYPE.VISUAL;
+
+  // Transportation / logistics
+  if (/transport|logistics|trucking|carrier|freight|shipping/.test(n))
+    return COMPANY_TYPE.TRANSPORT;
+
+  // Record label / music company
+  if (/records|recordings|label|music(?! festival)/.test(n))
+    return COMPANY_TYPE.LABEL;
+
+  // Local business
+  if (/grill|restaurant|cafe|catering|hotel|bar(?!celona)/.test(n))
+    return COMPANY_TYPE.LOCAL;
+
+  // If Flex says Client — likely artist / performer
+  if (flexContactType === 'Client')
+    return COMPANY_TYPE.ARTIST;
+
+  // Default
+  return COMPANY_TYPE.VENDOR;
+}
+
+async function getNewAdditionsForSort() {
+  const all = [];
+  let cursor = null;
+  do {
+    const clause = cursor ? `cursor: "${cursor}"` : `query_params: {
+      rules: [{ column_id: "group", compare_value: ["${NEW_ADDITIONS_GROUP}"], operator: any_of }]
+    }`;
+    const q = `query {
+      boards(ids: [${CONTACTS_BOARD_ID}]) {
+        items_page(limit: 100 ${clause}) {
+          cursor
+          items {
+            id name
+            column_values(ids: ["${COL.flexContactType}", "dropdown_mm3vm6jh"]) { id text value }
+          }
+        }
+      }
+    }`;
+    const res = await fetch(MONDAY_API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_KEY },
+      body: JSON.stringify({ query: q }),
+    });
+    const result = await res.json();
+    const page = result.data?.boards?.[0]?.items_page;
+    if (!page) throw new Error('Monday fetch failed: ' + JSON.stringify(result.errors));
+    all.push(...(page.items || []));
+    cursor = page.cursor || null;
+  } while (cursor);
+  return all;
+}
+
+async function moveItemToGroup(itemId, groupId) {
+  const mutation = `mutation { move_item_to_group(item_id: ${itemId}, group_id: "${groupId}") { id } }`;
+  const res = await fetch(MONDAY_API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_KEY },
+    body: JSON.stringify({ query: mutation }),
+  });
+  const result = await res.json();
+  if (result.errors) throw new Error('Move failed: ' + JSON.stringify(result.errors));
+}
+
+async function setCompanyType(itemId, typeId) {
+  const val = JSON.stringify({ ids: [typeId] });
+  const mutation = `mutation {
+    change_column_value(
+      board_id: ${CONTACTS_BOARD_ID},
+      item_id: ${itemId},
+      column_id: "dropdown_mm3vm6jh",
+      value: ${JSON.stringify(val)}
+    ) { id }
+  }`;
+  const res = await fetch(MONDAY_API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_KEY },
+    body: JSON.stringify({ query: mutation }),
+  });
+  const result = await res.json();
+  if (result.errors) throw new Error('Dropdown write failed: ' + JSON.stringify(result.errors));
+}
+
+async function handleSortNewRoute(req, res) {
+  const dryRun = req.method === 'GET';
+  console.log('\n📦 sort-new | mode: ' + (dryRun ? 'DRY RUN' : 'LIVE'));
+
+  const allItems = await getNewAdditionsForSort();
+  console.log('Total in New Additions:', allItems.length);
+
+  // Skip items that already have Company Type set
+  const toProcess = allItems.filter(item => {
+    const existing = (item.column_values?.find(c => c.id === 'dropdown_mm3vm6jh') || {}).text?.trim();
+    return !existing;
+  });
+  const alreadyTyped = allItems.length - toProcess.length;
+
+  const plan = toProcess.map(item => {
+    const flexType = (item.column_values?.find(c => c.id === COL.flexContactType) || {}).text?.trim() || '';
+    const typeId   = classifyContact(item.name, flexType);
+    const groupId  = TYPE_TO_GROUP[typeId] || 'group_mm3vwsm1';
+    return { itemId: item.id, name: item.name, flexType, typeId, groupId,
+             typeName: COMPANY_TYPE_NAMES[typeId], groupName: GROUP_NAMES[groupId] };
+  });
+
+  if (dryRun) {
+    return res.status(200).json({
+      mode: 'dry_run',
+      summary: { totalInGroup: allItems.length, alreadyTyped, toProcess: plan.length },
+      plan,
+    });
+  }
+
+  // Live — process in batches of 5
+  const results = [];
+  for (let i = 0; i < plan.length; i += 5) {
+    const chunk = plan.slice(i, i + 5);
+    const settled = await Promise.allSettled(chunk.map(async p => {
+      await setCompanyType(p.itemId, p.typeId);
+      await moveItemToGroup(p.itemId, p.groupId);
+      console.log(`  ✅ "${p.name}" → ${p.typeName} / ${p.groupName}`);
+      return { ...p, status: 'sorted' };
+    }));
+    settled.forEach(r => results.push(r.status === 'fulfilled' ? r.value : { status: 'error', error: r.reason?.message }));
+    if (i + 5 < plan.length) await new Promise(ok => setTimeout(ok, 200));
+  }
+
+  return res.status(200).json({
+    mode: 'live',
+    summary: {
+      totalInGroup: allItems.length,
+      alreadyTyped,
+      processed: results.length,
+      sorted:  results.filter(r => r.status === 'sorted').length,
+      errors:  results.filter(r => r.status === 'error').length,
+    },
+    results,
+  });
+}
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -1047,6 +1316,12 @@ export default async function handler(req, res) {
   if (req.query && req.query.route === 'dedup-group') {
     try { return await handleDedupGroupRoute(req, res); }
     catch (err) { console.error('❌ dedup-group error:', err); return res.status(500).json({ error: err.message }); }
+  }
+
+  // ── SORT-NEW ROUTE ────────────────────────────────────────────
+  if (req.query && req.query.route === 'sort-new') {
+    try { return await handleSortNewRoute(req, res); }
+    catch (err) { console.error('❌ sort-new error:', err); return res.status(500).json({ error: err.message }); }
   }
 
   if (req.method === 'GET')     return res.status(200).json({ status: 'ok', endpoint: 'pull-from-flex' });
