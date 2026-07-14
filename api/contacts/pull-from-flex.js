@@ -800,7 +800,7 @@ async function geocodeAddress(rawAddress) {
 }
 
 async function writeLocationToMonday(itemId, loc) {
-  const val = JSON.stringify({ lat: loc.lat, lng: loc.lng, address: loc.address, countryShortName: loc.countryShortName });
+  const val = JSON.stringify({ lat: loc.lat, lng: loc.lng, address: loc.address, changed_at: new Date().toISOString() });
   const mutation = `mutation {
     change_column_value(
       board_id: ${CONTACTS_BOARD_ID},
