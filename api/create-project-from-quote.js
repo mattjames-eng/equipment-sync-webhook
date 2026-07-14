@@ -36,7 +36,11 @@ const FLEX_API_KEY  = process.env.FLEX_API_KEY_QUOTES || process.env.FLEX_API_KE
 const PROJECTS_BOARD_ID = '18415679761';
 const CONTACTS_BOARD_ID = '18415573401';
 
-const GOOGLE_APPS_SCRIPT_URL = process.env.GOOGLE_APPS_SCRIPT_URL || null;
+const GOOGLE_APPS_SCRIPT_URL     = process.env.GOOGLE_APPS_SCRIPT_URL || null;
+const FLEX_EVENT_DEFINITION_ID   = process.env.FLEX_EVENT_DEFINITION_ID || null;
+
+// Cached definitionId for Flex event folder lookup (populated on first call)
+let _cachedDefinitionId = FLEX_EVENT_DEFINITION_ID;
 
 // ================================================================
 // HELPER: Precision utility to extract true 36-character UUID tokens
@@ -270,6 +274,152 @@ async function createProjectFolder(projectName, projectId, clientName, eventDate
 }
 
 // ================================================================
+// HELPER: Resolve Flex "Event Folder" definitionId
+// Calls GET /api/element-definition/enabled-definitions once, caches result.
+// Set FLEX_EVENT_DEFINITION_ID env var to skip the lookup entirely.
+// ================================================================
+async function resolveEventFolderDefinitionId() {
+    if (_cachedDefinitionId) return _cachedDefinitionId;
+
+    console.log('[create-folder] 🔍 Looking up event folder definition ID...');
+    const res = await fetch(`${FLEX_BASE_URL}/api/element-definition/enabled-definitions`, {
+        headers: { 'X-Auth-Token': FLEX_API_KEY, 'Accept': 'application/json' }
+    });
+    if (!res.ok) throw new Error(`Flex element-definition lookup failed: HTTP ${res.status}`);
+    const defs = await res.json();
+
+    if (!Array.isArray(defs) || defs.length === 0) {
+        throw new Error('No element definitions returned from Flex. Check FLEX_API_KEY.');
+    }
+
+    console.log('[create-folder] Available definitions:');
+    for (const d of defs) {
+        console.log(`  id=${d.id}  code=${d.code}  name="${d.name}"  namePlural="${d.namePlural}"`);
+    }
+
+    const EXCLUDE = ['quote', 'equipment', 'crew', 'expense', 'task', 'session', 'manifest'];
+    const PREFER  = ['event', 'project', 'folder', 'show'];
+    const candidates = defs.filter(d => {
+        const h = `${d.name} ${d.namePlural} ${d.code}`.toLowerCase();
+        return PREFER.some(x => h.includes(x)) && !EXCLUDE.some(x => h.includes(x));
+    });
+
+    const chosen = candidates[0] || defs[0];
+    _cachedDefinitionId = chosen.id;
+    console.log(`[create-folder] ✅ Using definition: id=${chosen.id} name="${chosen.name}"`);
+    console.log(`[create-folder] 💡 Set FLEX_EVENT_DEFINITION_ID=${chosen.id} to skip this lookup`);
+    return _cachedDefinitionId;
+}
+
+// ================================================================
+// ACTION HANDLER: ?action=create-folder
+// Creates a Flex event folder + Google Drive folder structure.
+// Called by the Vibe "Project Setup" app BEFORE a full project exists.
+//
+// POST /api/create-project-from-quote?action=create-folder
+// Body: { projectName, eventDate, clientName?, pmEmail? }
+// Response: { ok, flexEventFolderId, flexElementNumber, flexElementName,
+//             clientLinked, clientFlexId, driveFolder }
+// ================================================================
+async function handleCreateFolder(req, res) {
+    const { projectName, eventDate, clientName, pmEmail } = req.body || {};
+
+    if (!projectName?.trim()) {
+        return res.status(400).json({ error: 'projectName is required' });
+    }
+    if (!eventDate?.trim()) {
+        return res.status(400).json({ error: 'eventDate is required (YYYY-MM-DD)' });
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(eventDate.trim())) {
+        return res.status(400).json({ error: 'eventDate must be YYYY-MM-DD format' });
+    }
+
+    console.log(`\n🚀 create-folder | "${projectName}" | ${eventDate} | client: ${clientName || 'none'} | pm: ${pmEmail || 'none'}`);
+
+    // ── Resolve definitionId + client UUID in parallel ─────────────────────
+    const [definitionId, clientUUID] = await Promise.all([
+        resolveEventFolderDefinitionId(),
+        clientName?.trim() ? resolveClientUUIDByName(clientName.trim()) : Promise.resolve(null),
+    ]);
+
+    // ── Build Flex payload — dates must be ISO date-time ───────────────────
+    const flexDateTime = `${eventDate.trim()}T00:00:00.000Z`;
+    const payload = {
+        definitionId,
+        name:             projectName.trim(),
+        eventDate:        flexDateTime,
+        plannedStartDate: flexDateTime,
+        plannedEndDate:   flexDateTime,
+    };
+    if (clientUUID) payload.clientId = clientUUID;
+
+    // ── POST to Flex /api/element ──────────────────────────────────────────
+    console.log(`[create-folder] 📤 POSTing to Flex /api/element`);
+    const flexRes = await fetch(`${FLEX_BASE_URL}/api/element`, {
+        method: 'POST',
+        headers: {
+            'X-Auth-Token': FLEX_API_KEY,
+            'Accept':       'application/json',
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+    });
+    const flexText = await flexRes.text();
+    if (!flexRes.ok) throw new Error(`Flex POST /api/element → HTTP ${flexRes.status}: ${flexText}`);
+    const flexData = JSON.parse(flexText);
+
+    // Response is ElementKeyInfo — primary key is elementId
+    const elementId     = flexData?.elementId;
+    const elementNumber = flexData?.elementNumber || null;
+    const elementName   = flexData?.elementName   || projectName.trim();
+
+    if (!elementId) throw new Error(`Flex returned no elementId. Response: ${flexText}`);
+    console.log(`[create-folder] ✅ Flex element created: ${elementId} (${elementNumber})`);
+
+    // ── Create Google Drive folder (non-fatal) ─────────────────────────────
+    let driveFolder = null;
+    try {
+        driveFolder = await createProjectFolder(projectName.trim(), elementId, clientName || '', eventDate.trim(), pmEmail || '');
+    } catch (driveErr) {
+        console.warn(`[create-folder] ⚠️ Drive folder skipped: ${driveErr.message}`);
+    }
+
+    return res.status(200).json({
+        ok:                true,
+        flexEventFolderId: elementId,
+        flexElementNumber: elementNumber,
+        flexElementName:   elementName,
+        clientLinked:      !!clientUUID,
+        clientFlexId:      clientUUID || null,
+        driveFolder:       driveFolder || null,
+    });
+}
+
+// ================================================================
+// HELPER: Resolve client name → Flex contact UUID
+// Uses GET /api/contact/search (PageContactSearchEntry response)
+// ================================================================
+async function resolveClientUUIDByName(clientName) {
+    try {
+        const encoded = encodeURIComponent(clientName);
+        const res = await fetch(`${FLEX_BASE_URL}/api/contact/search?searchText=${encoded}&size=5`, {
+            headers: { 'X-Auth-Token': FLEX_API_KEY, 'Accept': 'application/json' }
+        });
+        if (!res.ok) return null;
+        const data    = await res.json();
+        const results = data?.content || [];
+        if (!results.length) return null;
+        const exact = results.find(c => c.name?.trim().toLowerCase() === clientName.toLowerCase());
+        const match = exact || results[0];
+        console.log(`[create-folder] ✅ Client resolved: "${match.name}" → ${match.id}`);
+        return match.id || null;
+    } catch (err) {
+        console.warn(`[create-folder] ⚠️ Client lookup failed: ${err.message}`);
+        return null;
+    }
+}
+
+// ================================================================
 // MAIN HANDLER
 // ================================================================
 export default async function handler(req, res) {
@@ -279,6 +429,16 @@ export default async function handler(req, res) {
 
     if (req.method === 'OPTIONS') return res.status(200).end();
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+
+    // ── Route: ?action=create-folder ──────────────────────────────────────────
+    if (req.query?.action === 'create-folder') {
+        try {
+            return await handleCreateFolder(req, res);
+        } catch (err) {
+            console.error('[create-folder] ❌ Error:', err.message);
+            return res.status(500).json({ ok: false, error: err.message });
+        }
+    }
 
     try {
         const quoteId = req.body.quoteNumber || req.body.elementId || req.body.itemId || req.body['Flex Quote Number'];
