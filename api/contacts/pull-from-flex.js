@@ -775,7 +775,7 @@ async function handlePOSync(req, res) {
 // POST ?route=geocode  — live run (writes to Monday location column)
 // Skips contacts that already have a location value.
 // ================================================================
-const GOOGLE_MAPS_KEY   = process.env.ROUTES_V2_API_KEY;
+const GOOGLE_MAPS_KEY   = process.env.GEOCODING_API_KEY;
 const LOCATION_COL      = 'location_mm50h12r';
 const GEOCODE_CONCURRENCY = 5;
 
