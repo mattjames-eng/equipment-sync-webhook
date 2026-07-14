@@ -322,7 +322,7 @@ async function resolveEventFolderDefinitionId() {
 //             clientLinked, clientFlexId, driveFolder }
 // ================================================================
 async function handleCreateFolder(req, res) {
-    const { projectName, eventDate, clientName, pmEmail } = req.body || {};
+    const { projectName, eventDate, prepDate, returnDate, clientName, pmEmail } = req.body || {};
 
     if (!projectName?.trim()) {
         return res.status(400).json({ error: 'projectName is required' });
@@ -333,8 +333,14 @@ async function handleCreateFolder(req, res) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(eventDate.trim())) {
         return res.status(400).json({ error: 'eventDate must be YYYY-MM-DD format' });
     }
+    if (prepDate && !/^\d{4}-\d{2}-\d{2}$/.test(prepDate.trim())) {
+        return res.status(400).json({ error: 'prepDate must be YYYY-MM-DD format' });
+    }
+    if (returnDate && !/^\d{4}-\d{2}-\d{2}$/.test(returnDate.trim())) {
+        return res.status(400).json({ error: 'returnDate must be YYYY-MM-DD format' });
+    }
 
-    console.log(`\n🚀 create-folder | "${projectName}" | ${eventDate} | client: ${clientName || 'none'} | pm: ${pmEmail || 'none'}`);
+    console.log(`\n🚀 create-folder | "${projectName}" | event: ${eventDate} | prep: ${prepDate || 'none'} | return: ${returnDate || 'none'} | client: ${clientName || 'none'} | pm: ${pmEmail || 'none'}`);
 
     // ── Resolve definitionId + client UUID in parallel ─────────────────────
     const [definitionId, clientUUID] = await Promise.all([
@@ -343,13 +349,13 @@ async function handleCreateFolder(req, res) {
     ]);
 
     // ── Build Flex payload — dates must be ISO date-time ───────────────────
-    const flexDateTime = `${eventDate.trim()}T00:00:00.000Z`;
+    const toFlexDT = d => d ? `${d.trim()}T00:00:00.000Z` : null;
     const payload = {
         definitionId,
         name:             projectName.trim(),
-        eventDate:        flexDateTime,
-        plannedStartDate: flexDateTime,
-        plannedEndDate:   flexDateTime,
+        eventDate:        toFlexDT(eventDate),
+        plannedStartDate: toFlexDT(prepDate || eventDate),
+        plannedEndDate:   toFlexDT(returnDate || eventDate),
     };
     if (clientUUID) payload.clientId = clientUUID;
 
