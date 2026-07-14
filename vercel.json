@@ -23,6 +23,10 @@
     {
       "source": "/api/contacts/dedup-group",
       "destination": "/api/contacts/pull-from-flex?route=dedup-group"
+    },
+    {
+      "source": "/api/contacts/sort-new",
+      "destination": "/api/contacts/pull-from-flex?route=sort-new"
     }
   ],
   "functions": {
