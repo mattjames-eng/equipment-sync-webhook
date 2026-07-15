@@ -1342,7 +1342,7 @@ const OOC_SUB_COL = {
 
 /** Fetch one page of OOC records from Flex grid-node endpoint */
 async function fetchFlexOocPage(page = 0, size = 100) {
-  const url = `${FLEX_BASE_URL}/v3/api/ooc-record/grid-node?page=${page}&size=${size}`;
+  const url = `${FLEX_BASE_URL}/api/ooc-record/grid-node?page=${page}&size=${size}`;
   const response = await fetch(url, {
     method: 'POST',
     headers: { 'X-Auth-Token': FLEX_API_KEY, 'Accept': 'application/json', 'Content-Type': 'application/json' },
@@ -1353,7 +1353,7 @@ async function fetchFlexOocPage(page = 0, size = 100) {
 
 /** Fetch serial unit details from Flex */
 async function fetchFlexSerialUnit(unitId) {
-  const url = `${FLEX_BASE_URL}/v3/api/serial-unit/${unitId}`;
+  const url = `${FLEX_BASE_URL}/api/serial-unit/${unitId}`;
   const response = await fetch(url, {
     headers: { 'X-Auth-Token': FLEX_API_KEY, 'Accept': 'application/json' },
   });
@@ -1662,7 +1662,7 @@ async function handleResolveOocRoute(req, res) {
 
     // ── Push resolution to Flex ───────────────────────────────────
     const flexRes = await fetch(
-      `${FLEX_BASE_URL}/v3/api/ooc-record/resolve?id=${encodeURIComponent(flexOocId)}`,
+      `${FLEX_BASE_URL}/api/ooc-record/resolve?id=${encodeURIComponent(flexOocId)}`,
       {
         method: 'PUT',
         headers: { 'X-Auth-Token': FLEX_API_KEY, 'Accept': 'application/json' },
