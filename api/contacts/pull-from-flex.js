@@ -1330,16 +1330,24 @@ const OOC_SUB_COL = {
 };
 
 // ================================================================
-// BATCH HELPER — run up to `size` mutations per GQL request
-// mutations: array of strings like 'create_item(board_id:...) { id }'
+// BATCH HELPER — fires ALL chunks in parallel via Promise.all
+// mutations: array of GQL mutation strings (without 'mutation {}' wrapper)
+// chunkSize: how many to pack into each GQL request (default 25)
 // Returns array of { id } results in same order
 // ================================================================
-async function runBatchedMutations(mutations, size = 10) {
-  const results = [];
-  for (let i = 0; i < mutations.length; i += size) {
-    const chunk = mutations.slice(i, i + size);
-    const body  = 'mutation {\n' +
-      chunk.map((m, idx) => `  op${i + idx}: ${m}`).join('\n') +
+async function runBatchedMutations(mutations, chunkSize = 25) {
+  if (!mutations.length) return [];
+
+  // Split into chunks, preserving original index for alias naming
+  const chunks = [];
+  for (let i = 0; i < mutations.length; i += chunkSize) {
+    chunks.push({ start: i, muts: mutations.slice(i, i + chunkSize) });
+  }
+
+  // Fire ALL chunks simultaneously
+  const chunkResults = await Promise.all(chunks.map(async ({ start, muts }) => {
+    const body = 'mutation {\n' +
+      muts.map((m, j) => `  op${start + j}: ${m}`).join('\n') +
       '\n}';
     const res = await fetch(MONDAY_API_URL, {
       method:  'POST',
@@ -1347,11 +1355,16 @@ async function runBatchedMutations(mutations, size = 10) {
       body:    JSON.stringify({ query: body }),
     });
     const data = await res.json();
-    if (data.errors) console.error('Batch mutation errors:', JSON.stringify(data.errors));
-    chunk.forEach((_, idx) => {
-      const key = `op${i + idx}`;
-      results.push(data.data?.[key] || null);
-    });
+    if (data.errors) console.error(`Chunk @${start} errors:`, JSON.stringify(data.errors).slice(0, 400));
+    return { start, count: muts.length, data };
+  }));
+
+  // Reassemble in original order
+  const results = new Array(mutations.length).fill(null);
+  for (const { start, count, data } of chunkResults) {
+    for (let j = 0; j < count; j++) {
+      results[start + j] = data.data?.[`op${start + j}`] ?? null;
+    }
   }
   return results;
 }
