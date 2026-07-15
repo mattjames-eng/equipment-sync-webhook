@@ -1299,6 +1299,416 @@ async function handleSortNewRoute(req, res) {
   });
 }
 
+
+// ================================================================
+// OOC SYNC CONSTANTS (Equipment Repair Tracker)
+// ================================================================
+const REPAIR_TRACKER_BOARD_ID = process.env.REPAIR_TRACKER_BOARD_ID || '18422076626';
+const REPAIR_TRACKER_SUBITEMS_BOARD_ID = '18422076650';
+
+// Parent item column IDs
+const OOC_COL = {
+  serialNumber:      'text_mm59e67m',
+  barcode:           'text_mm598skj',
+  modelName:         'text_mm59m56r',
+  currentStatus:     'color_mm59nf37',   // In Service | OOC | Decommissioned | Missing
+  currentLocation:   'text_mm596rtg',
+  totalOocIncidents: 'numeric_mm59gjpv',
+  unitNotes:         'long_text_mm59y69c',
+  lastSynced:        'date_mm59m0y5',
+  flexUnitId:        'text_mm59zh5f',
+};
+
+// Subitem column IDs
+const OOC_SUB_COL = {
+  repairStatus:  'color_mm59ah67',    // Open | In Progress | Waiting on Parts | Resolved
+  oocReason:     'long_text_mm59vb84',
+  reportedDate:  'date_mm592kt0',
+  reportedBy:    'text_mm59tg2y',
+  assignedTech:  'multiple_person_mm59xhd2',
+  techNotes:     'long_text_mm59s1xg',
+  partsNeeded:   'long_text_mm59nrh1',
+  partsStatus:   'color_mm59c1x4',    // Not Needed | To Order | Ordered | Received | Backordered
+  partsCost:     'numeric_mm59c30n',
+  laborHours:    'numeric_mm59bk8e',
+  resolvedDate:  'date_mm59541s',
+  daysDown:      'numeric_mm59b96r',
+  flexOocId:     'text_mm59zmdy',
+};
+
+// ================================================================
+// OOC HELPERS
+// ================================================================
+
+/** Fetch one page of OOC records from Flex grid-node endpoint */
+async function fetchFlexOocPage(page = 0, size = 100) {
+  const url = `${FLEX_BASE_URL}/v3/api/ooc-record/grid-node?page=${page}&size=${size}`;
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'X-Auth-Token': FLEX_API_KEY, 'Accept': 'application/json', 'Content-Type': 'application/json' },
+  });
+  if (!response.ok) throw new Error(`Flex OOC grid-node failed: ${response.status} ${await response.text()}`);
+  return await response.json();
+}
+
+/** Fetch serial unit details from Flex */
+async function fetchFlexSerialUnit(unitId) {
+  const url = `${FLEX_BASE_URL}/v3/api/serial-unit/${unitId}`;
+  const response = await fetch(url, {
+    headers: { 'X-Auth-Token': FLEX_API_KEY, 'Accept': 'application/json' },
+  });
+  if (!response.ok) {
+    console.warn(`⚠️ Could not fetch serial unit ${unitId}: ${response.status}`);
+    return null;
+  }
+  return await response.json();
+}
+
+/** Find a monday parent item by Flex Unit ID (column search) */
+async function findRepairItemByFlexUnitId(flexUnitId) {
+  const query = `{
+    boards(ids: [${REPAIR_TRACKER_BOARD_ID}]) {
+      items_page(limit: 1, query_params: {
+        rules: [{ column_id: "${OOC_COL.flexUnitId}", compare_value: ["${flexUnitId}"] }]
+      }) {
+        items { id name }
+      }
+    }
+  }`;
+  const res = await fetch(MONDAY_API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_KEY },
+    body: JSON.stringify({ query }),
+  });
+  const result = await res.json();
+  const items = result.data?.boards?.[0]?.items_page?.items || [];
+  return items[0] || null;
+}
+
+/** Derive status label from serial unit flags */
+function deriveUnitStatus(unit) {
+  if (!unit) return 'OOC';
+  if (unit.decommissioned) return 'Decommissioned';
+  if (unit.presumedMissing) return 'Missing';
+  if (unit.ooc) return 'OOC';
+  return 'In Service';
+}
+
+/** Create or update a parent item for a serial unit */
+async function upsertRepairTrackerItem(unit, oocRecords) {
+  const flexUnitId = unit.id;
+  const serialNumber = unit.serial || '';
+  const barcode = unit.barcode || '';
+  const modelName = oocRecords[0]?.modelName || unit.modelId || '';
+  const currentLocation = unit.currentLocation || '';
+  const status = deriveUnitStatus(unit);
+  const incidentCount = oocRecords.length;
+  const today = new Date().toISOString().split('T')[0];
+  const itemName = `${modelName} — SN:${serialNumber}`;
+
+  const columnValues = JSON.stringify({
+    [OOC_COL.serialNumber]:      serialNumber,
+    [OOC_COL.barcode]:           barcode,
+    [OOC_COL.modelName]:         modelName,
+    [OOC_COL.currentStatus]:     { label: status },
+    [OOC_COL.currentLocation]:   currentLocation,
+    [OOC_COL.totalOocIncidents]: incidentCount,
+    [OOC_COL.lastSynced]:        { date: today },
+    [OOC_COL.flexUnitId]:        flexUnitId,
+  });
+
+  const existing = await findRepairItemByFlexUnitId(flexUnitId);
+
+  if (existing) {
+    // UPDATE
+    const mutation = `mutation {
+      change_multiple_column_values(
+        board_id: ${REPAIR_TRACKER_BOARD_ID},
+        item_id: ${existing.id},
+        column_values: ${JSON.stringify(columnValues)}
+      ) { id }
+    }`;
+    const res = await fetch(MONDAY_API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_KEY },
+      body: JSON.stringify({ query: mutation }),
+    });
+    const result = await res.json();
+    if (result.errors) throw new Error('Update item failed: ' + JSON.stringify(result.errors));
+    return { action: 'updated', itemId: existing.id };
+  } else {
+    // CREATE
+    const mutation = `mutation {
+      create_item(
+        board_id: ${REPAIR_TRACKER_BOARD_ID},
+        item_name: ${JSON.stringify(itemName)},
+        column_values: ${JSON.stringify(columnValues)}
+      ) { id }
+    }`;
+    const res = await fetch(MONDAY_API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_KEY },
+      body: JSON.stringify({ query: mutation }),
+    });
+    const result = await res.json();
+    if (result.errors) throw new Error('Create item failed: ' + JSON.stringify(result.errors));
+    return { action: 'created', itemId: result.data?.create_item?.id };
+  }
+}
+
+/** Find an existing subitem by Flex OOC ID */
+async function findSubitemByFlexOocId(parentItemId, flexOocId) {
+  const query = `{
+    items(ids: [${parentItemId}]) {
+      subitems {
+        id
+        column_values(ids: ["${OOC_SUB_COL.flexOocId}"]) { id text }
+      }
+    }
+  }`;
+  const res = await fetch(MONDAY_API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_KEY },
+    body: JSON.stringify({ query }),
+  });
+  const result = await res.json();
+  const subitems = result.data?.items?.[0]?.subitems || [];
+  return subitems.find(s => s.column_values?.find(c => c.id === OOC_SUB_COL.flexOocId)?.text === flexOocId) || null;
+}
+
+/** Create or update a subitem for an OOC record */
+async function upsertOocSubitem(parentItemId, oocRecord) {
+  const flexOocId   = String(oocRecord.id);
+  const repairStatus = oocRecord.resolved ? 'Resolved' : 'Open';
+  const reportedDate = oocRecord.reportedDate ? oocRecord.reportedDate.split('T')[0] : null;
+  const resolvedDate = oocRecord.resolvedDate ? oocRecord.resolvedDate.split('T')[0] : null;
+  const daysDown = (reportedDate && resolvedDate)
+    ? Math.round((new Date(resolvedDate) - new Date(reportedDate)) / 86400000)
+    : null;
+
+  const columnValues = JSON.stringify({
+    [OOC_SUB_COL.repairStatus]:  { label: repairStatus },
+    [OOC_SUB_COL.oocReason]:     { text: oocRecord.reason || '' },
+    ...(reportedDate && { [OOC_SUB_COL.reportedDate]: { date: reportedDate } }),
+    [OOC_SUB_COL.reportedBy]:    oocRecord.reportedBy || '',
+    ...(resolvedDate && { [OOC_SUB_COL.resolvedDate]: { date: resolvedDate } }),
+    ...(daysDown !== null && { [OOC_SUB_COL.daysDown]: daysDown }),
+    [OOC_SUB_COL.flexOocId]:     flexOocId,
+  });
+
+  const subitemName = (oocRecord.reason || 'OOC Incident').substring(0, 80);
+  const existing = await findSubitemByFlexOocId(parentItemId, flexOocId);
+
+  if (existing) {
+    const mutation = `mutation {
+      change_multiple_column_values(
+        board_id: ${REPAIR_TRACKER_SUBITEMS_BOARD_ID},
+        item_id: ${existing.id},
+        column_values: ${JSON.stringify(columnValues)}
+      ) { id }
+    }`;
+    const res = await fetch(MONDAY_API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_KEY },
+      body: JSON.stringify({ query: mutation }),
+    });
+    const result = await res.json();
+    if (result.errors) throw new Error('Update subitem failed: ' + JSON.stringify(result.errors));
+    return { action: 'updated', subitemId: existing.id };
+  } else {
+    const mutation = `mutation {
+      create_subitem(
+        parent_item_id: ${parentItemId},
+        item_name: ${JSON.stringify(subitemName)},
+        column_values: ${JSON.stringify(columnValues)}
+      ) { id }
+    }`;
+    const res = await fetch(MONDAY_API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_KEY },
+      body: JSON.stringify({ query: mutation }),
+    });
+    const result = await res.json();
+    if (result.errors) throw new Error('Create subitem failed: ' + JSON.stringify(result.errors));
+    return { action: 'created', subitemId: result.data?.create_subitem?.id };
+  }
+}
+
+// ================================================================
+// ROUTE: sync-ooc
+// Cron: daily at 6:00 AM UTC (midnight–1 AM CST)
+// Pulls all OOC records + unit details from Flex,
+// upserts parent items and subitem OOC records in monday.com
+// ================================================================
+async function handleSyncOocRoute(req, res) {
+  const startedAt = Date.now();
+  console.log('\n🔧 sync-ooc starting');
+
+  // ── Step 1: Paginate all OOC records from Flex ─────────────────
+  const allOocRecords = [];
+  let page = 0;
+  let keepGoing = true;
+
+  while (keepGoing) {
+    const data = await fetchFlexOocPage(page, 100);
+    const records = data.content || data.data || [];
+    console.log(`  📄 OOC page ${page}: ${records.length} records`);
+    allOocRecords.push(...records);
+    if (data.last || records.length < 100) {
+      keepGoing = false;
+    } else {
+      page++;
+      if (page >= 50) { console.log('⚠️ OOC page cap (50) reached'); keepGoing = false; }
+    }
+  }
+
+  console.log(`📋 Total OOC records fetched: ${allOocRecords.length}`);
+
+  // ── Step 2: Group OOC records by serialUnitId ──────────────────
+  const byUnit = {};
+  for (const rec of allOocRecords) {
+    if (!rec.serialUnitId) continue;
+    if (!byUnit[rec.serialUnitId]) byUnit[rec.serialUnitId] = [];
+    byUnit[rec.serialUnitId].push(rec);
+  }
+  const unitIds = Object.keys(byUnit);
+  console.log(`🔩 Unique serial units with OOC records: ${unitIds.length}`);
+
+  // ── Step 3: Process each unit ──────────────────────────────────
+  const results = { itemsCreated: 0, itemsUpdated: 0, subitemsCreated: 0, subitemsUpdated: 0, errors: 0 };
+
+  for (const unitId of unitIds) {
+    try {
+      // Fetch unit details from Flex
+      const unit = await fetchFlexSerialUnit(unitId);
+      if (!unit) { results.errors++; continue; }
+
+      // Upsert the parent monday item
+      const { action, itemId } = await upsertRepairTrackerItem(unit, byUnit[unitId]);
+      results[action === 'created' ? 'itemsCreated' : 'itemsUpdated']++;
+      console.log(`  ${action === 'created' ? '✨' : '🔄'} Unit ${unit.serial || unitId}: ${action} (item ${itemId})`);
+
+      // Upsert subitems for each OOC record
+      for (const oocRec of byUnit[unitId]) {
+        try {
+          const sub = await upsertOocSubitem(itemId, oocRec);
+          results[sub.action === 'created' ? 'subitemsCreated' : 'subitemsUpdated']++;
+        } catch (subErr) {
+          console.error(`    ❌ Subitem error for OOC ${oocRec.id}:`, subErr.message);
+          results.errors++;
+        }
+      }
+
+      // Brief pause between units to be kind to both APIs
+      await new Promise(ok => setTimeout(ok, 150));
+    } catch (err) {
+      console.error(`  ❌ Error processing unit ${unitId}:`, err.message);
+      results.errors++;
+    }
+  }
+
+  const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
+  const summary = { ok: true, elapsed: `${elapsed}s`, totalOocRecords: allOocRecords.length, uniqueUnits: unitIds.length, ...results };
+  console.log('\n📊 sync-ooc complete:', summary);
+  return res.status(200).json(summary);
+}
+
+// ================================================================
+// ROUTE: resolve-ooc
+// Triggered by monday.com webhook when tech sets Repair Status → "Resolved"
+// Pushes the resolution back to Flex and stamps Resolved Date + Days Down
+// ================================================================
+async function handleResolveOocRoute(req, res) {
+  console.log('\n✅ resolve-ooc triggered');
+  const body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body || {};
+
+  // monday webhook challenge handshake
+  if (body.challenge) return res.status(200).json({ challenge: body.challenge });
+
+  const subitemId = body.event?.pulseId;
+  if (!subitemId) return res.status(400).json({ error: 'Missing pulseId in event payload' });
+
+  try {
+    // ── Fetch the subitem from monday to get Flex OOC ID + dates ─
+    const query = `{
+      items(ids: [${subitemId}]) {
+        column_values(ids: [
+          "${OOC_SUB_COL.flexOocId}",
+          "${OOC_SUB_COL.reportedDate}",
+          "${OOC_SUB_COL.repairStatus}"
+        ]) { id text }
+      }
+    }`;
+    const mondayRes = await fetch(MONDAY_API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_KEY },
+      body: JSON.stringify({ query }),
+    });
+    const mondayData = await mondayRes.json();
+    const cols = mondayData.data?.items?.[0]?.column_values || [];
+    const flexOocId    = cols.find(c => c.id === OOC_SUB_COL.flexOocId)?.text?.trim();
+    const reportedDate = cols.find(c => c.id === OOC_SUB_COL.reportedDate)?.text?.trim();
+    const repairStatus = cols.find(c => c.id === OOC_SUB_COL.repairStatus)?.text?.trim();
+
+    // Only act if the status is actually Resolved
+    if (repairStatus !== 'Resolved') {
+      return res.status(200).json({ ok: true, skipped: true, reason: 'Status is not Resolved' });
+    }
+
+    if (!flexOocId) {
+      console.warn(`⚠️ Subitem ${subitemId} has no Flex OOC ID — cannot push to Flex`);
+      return res.status(200).json({ ok: true, skipped: true, reason: 'No Flex OOC ID on subitem' });
+    }
+
+    // ── Push resolution to Flex ───────────────────────────────────
+    const flexRes = await fetch(
+      `${FLEX_BASE_URL}/v3/api/ooc-record/resolve?id=${encodeURIComponent(flexOocId)}`,
+      {
+        method: 'PUT',
+        headers: { 'X-Auth-Token': FLEX_API_KEY, 'Accept': 'application/json' },
+      }
+    );
+    if (!flexRes.ok) {
+      const errText = await flexRes.text();
+      console.error(`❌ Flex resolve failed for OOC ${flexOocId}: ${flexRes.status} ${errText}`);
+      // Non-fatal — still stamp monday with resolved date
+    } else {
+      console.log(`✅ Flex OOC ${flexOocId} resolved`);
+    }
+
+    // ── Stamp Resolved Date + Days Down in monday ─────────────────
+    const today = new Date().toISOString().split('T')[0];
+    const daysDown = reportedDate
+      ? Math.round((new Date(today) - new Date(reportedDate)) / 86400000)
+      : null;
+
+    const updateCols = JSON.stringify({
+      [OOC_SUB_COL.resolvedDate]: { date: today },
+      ...(daysDown !== null && { [OOC_SUB_COL.daysDown]: daysDown }),
+    });
+
+    const updateMutation = `mutation {
+      change_multiple_column_values(
+        board_id: ${REPAIR_TRACKER_SUBITEMS_BOARD_ID},
+        item_id: ${subitemId},
+        column_values: ${JSON.stringify(updateCols)}
+      ) { id }
+    }`;
+    await fetch(MONDAY_API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_KEY },
+      body: JSON.stringify({ query: updateMutation }),
+    });
+
+    return res.status(200).json({ ok: true, flexOocId, resolvedDate: today, daysDown });
+  } catch (err) {
+    console.error('❌ resolve-ooc error:', err);
+    return res.status(500).json({ error: err.message });
+  }
+}
+
+
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -1316,6 +1726,18 @@ export default async function handler(req, res) {
   if (req.query && req.query.route === 'dedup-group') {
     try { return await handleDedupGroupRoute(req, res); }
     catch (err) { console.error('❌ dedup-group error:', err); return res.status(500).json({ error: err.message }); }
+  }
+
+  // ── SYNC-OOC ROUTE ───────────────────────────────────────────
+  if (req.query && req.query.route === 'sync-ooc') {
+    try { return await handleSyncOocRoute(req, res); }
+    catch (err) { console.error('❌ sync-ooc error:', err); return res.status(500).json({ error: err.message }); }
+  }
+
+  // ── RESOLVE-OOC ROUTE ─────────────────────────────────────────
+  if (req.query && req.query.route === 'resolve-ooc') {
+    try { return await handleResolveOocRoute(req, res); }
+    catch (err) { console.error('❌ resolve-ooc error:', err); return res.status(500).json({ error: err.message }); }
   }
 
   // ── SORT-NEW ROUTE ────────────────────────────────────────────
