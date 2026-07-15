@@ -1300,10 +1300,11 @@ async function handleSortNewRoute(req, res) {
 }
 
 
+
 // ================================================================
 // OOC SYNC CONSTANTS (Equipment Repair Tracker)
 // ================================================================
-const REPAIR_TRACKER_BOARD_ID = process.env.REPAIR_TRACKER_BOARD_ID || '18422076626';
+const REPAIR_TRACKER_BOARD_ID          = process.env.REPAIR_TRACKER_BOARD_ID || '18422076626';
 const REPAIR_TRACKER_SUBITEMS_BOARD_ID = '18422076650';
 
 // Parent item column IDs
@@ -1311,7 +1312,7 @@ const OOC_COL = {
   serialNumber:      'text_mm59e67m',
   barcode:           'text_mm598skj',
   modelName:         'text_mm59m56r',
-  currentStatus:     'color_mm59nf37',   // In Service | OOC | Decommissioned | Missing
+  currentStatus:     'color_mm59nf37',
   currentLocation:   'text_mm596rtg',
   totalOocIncidents: 'numeric_mm59gjpv',
   unitNotes:         'long_text_mm59y69c',
@@ -1321,14 +1322,14 @@ const OOC_COL = {
 
 // Subitem column IDs
 const OOC_SUB_COL = {
-  repairStatus:  'color_mm59ah67',    // Open | In Progress | Waiting on Parts | Resolved
+  repairStatus:  'color_mm59ah67',
   oocReason:     'long_text_mm59vb84',
   reportedDate:  'date_mm592kt0',
   reportedBy:    'text_mm59tg2y',
   assignedTech:  'multiple_person_mm59xhd2',
   techNotes:     'long_text_mm59s1xg',
   partsNeeded:   'long_text_mm59nrh1',
-  partsStatus:   'color_mm59c1x4',    // Not Needed | To Order | Ordered | Received | Backordered
+  partsStatus:   'color_mm59c1x4',
   partsCost:     'numeric_mm59c30n',
   laborHours:    'numeric_mm59bk8e',
   resolvedDate:  'date_mm59541s',
@@ -1352,60 +1353,95 @@ async function fetchFlexOocPage(page = 0, size = 100) {
   return await response.json();
 }
 
-/** Fetch serial unit details from Flex */
-async function fetchFlexSerialUnit(unitId) {
-  const url = `${FLEX_BASE_URL}/api/serial-unit/${unitId}`;
-  const response = await fetch(url, {
-    headers: { 'X-Auth-Token': FLEX_API_KEY, 'Accept': 'application/json' },
-  });
-  if (!response.ok) {
-    console.warn(`⚠️ Could not fetch serial unit ${unitId}: ${response.status}`);
-    return null;
-  }
-  return await response.json();
-}
-
-/** Find a monday parent item by Flex Unit ID (column search) */
-async function findRepairItemByFlexUnitId(flexUnitId) {
-  const query = `{
-    boards(ids: [${REPAIR_TRACKER_BOARD_ID}]) {
-      items_page(limit: 1, query_params: {
-        rules: [{ column_id: "${OOC_COL.flexUnitId}", compare_value: ["${flexUnitId}"] }]
-      }) {
-        items { id name }
+/**
+ * Pre-fetch ALL existing parent items from the Repair Tracker board.
+ * Returns a map of { flexUnitId → mondayItemId }
+ * One bulk query instead of per-item lookups.
+ */
+async function buildParentItemsMap() {
+  const map = {};
+  let cursor = null;
+  do {
+    const q = `{
+      boards(ids: [${REPAIR_TRACKER_BOARD_ID}]) {
+        items_page(limit: 100${cursor ? `, cursor: "${cursor}"` : ''}) {
+          cursor
+          items {
+            id
+            column_values(ids: ["${OOC_COL.flexUnitId}"]) { id text }
+          }
+        }
       }
+    }`;
+    const res = await fetch(MONDAY_API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_KEY },
+      body: JSON.stringify({ query: q }),
+    });
+    const result = await res.json();
+    const page = result.data?.boards?.[0]?.items_page;
+    for (const item of page?.items || []) {
+      const flexUnitId = item.column_values?.find(c => c.id === OOC_COL.flexUnitId)?.text?.trim();
+      if (flexUnitId) map[flexUnitId] = item.id;
     }
-  }`;
-  const res = await fetch(MONDAY_API_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_KEY },
-    body: JSON.stringify({ query }),
-  });
-  const result = await res.json();
-  const items = result.data?.boards?.[0]?.items_page?.items || [];
-  return items[0] || null;
+    cursor = page?.cursor || null;
+  } while (cursor);
+  return map;
 }
 
-/** Derive status label from serial unit flags */
-function deriveUnitStatus(unit) {
-  if (!unit) return 'OOC';
-  if (unit.decommissioned) return 'Decommissioned';
-  if (unit.presumedMissing) return 'Missing';
-  if (unit.ooc) return 'OOC';
-  return 'In Service';
+/**
+ * Pre-fetch ALL existing subitems from the Repair Tracker subitems board.
+ * Returns a map of { flexOocId → mondaySubitemId }
+ * One bulk query instead of per-subitem lookups.
+ */
+async function buildSubitemsMap() {
+  const map = {};
+  let cursor = null;
+  do {
+    const q = `{
+      boards(ids: [${REPAIR_TRACKER_SUBITEMS_BOARD_ID}]) {
+        items_page(limit: 100${cursor ? `, cursor: "${cursor}"` : ''}) {
+          cursor
+          items {
+            id
+            column_values(ids: ["${OOC_SUB_COL.flexOocId}"]) { id text }
+          }
+        }
+      }
+    }`;
+    const res = await fetch(MONDAY_API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_KEY },
+      body: JSON.stringify({ query: q }),
+    });
+    const result = await res.json();
+    const page = result.data?.boards?.[0]?.items_page;
+    for (const item of page?.items || []) {
+      const flexOocId = item.column_values?.find(c => c.id === OOC_SUB_COL.flexOocId)?.text?.trim();
+      if (flexOocId) map[flexOocId] = item.id;
+    }
+    cursor = page?.cursor || null;
+  } while (cursor);
+  return map;
 }
 
-/** Create or update a parent item for a serial unit */
-async function upsertRepairTrackerItem(unit, oocRecords) {
-  const flexUnitId = unit.id;
-  const serialNumber = unit.serial || '';
-  const barcode = unit.barcode || '';
-  const modelName = oocRecords[0]?.modelName || unit.modelId || '';
-  const currentLocation = unit.currentLocation || '';
-  const status = deriveUnitStatus(unit);
-  const incidentCount = oocRecords.length;
-  const today = new Date().toISOString().split('T')[0];
-  const itemName = `${modelName} — SN:${serialNumber}`;
+/** Derive status label from OOC records for this unit (no serial unit fetch needed) */
+function deriveUnitStatusFromRecords(oocRecords) {
+  const hasUnresolved = oocRecords.some(r => !r.resolved);
+  return hasUnresolved ? 'OOC' : 'In Service';
+}
+
+/** Upsert a parent item using pre-built map — no per-item query */
+async function upsertParentItem(unitId, oocRecords, existingMap) {
+  const sample      = oocRecords[0];
+  const serialNumber   = sample.serialNumber || '';
+  const barcode        = sample.barcode || '';
+  const modelName      = sample.modelName || '';
+  const currentLocation = sample.locationName || '';
+  const status         = deriveUnitStatusFromRecords(oocRecords);
+  const incidentCount  = oocRecords.length;
+  const today          = new Date().toISOString().split('T')[0];
+  const itemName       = `${modelName} — SN:${serialNumber}`;
 
   const columnValues = JSON.stringify({
     [OOC_COL.serialNumber]:      serialNumber,
@@ -1415,17 +1451,16 @@ async function upsertRepairTrackerItem(unit, oocRecords) {
     [OOC_COL.currentLocation]:   currentLocation,
     [OOC_COL.totalOocIncidents]: incidentCount,
     [OOC_COL.lastSynced]:        { date: today },
-    [OOC_COL.flexUnitId]:        flexUnitId,
+    [OOC_COL.flexUnitId]:        unitId,
   });
 
-  const existing = await findRepairItemByFlexUnitId(flexUnitId);
+  const existingId = existingMap[unitId];
 
-  if (existing) {
-    // UPDATE
+  if (existingId) {
     const mutation = `mutation {
       change_multiple_column_values(
         board_id: ${REPAIR_TRACKER_BOARD_ID},
-        item_id: ${existing.id},
+        item_id: ${existingId},
         column_values: ${JSON.stringify(columnValues)}
       ) { id }
     }`;
@@ -1436,9 +1471,8 @@ async function upsertRepairTrackerItem(unit, oocRecords) {
     });
     const result = await res.json();
     if (result.errors) throw new Error('Update item failed: ' + JSON.stringify(result.errors));
-    return { action: 'updated', itemId: existing.id };
+    return { action: 'updated', itemId: existingId };
   } else {
-    // CREATE
     const mutation = `mutation {
       create_item(
         board_id: ${REPAIR_TRACKER_BOARD_ID},
@@ -1453,37 +1487,19 @@ async function upsertRepairTrackerItem(unit, oocRecords) {
     });
     const result = await res.json();
     if (result.errors) throw new Error('Create item failed: ' + JSON.stringify(result.errors));
-    return { action: 'created', itemId: result.data?.create_item?.id };
+    const newId = result.data?.create_item?.id;
+    existingMap[unitId] = newId; // update map for this run
+    return { action: 'created', itemId: newId };
   }
 }
 
-/** Find an existing subitem by Flex OOC ID */
-async function findSubitemByFlexOocId(parentItemId, flexOocId) {
-  const query = `{
-    items(ids: [${parentItemId}]) {
-      subitems {
-        id
-        column_values(ids: ["${OOC_SUB_COL.flexOocId}"]) { id text }
-      }
-    }
-  }`;
-  const res = await fetch(MONDAY_API_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_KEY },
-    body: JSON.stringify({ query }),
-  });
-  const result = await res.json();
-  const subitems = result.data?.items?.[0]?.subitems || [];
-  return subitems.find(s => s.column_values?.find(c => c.id === OOC_SUB_COL.flexOocId)?.text === flexOocId) || null;
-}
-
-/** Create or update a subitem for an OOC record */
-async function upsertOocSubitem(parentItemId, oocRecord) {
-  const flexOocId   = String(oocRecord.id);
+/** Upsert a subitem using pre-built map — no per-subitem query */
+async function upsertOocSubitem(parentItemId, oocRecord, existingSubMap) {
+  const flexOocId    = String(oocRecord.id);
   const repairStatus = oocRecord.resolved ? 'Resolved' : 'Open';
   const reportedDate = oocRecord.reportedDate ? oocRecord.reportedDate.split('T')[0] : null;
   const resolvedDate = oocRecord.resolvedDate ? oocRecord.resolvedDate.split('T')[0] : null;
-  const daysDown = (reportedDate && resolvedDate)
+  const daysDown     = (reportedDate && resolvedDate)
     ? Math.round((new Date(resolvedDate) - new Date(reportedDate)) / 86400000)
     : null;
 
@@ -1497,14 +1513,14 @@ async function upsertOocSubitem(parentItemId, oocRecord) {
     [OOC_SUB_COL.flexOocId]:     flexOocId,
   });
 
-  const subitemName = (oocRecord.reason || 'OOC Incident').substring(0, 80);
-  const existing = await findSubitemByFlexOocId(parentItemId, flexOocId);
+  const subitemName  = (oocRecord.reason || 'OOC Incident').substring(0, 80).replace(/\n/g, ' ');
+  const existingId   = existingSubMap[flexOocId];
 
-  if (existing) {
+  if (existingId) {
     const mutation = `mutation {
       change_multiple_column_values(
         board_id: ${REPAIR_TRACKER_SUBITEMS_BOARD_ID},
-        item_id: ${existing.id},
+        item_id: ${existingId},
         column_values: ${JSON.stringify(columnValues)}
       ) { id }
     }`;
@@ -1515,7 +1531,7 @@ async function upsertOocSubitem(parentItemId, oocRecord) {
     });
     const result = await res.json();
     if (result.errors) throw new Error('Update subitem failed: ' + JSON.stringify(result.errors));
-    return { action: 'updated', subitemId: existing.id };
+    return { action: 'updated', subitemId: existingId };
   } else {
     const mutation = `mutation {
       create_subitem(
@@ -1531,79 +1547,75 @@ async function upsertOocSubitem(parentItemId, oocRecord) {
     });
     const result = await res.json();
     if (result.errors) throw new Error('Create subitem failed: ' + JSON.stringify(result.errors));
-    return { action: 'created', subitemId: result.data?.create_subitem?.id };
+    const newId = result.data?.create_subitem?.id;
+    existingSubMap[flexOocId] = newId; // update map for this run
+    return { action: 'created', subitemId: newId };
   }
 }
 
 // ================================================================
-// ROUTE: sync-ooc
-// Cron: daily at 6:00 AM UTC (midnight–1 AM CST)
-// Pulls all OOC records + unit details from Flex,
-// upserts parent items and subitem OOC records in monday.com
+// ROUTE: sync-ooc  (optimized — bulk pre-fetch, no serial unit calls)
 // ================================================================
 async function handleSyncOocRoute(req, res) {
   const startedAt = Date.now();
-  console.log('\n🔧 sync-ooc starting');
+  console.log('\n🔧 sync-ooc starting (optimized)');
 
-  // ── Step 1: Paginate all OOC records from Flex ─────────────────
+  // ── Step 1: Fetch all OOC records from Flex ────────────────────
   const allOocRecords = [];
   let page = 0;
   let keepGoing = true;
-
   while (keepGoing) {
     const data = await fetchFlexOocPage(page, 100);
     const records = data.content || data.data || [];
     console.log(`  📄 OOC page ${page}: ${records.length} records`);
     allOocRecords.push(...records);
-    if (data.last || records.length < 100) {
-      keepGoing = false;
-    } else {
+    if (data.last || records.length < 100) keepGoing = false;
+    else {
       page++;
-      if (page >= 50) { console.log('⚠️ OOC page cap (50) reached'); keepGoing = false; }
+      if (page >= 50) { console.log('⚠️ OOC page cap (50)'); keepGoing = false; }
     }
   }
+  console.log(`📋 Total OOC records: ${allOocRecords.length}`);
 
-  console.log(`📋 Total OOC records fetched: ${allOocRecords.length}`);
-
-  // ── Step 2: Group OOC records by serialUnitId ──────────────────
+  // ── Step 2: Group by serialUnitId (skip non-serialized) ────────
   const byUnit = {};
   for (const rec of allOocRecords) {
-    if (!rec.serialUnitId) continue;
+    if (!rec.serialUnitId) continue; // skip cables/consumables with no serial unit
     if (!byUnit[rec.serialUnitId]) byUnit[rec.serialUnitId] = [];
     byUnit[rec.serialUnitId].push(rec);
   }
   const unitIds = Object.keys(byUnit);
-  console.log(`🔩 Unique serial units with OOC records: ${unitIds.length}`);
+  console.log(`🔩 Unique serialized units: ${unitIds.length}`);
 
-  // ── Step 3: Process each unit ──────────────────────────────────
+  // ── Step 3: Pre-fetch existing monday items/subitems (bulk) ────
+  console.log('📦 Pre-fetching existing monday items...');
+  const [parentMap, subMap] = await Promise.all([
+    buildParentItemsMap(),
+    buildSubitemsMap(),
+  ]);
+  console.log(`  ✅ Parent map: ${Object.keys(parentMap).length} existing items`);
+  console.log(`  ✅ Subitem map: ${Object.keys(subMap).length} existing subitems`);
+
+  // ── Step 4: Upsert all units + subitems ────────────────────────
   const results = { itemsCreated: 0, itemsUpdated: 0, subitemsCreated: 0, subitemsUpdated: 0, errors: 0 };
 
   for (const unitId of unitIds) {
     try {
-      // Fetch unit details from Flex
-      const unit = await fetchFlexSerialUnit(unitId);
-      if (!unit) { results.errors++; continue; }
-
-      // Upsert the parent monday item
-      const { action, itemId } = await upsertRepairTrackerItem(unit, byUnit[unitId]);
+      const { action, itemId } = await upsertParentItem(unitId, byUnit[unitId], parentMap);
       results[action === 'created' ? 'itemsCreated' : 'itemsUpdated']++;
-      console.log(`  ${action === 'created' ? '✨' : '🔄'} Unit ${unit.serial || unitId}: ${action} (item ${itemId})`);
+      console.log(`  ${action === 'created' ? '✨' : '🔄'} ${byUnit[unitId][0]?.serialNumber || unitId}: ${action} → item ${itemId}`);
 
-      // Upsert subitems for each OOC record
       for (const oocRec of byUnit[unitId]) {
         try {
-          const sub = await upsertOocSubitem(itemId, oocRec);
+          const sub = await upsertOocSubitem(itemId, oocRec, subMap);
           results[sub.action === 'created' ? 'subitemsCreated' : 'subitemsUpdated']++;
         } catch (subErr) {
-          console.error(`    ❌ Subitem error for OOC ${oocRec.id}:`, subErr.message);
+          console.error(`    ❌ Subitem error OOC ${oocRec.id}:`, subErr.message);
           results.errors++;
         }
       }
-
-      // Brief pause between units to be kind to both APIs
-      await new Promise(ok => setTimeout(ok, 150));
     } catch (err) {
-      console.error(`  ❌ Error processing unit ${unitId}:`, err.message);
+      console.error(`  ❌ Unit ${unitId}:`, err.message);
       results.errors++;
     }
   }
@@ -1616,21 +1628,17 @@ async function handleSyncOocRoute(req, res) {
 
 // ================================================================
 // ROUTE: resolve-ooc
-// Triggered by monday.com webhook when tech sets Repair Status → "Resolved"
-// Pushes the resolution back to Flex and stamps Resolved Date + Days Down
+// monday webhook → push resolution back to Flex + stamp subitem
 // ================================================================
 async function handleResolveOocRoute(req, res) {
   console.log('\n✅ resolve-ooc triggered');
   const body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body || {};
-
-  // monday webhook challenge handshake
   if (body.challenge) return res.status(200).json({ challenge: body.challenge });
 
   const subitemId = body.event?.pulseId;
   if (!subitemId) return res.status(400).json({ error: 'Missing pulseId in event payload' });
 
   try {
-    // ── Fetch the subitem from monday to get Flex OOC ID + dates ─
     const query = `{
       items(ids: [${subitemId}]) {
         column_values(ids: [
@@ -1646,59 +1654,31 @@ async function handleResolveOocRoute(req, res) {
       body: JSON.stringify({ query }),
     });
     const mondayData = await mondayRes.json();
-    const cols = mondayData.data?.items?.[0]?.column_values || [];
-    const flexOocId    = cols.find(c => c.id === OOC_SUB_COL.flexOocId)?.text?.trim();
+    const cols        = mondayData.data?.items?.[0]?.column_values || [];
+    const flexOocId   = cols.find(c => c.id === OOC_SUB_COL.flexOocId)?.text?.trim();
     const reportedDate = cols.find(c => c.id === OOC_SUB_COL.reportedDate)?.text?.trim();
     const repairStatus = cols.find(c => c.id === OOC_SUB_COL.repairStatus)?.text?.trim();
 
-    // Only act if the status is actually Resolved
-    if (repairStatus !== 'Resolved') {
-      return res.status(200).json({ ok: true, skipped: true, reason: 'Status is not Resolved' });
-    }
+    if (repairStatus !== 'Resolved') return res.status(200).json({ ok: true, skipped: true, reason: 'Status is not Resolved' });
+    if (!flexOocId)                  return res.status(200).json({ ok: true, skipped: true, reason: 'No Flex OOC ID on subitem' });
 
-    if (!flexOocId) {
-      console.warn(`⚠️ Subitem ${subitemId} has no Flex OOC ID — cannot push to Flex`);
-      return res.status(200).json({ ok: true, skipped: true, reason: 'No Flex OOC ID on subitem' });
-    }
-
-    // ── Push resolution to Flex ───────────────────────────────────
     const flexRes = await fetch(
       `${FLEX_BASE_URL}/api/ooc-record/resolve?id=${encodeURIComponent(flexOocId)}`,
-      {
-        method: 'PUT',
-        headers: { 'X-Auth-Token': FLEX_API_KEY, 'Accept': 'application/json' },
-      }
+      { method: 'PUT', headers: { 'X-Auth-Token': FLEX_API_KEY, 'Accept': 'application/json' } }
     );
-    if (!flexRes.ok) {
-      const errText = await flexRes.text();
-      console.error(`❌ Flex resolve failed for OOC ${flexOocId}: ${flexRes.status} ${errText}`);
-      // Non-fatal — still stamp monday with resolved date
-    } else {
-      console.log(`✅ Flex OOC ${flexOocId} resolved`);
-    }
+    if (!flexRes.ok) console.error(`❌ Flex resolve failed for ${flexOocId}: ${flexRes.status}`);
+    else             console.log(`✅ Flex OOC ${flexOocId} resolved`);
 
-    // ── Stamp Resolved Date + Days Down in monday ─────────────────
-    const today = new Date().toISOString().split('T')[0];
-    const daysDown = reportedDate
-      ? Math.round((new Date(today) - new Date(reportedDate)) / 86400000)
-      : null;
-
+    const today    = new Date().toISOString().split('T')[0];
+    const daysDown = reportedDate ? Math.round((new Date(today) - new Date(reportedDate)) / 86400000) : null;
     const updateCols = JSON.stringify({
       [OOC_SUB_COL.resolvedDate]: { date: today },
       ...(daysDown !== null && { [OOC_SUB_COL.daysDown]: daysDown }),
     });
-
-    const updateMutation = `mutation {
-      change_multiple_column_values(
-        board_id: ${REPAIR_TRACKER_SUBITEMS_BOARD_ID},
-        item_id: ${subitemId},
-        column_values: ${JSON.stringify(updateCols)}
-      ) { id }
-    }`;
     await fetch(MONDAY_API_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_KEY },
-      body: JSON.stringify({ query: updateMutation }),
+      body: JSON.stringify({ query: `mutation { change_multiple_column_values(board_id: ${REPAIR_TRACKER_SUBITEMS_BOARD_ID}, item_id: ${subitemId}, column_values: ${JSON.stringify(updateCols)}) { id } }` }),
     });
 
     return res.status(200).json({ ok: true, flexOocId, resolvedDate: today, daysDown });
