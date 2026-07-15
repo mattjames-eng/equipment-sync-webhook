@@ -1346,6 +1346,7 @@ async function fetchFlexOocPage(page = 0, size = 100) {
   const response = await fetch(url, {
     method: 'POST',
     headers: { 'X-Auth-Token': FLEX_API_KEY, 'Accept': 'application/json', 'Content-Type': 'application/json' },
+    body: '[]',
   });
   if (!response.ok) throw new Error(`Flex OOC grid-node failed: ${response.status} ${await response.text()}`);
   return await response.json();
