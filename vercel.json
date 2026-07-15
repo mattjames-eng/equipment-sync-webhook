@@ -27,6 +27,14 @@
     {
       "source": "/api/contacts/sort-new",
       "destination": "/api/contacts/pull-from-flex?route=sort-new"
+    },
+    {
+      "source": "/api/inventory/sync-ooc",
+      "destination": "/api/contacts/pull-from-flex?route=sync-ooc"
+    },
+    {
+      "source": "/api/inventory/resolve-ooc",
+      "destination": "/api/contacts/pull-from-flex?route=resolve-ooc"
     }
   ],
   "functions": {
@@ -76,6 +84,10 @@
     {
       "path": "/api/pos/pull-from-flex",
       "schedule": "15 11 * * *"
+    },
+    {
+      "path": "/api/inventory/sync-ooc",
+      "schedule": "0 6 * * *"
     }
   ]
 }
