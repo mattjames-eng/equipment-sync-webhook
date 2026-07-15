@@ -1306,7 +1306,7 @@ async function handleSortNewRoute(req, res) {
 // OOC SYNC CONSTANTS (Equipment Repair Tracker)
 // ================================================================
 const REPAIR_TRACKER_BOARD_ID          = process.env.REPAIR_TRACKER_BOARD_ID || '18422076626';
-const REPAIR_TRACKER_SUBITEMS_BOARD_ID = '18422076650';
+const REPAIR_TRACKER_SUBITEMS_BOARD_ID = '18422082658'; // auto-created subitems board, connected to main tracker
 
 const OOC_COL = {
   serialNumber:      'text_mm59e67m',
@@ -1320,13 +1320,20 @@ const OOC_COL = {
 };
 
 const OOC_SUB_COL = {
-  repairStatus:  'color_mm59ah67',
-  oocReason:     'long_text_mm59vb84',
-  reportedDate:  'date_mm592kt0',
-  reportedBy:    'text_mm59tg2y',
-  resolvedDate:  'date_mm59541s',
-  daysDown:      'numeric_mm59b96r',
-  flexOocId:     'text_mm59zmdy',
+  repairStatus:  'color_mm59whhs',
+  oocReason:     'long_text_mm59kkvy',
+  reportedDate:  'date_mm59wf1d',
+  reportedBy:    'text_mm595177',
+  resolvedDate:  'date_mm59rnd0',
+  daysDown:      'numeric_mm595x0j',
+  flexOocId:     'text_mm59n7g7',
+  // Extended columns (available for future use / manual entry)
+  partsStatus:   'color_mm59616n',
+  techNotes:     'long_text_mm594eeb',
+  partsCost:     'numeric_mm59zss4',
+  laborHours:    'numeric_mm59aqym',
+  partsNeeded:   'long_text_mm59vqkv',
+  assignedTech:  'multiple_person_mm597tbs',
 };
 
 // ================================================================
