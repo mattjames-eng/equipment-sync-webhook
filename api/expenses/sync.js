@@ -38,6 +38,7 @@
 //   WO → Project relation:         board_relation_mm3xdc15
 //   WO Actual Hours:               numeric_mm3ypet2
 //   WO Total Session Expenses:     numeric_mm5a3zhg
+//   WO Sync Sessions status:       color_mm5an1vm
 //
 // Columns — WO Session Subitems:
 //   Hours Worked:                  numeric_mm5awwer
@@ -64,6 +65,7 @@ const EXPENSE_PROJECT_RELATION = 'board_relation_mm46qsc5';
 const WO_PROJECT_RELATION      = 'board_relation_mm3xdc15';
 const WO_ACTUAL_HOURS_COL      = 'numeric_mm3ypet2';
 const WO_TOTAL_EXPENSES_COL    = 'numeric_mm5a3zhg';
+const WO_SYNC_STATUS_COL       = 'color_mm5an1vm';
 
 // Work Order session subitem columns
 const WO_SESSION_HOURS_COL     = 'numeric_mm5awwer';
@@ -275,7 +277,7 @@ async function recalcWorkOrderSessions(workOrderItemId) {
 }
 
 
-// ── Reset Sync Expenses status to blank ─────────────────────────
+// ── Reset Sync Expenses status to blank (Projects board) ────────
 async function resetSyncStatus(projectId) {
   try {
     await mondayQuery(
@@ -290,7 +292,26 @@ async function resetSyncStatus(projectId) {
     );
     console.log(`🔄 Sync Expenses status reset to blank for project ${projectId}`);
   } catch (e) {
-    console.warn(`⚠️ Failed to reset sync status: ${e.message}`);
+    console.warn(`⚠️ Failed to reset project sync status: ${e.message}`);
+  }
+}
+
+// ── Reset Sync Sessions status to blank (Work Orders board) ─────
+async function resetWoSyncStatus(workOrderItemId) {
+  try {
+    await mondayQuery(
+      `mutation($boardId: ID!, $itemId: ID!, $values: JSON!) {
+        change_multiple_column_values(board_id: $boardId, item_id: $itemId, column_values: $values) { id }
+      }`,
+      {
+        boardId: WORK_ORDERS_BOARD_ID,
+        itemId:  workOrderItemId.toString(),
+        values:  JSON.stringify({ [WO_SYNC_STATUS_COL]: { label: '' } })
+      }
+    );
+    console.log(`🔄 Sync Sessions status reset to blank for WO ${workOrderItemId}`);
+  } catch (e) {
+    console.warn(`⚠️ Failed to reset WO sync status: ${e.message}`);
   }
 }
 
@@ -431,6 +452,9 @@ export default async function handler(req, res) {
     console.log(`🔄 Manual WO recalc triggered for Work Order: ${workOrderItemId}`);
     try {
       const woResult = await recalcWorkOrderSessions(workOrderItemId);
+
+      // Always reset Sync Sessions status — even if no project is linked
+      await resetWoSyncStatus(workOrderItemId);
 
       if (!woResult.projectId) {
         console.warn(`⚠️ Work Order ${workOrderItemId} has no linked project — WO totals updated, project skipped`);
