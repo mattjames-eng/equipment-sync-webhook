@@ -58,6 +58,9 @@
     },
     "api/contacts/pull-from-flex.js": {
       "maxDuration": 60
+    },
+    "api/tasks/[action].js": {
+      "maxDuration": 60
     }
   },
   "crons": [
