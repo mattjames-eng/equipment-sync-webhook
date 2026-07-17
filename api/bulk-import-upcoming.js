@@ -34,7 +34,6 @@ const FLEX_BASE_URL   = process.env.FLEX_BASE_URL || 'https://anticstudios.flexr
 const FLEX_API_KEY    = process.env.FLEX_API_KEY_QUOTES || process.env.FLEX_API_KEY;
 const MONDAY_API_URL  = 'https://api.monday.com/v2';
 const MONDAY_API_KEY  = process.env.MONDAY_API_KEY;
-const GOOGLE_APPS_SCRIPT_URL = process.env.GOOGLE_APPS_SCRIPT_URL;
 
 // ── Board / Group IDs ─────────────────────────────────────────────────────────
 const PROJECTS_BOARD_ID  = '18415679761';
@@ -58,26 +57,6 @@ const COL = {
   venueRelation:     'board_relation_mm3xrm02',
   pullsheetStatus:   'color_mm3y3bxj',   // "Not Synced"
 };
-
-// ── Create Google Drive folder structure via Apps Script ──────────────────────
-async function createProjectFolder(projectName, projectId, clientName, eventDate, pmEmail) {
-  if (!GOOGLE_APPS_SCRIPT_URL) {
-    console.warn('[bulk-import] ⚠️ GOOGLE_APPS_SCRIPT_URL not set — skipping Drive folder creation');
-    return null;
-  }
-  try {
-    const response = await fetch(GOOGLE_APPS_SCRIPT_URL, {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ projectName, projectId, clientName, eventDate, pmEmail })
-    });
-    if (!response.ok) throw new Error(`Apps Script HTTP ${response.status}`);
-    return response.json();
-  } catch (err) {
-    console.warn(`[bulk-import] ⚠️ Drive folder creation failed: ${err.message}`);
-    return null;
-  }
-}
 
 // ── Domain Classifier (mirrors create-project-from-quote.js) ─────────────────
 // 'simple-project-element' is also classified as event-folder based on observed Flex domain values
@@ -459,23 +438,10 @@ async function processQuote(quoteResult, options) {
     const itemId = data?.create_item?.id;
     console.log(`[bulk-import] ✅ Created: "${projectName}" → item ${itemId}`);
 
-    // ── Create Google Drive folder structure ───────────────────────────────
-    if (itemId) {
-      try {
-        const driveResult = await createProjectFolder(
-          projectName,
-          itemId,
-          clientName,
-          eventDate,
-          personResponsibleEmail
-        );
-        if (driveResult?.folderId) {
-          console.log(`[bulk-import] 📁 Drive folder created: ${driveResult.folderUrl}`);
-        }
-      } catch (driveErr) {
-        console.warn(`[bulk-import] ⚠️ Drive folder creation skipped: ${driveErr.message}`);
-      }
-    }
+    // Drive folder creation intentionally omitted here.
+    // ?action=create-folder (in create-project-from-quote.js) is the single
+    // owner of Drive folder creation — it runs once during the Vibe app
+    // project setup flow. Bulk import is a data sync tool only.
 
     return { status: 'created', name: projectName, flexNum, eventDate, budget, clientName, venueName, itemId };
 
