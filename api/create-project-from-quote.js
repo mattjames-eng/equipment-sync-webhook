@@ -569,6 +569,63 @@ export default async function handler(req, res) {
         }
     }
 
+    // ── Route: ?action=sync-budget ────────────────────────────────────────────
+    // Fast, targeted budget sync for the Vibe app to call after a quote is created
+    // or repriced in Flex. No Flex search needed — uses UUIDs directly.
+    //
+    // POST /api/create-project-from-quote?action=sync-budget
+    // Body: { mondayItemId, quoteUUID }
+    //   mondayItemId — Projects board item ID to update
+    //   quoteUUID    — Flex financial document / quote UUID (text_mm4cwasc)
+    //
+    // Returns: { ok, itemId, budget }
+    if (req.query?.action === 'sync-budget') {
+        try {
+            const { mondayItemId, quoteUUID } = req.body || {};
+
+            if (!mondayItemId) return res.status(400).json({ ok: false, error: 'mondayItemId is required' });
+            if (!quoteUUID)    return res.status(400).json({ ok: false, error: 'quoteUUID is required' });
+
+            console.log(`\n💰 sync-budget | item: ${mondayItemId} | quote: ${quoteUUID}`);
+
+            // Fetch only totalPrice from Flex header-data — fast, single field
+            const hdRes = await fetch(
+                `${FLEX_BASE_URL}/api/element/${quoteUUID}/header-data?codeList=totalPrice`,
+                { headers: { 'X-Auth-Token': FLEX_API_KEY, 'Accept': 'application/json' } }
+            );
+            if (!hdRes.ok) throw new Error(`Flex header-data returned HTTP ${hdRes.status}`);
+            const hd = await hdRes.json();
+
+            const budget = extractFlexNumericValue(hd?.totalPrice);
+            console.log(`[sync-budget] 💵 totalPrice from Flex: ${budget}`);
+
+            // Write to Estimated Budget column on the Projects board
+            const mutation = `mutation {
+                change_column_value(
+                    board_id:  ${PROJECTS_BOARD_ID},
+                    item_id:   ${mondayItemId},
+                    column_id: "numeric_mm3xzncg",
+                    value:     ${JSON.stringify(String(budget))}
+                ) { id }
+            }`;
+
+            const mutRes = await fetch(MONDAY_API_URL, {
+                method:  'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_KEY },
+                body:    JSON.stringify({ query: mutation })
+            });
+            const mutData = await mutRes.json();
+            if (mutData.errors) throw new Error(`monday mutation failed: ${JSON.stringify(mutData.errors)}`);
+
+            console.log(`[sync-budget] ✅ Estimated Budget updated → $${budget} on item ${mondayItemId}`);
+            return res.status(200).json({ ok: true, itemId: mondayItemId, budget });
+
+        } catch (err) {
+            console.error('[sync-budget] ❌ Error:', err.message);
+            return res.status(500).json({ ok: false, error: err.message });
+        }
+    }
+
     try {
         const quoteId = req.body.quoteNumber || req.body.elementId || req.body.itemId || req.body['Flex Quote Number'];
         if (!quoteId) return res.status(400).json({ error: 'Missing active quote target tracking identifier parameter' });
