@@ -15,16 +15,16 @@
  * Body (all fields optional, POST only):
  * {
  *   "prefix":          "26-",    // Flex search term — default "26-"
- *   "maxResults":      200,      // Flex results per page — default 200
+ *   "maxResults":      number,   // Flex results per page (see handler for default)
  *   "includeClosed":   false,    // Include closed/past events — default false
  *   "dryRun":          false,    // true = analyze only, don't write to monday
  *   "resolveContacts": true,     // false = skip contact lookups (faster) — default true
- *   "batchSize":       5,        // Parallel project creates per wave — default 5
- *   "limit":           30        // Max new projects to import per run — default 30
+ *   "batchSize":       number,   // Parallel project creates per wave (see handler for default)
+ *   "limit":           number    // Max new projects to import per run (see handler for default)
  * }
  *
  * Author: Matt James, Antic Studios
- * Created: July 2026 — bulk companion to create-project-from-quote.js
+ * Author: Matt James, Antic Studios
  */
 
 export const config = { api: { bodyParser: true } };
@@ -289,7 +289,7 @@ async function fetchExistingFlexNumbers() {
 }
 
 // ── Fetch header data for a quote UUID ────────────────────────────────────────
-// FIX: header-data requires codeList param — matches create-project-from-quote.js line 407
+// header-data requires codeList param — see create-project-from-quote.js for reference
 // FIX 2: parentElementId must be in codeList to get the event folder UUID
 async function fetchHeaderData(quoteUUID) {
   return flexGet(`/api/element/${quoteUUID}/header-data?codeList=elementNumber,name,clientId,venueId,personResponsibleId,personResponsibleDefaultEmailAddress,eventDate,plannedStartDate,plannedEndDate,totalPrice,notes,equipmentList,parentElementId`);
@@ -326,7 +326,7 @@ async function processQuote(quoteResult, options) {
 
     // ── Extract dates ──────────────────────────────────────────────────────
     // FIX: header-data wraps dates in { data: "2026-...", fieldType: "date" } objects.
-    //      Use deepExtractName() + regex like create-project-from-quote.js does (lines 471-488).
+    //      Use deepExtractName() + regex — see create-project-from-quote.js for reference.
     const today = new Date().toISOString().split('T')[0];
     function extractDate(field) {
       const raw = deepExtractName(field);
