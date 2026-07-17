@@ -19,12 +19,6 @@
  * 9. Creates Google Drive folder structure from template
  * 
  * Author: Matt James, Antic Studios
- * Last Updated: June 16, 2026 - v3: Replaced broken API fallbacks with name-based second search
- *   - Step 1.6: strips quote suffix from name ("Hoofbeat 2026 - Video Walls" → "Hoofbeat 2026"),
- *     fires a second Flex search, and classifies ALL results — can find both Event Folder
- *     AND Equipment List UUID in a single call
- *   - Step 1.7: retained as last-resort equipment list scan using folder UUID if 1.6 found
- *     the folder but not the equipment list
  */
 
 const MONDAY_API_URL = 'https://api.monday.com/v2';
