@@ -25,10 +25,7 @@
 // NOTE: monday.com has no delete_subitem webhook event.
 // Zero out amount/hours before deleting, or use the Recalculate Spend button.
 //
-// Boards:
-//   Project Expenses parent:       18417272549
-//   Projects:                      18415679761
-//   Work Orders:                   18415824268
+// Board IDs: see constants at top of this file.
 //
 // Columns — Project Expenses:
 //   Expense → Project relation:    board_relation_mm46qsc5
