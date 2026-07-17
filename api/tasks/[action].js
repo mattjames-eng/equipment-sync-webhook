@@ -53,7 +53,8 @@ export default async function handler(req, res) {
     // STEP 2: Separate the task checklist into clean batch pools of 25 items
     const taskBatches = chunkArray(allTemplateSubitems, 25);
 
-    // FIX 1: $columnValues must be JSON! not String! — monday.com expects a JSON object, not a stringified value
+    // column_values variable must be declared as JSON! (not String!) so the GraphQL layer accepts it,
+    // but the VALUE must still be JSON.stringify()'d — monday.com's API expects a JSON string on the wire.
     const createSubitemMutation = `
       mutation($parentId: ID!, $itemName: String!, $columnValues: JSON!) {
         create_subitem(parent_item_id: $parentId, item_name: $itemName, column_values: $columnValues) {
@@ -80,11 +81,12 @@ export default async function handler(req, res) {
           if (phaseText) subitemValues.dropdown_mm3x2wmx = { labels: phaseText.split(',').map(s => s.trim()) };
           if (priorityText) subitemValues.color_mm3x885a = { label: priorityText };
 
-          // FIX 1 (cont): Pass subitemValues directly — do NOT JSON.stringify() when variable type is JSON!
+          // monday.com's column_values param always expects a JSON-encoded string, even when the
+          // GraphQL variable type is JSON! — the type declaration and the wire format are separate concerns.
           await mondayApiCall(createSubitemMutation, {
             parentId: projectId.toString(),
             itemName: task.name,
-            columnValues: subitemValues
+            columnValues: JSON.stringify(subitemValues)
           });
 
           totalOperationsLogged++;
