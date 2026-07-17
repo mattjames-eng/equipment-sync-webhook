@@ -1,17 +1,17 @@
 /**
- * Flex Quote → monday.com Master Atomic Sync Pipeline + Google Drive Folder Creation
+ * Flex Quote → monday.com Project Sync + Google Drive Folder Creation
  * 
  * This endpoint handles the entire creation and relationship binding loop 
  * in a single operational step to bypass background automation delays.
  * 
- * NEW: Creates Google Drive folder structure for each project
- * NEW: Writes all three Flex UUIDs (Event Folder, Quote, Equipment List) at creation time
+ * Creates Google Drive folder structure for each project
+ * Writes all three Flex UUIDs (Event Folder, Quote, Equipment List) at creation time
  * 
  * Workflow:
  * 1. Safely queries Flex via GET /api/search layout guidelines
  * 2. Classifies search results to extract all three UUIDs (Event Folder, Quote, Equip List)
  * 3. Fetches field parameters using precise comma-separated codeList entries
- * 4. Extracts clean contact UUID strings, filtering out literal key titles (FIX)
+ * 4. Extracts clean contact UUID strings, filtering out literal key titles
  * 5. Resolves human-readable text identities via /api/contact/{uuid}/identity
  * 6. Matches names against the monday Contacts board and links relations inline
  * 7. SEARCHES for existing project by Flex number to prevent duplicates
@@ -315,7 +315,7 @@ async function _copyDriveFolderContents(sourceFolderId, destFolderId, authHeader
 //   - names root folder exactly projectName (same as GAS)
 //   - shares with PM as writer
 //
-// Primary:  direct Drive REST API v3 via service account (~2-5s vs GAS 28s)
+// Primary:  direct Drive REST API v3 via service account (faster, no cold-start delay)
 // Fallback: Google Apps Script URL if GOOGLE_SERVICE_ACCOUNT_KEY not set
 // ================================================================
 async function createProjectFolder(projectName, projectId, clientName, eventDate, pmEmail) {
@@ -367,7 +367,7 @@ async function createProjectFolder(projectName, projectId, clientName, eventDate
         }
     }
 
-    // ── Fallback path: Google Apps Script (slow ~28s, may timeout) ────────
+    // ── Fallback path: Google Apps Script (slower, may timeout on cold start) ─────
     if (!GOOGLE_APPS_SCRIPT_URL) {
         console.log(`⚠️ No Drive credentials configured — skipping folder creation`);
         return null;
