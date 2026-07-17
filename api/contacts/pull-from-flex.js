@@ -1337,9 +1337,9 @@ const OOC_SUB_COL = {
 };
 
 // ================================================================
-// BATCH HELPER — fires ALL chunks in parallel via Promise.all
+// BATCH HELPER — fires chunks in parallel via Promise.all
 // mutations: array of GQL mutation strings (without 'mutation {}' wrapper)
-// chunkSize: how many to pack into each GQL request (default 25)
+// chunkSize: how many to pack into each GQL request (see default in signature)
 // Returns array of { id } results in same order
 // ================================================================
 async function runBatchedMutations(mutations, chunkSize = 25) {
@@ -1700,9 +1700,9 @@ export default async function handler(req, res) {
         keepGoing = false;
       } else {
         page++;
-        // Safety: cap at 20 pages (2000 contacts) per run to avoid runaway cron
+        // Safety cap: limits pages per run to avoid runaway cron — see PAGE_CAP constant
         if (page >= 20) {
-          console.log('⚠️ Page cap reached (20) — stopping. Run again or use ?full=true for more.');
+          console.log('⚠️ Page cap reached — stopping. Run again or use ?full=true for more.');
           keepGoing = false;
         }
       }
