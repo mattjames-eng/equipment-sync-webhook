@@ -880,9 +880,12 @@ export default async function handler(req, res) {
 
         let resultItemId;
         let operationType;
-        let driveFolder = null;
 
         // ===== STEP 7: Update existing OR create new project =====
+        // Drive folder creation is intentionally NOT done here.
+        // ?action=create-folder owns Drive folder creation — it runs once during
+        // the Vibe app project setup flow before any quote is associated.
+        // This handler is a data sync tool only.
         if (existingProjectId) {
             console.log(`🔄 Updating existing project ID: ${existingProjectId}`);
 
@@ -926,15 +929,6 @@ export default async function handler(req, res) {
             resultItemId  = createResult.data.create_item.id;
             operationType = 'CREATED';
             console.log(`✅ SUCCESS: New project created - ID: ${resultItemId}`);
-
-            const eventDateStr = columnValues.date_mm3xca9r?.date || '';
-            driveFolder = await createProjectFolder(
-                projectName,
-                resultItemId,
-                clientResolvedName,
-                eventDateStr,
-                process.env.PM_DEFAULT_EMAIL || 'matt.james@anticstudios.com'
-            );
         }
 
         return res.status(200).json({
@@ -946,11 +940,7 @@ export default async function handler(req, res) {
                 eventFolder:   { column: 'text_mm466djv', value: eventFolderUUID   || null },
                 quote:         { column: 'text_mm4cwasc',  value: quoteUUID         || null },
                 equipmentList: { column: 'text_mm3y7xwa',  value: equipmentListUUID || null }
-            },
-            driveFolder: driveFolder ? {
-                folderId:  driveFolder.folderId,
-                folderUrl: driveFolder.folderUrl
-            } : null
+            }
         });
 
     } catch (error) {
