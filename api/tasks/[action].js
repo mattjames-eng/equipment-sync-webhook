@@ -1,12 +1,12 @@
 /**
- * monday.com Tiered Project Task Template Generator (Throttled Batch Edition)
- * 
- * This streamlined endpoint handles task generation for the new unified checklist workflow.
- * 
+ * monday.com Tiered Project Task Template Generator (Sequential Edition)
+ *
+ * Creates subitems one-at-a-time in strict template order.
+ * Using Promise.all / concurrent batching causes monday.com to insert items
+ * out of order because parallel requests race each other to the API.
+ * Sequential await guarantees insertion order matches the template.
+ *
  * Routes: POST /api/tasks/load-all
- * 
- * Batches requests in chunks of 25 to balance speed and slide past monday's rate limits.
- * 
  * Author: Matt James, Antic Studios
  */
 
@@ -14,15 +14,6 @@ const MONDAY_API_URL = 'https://api.monday.com/v2';
 const MONDAY_API_KEY = process.env.MONDAY_API_KEY;
 const PROJECTS_BOARD_ID = '18415679761';
 const TEMPLATE_PROJECT_ID = '12153638858';
-
-// Helper function to segment the massive array into digestible chunks
-function chunkArray(array, size) {
-  const chunks = [];
-  for (let i = 0; i < array.length; i += size) {
-    chunks.push(array.slice(i, i + size));
-  }
-  return chunks;
-}
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -37,24 +28,19 @@ export default async function handler(req, res) {
   const projectId = event.pulseId || event.itemId;
 
   if (!projectId) {
-    return res.status(400).json({ success: false, error: 'Missing active parent project target ID variable' });
+    return res.status(400).json({ success: false, error: 'Missing project ID' });
   }
 
   try {
-    console.log(`📥 Initializing Batch-Throttled Bulk Load for Project ID: ${projectId}`);
+    console.log(`📥 Sequential Task Load starting for Project ID: ${projectId}`);
 
-    // STEP 1: Fetch ALL subitems directly from the master blueprint template project
+    // STEP 1: Fetch all subitems from the master template project
     const templateQuery = `query($templateId: [ID!]) { items(ids: $templateId) { subitems { id name column_values { id text } } } }`;
     const templateResponse = await mondayApiCall(templateQuery, { templateId: [TEMPLATE_PROJECT_ID] });
     const allTemplateSubitems = templateResponse.data?.items?.[0]?.subitems || [];
 
-    console.log(`🎯 Retrieved [${allTemplateSubitems.length}] total tasks from the template repository.`);
+    console.log(`🎯 Retrieved ${allTemplateSubitems.length} tasks from template`);
 
-    // STEP 2: Separate the task checklist into clean batch pools of 25 items
-    const taskBatches = chunkArray(allTemplateSubitems, 25);
-
-    // column_values variable must be declared as JSON! (not String!) so the GraphQL layer accepts it,
-    // but the VALUE must still be JSON.stringify()'d — monday.com's API expects a JSON string on the wire.
     const createSubitemMutation = `
       mutation($parentId: ID!, $itemName: String!, $columnValues: JSON!) {
         create_subitem(parent_item_id: $parentId, item_name: $itemName, column_values: $columnValues) {
@@ -63,46 +49,39 @@ export default async function handler(req, res) {
       }
     `;
 
-    let totalOperationsLogged = 0;
+    let totalCreated = 0;
 
-    // Iterate through chunks synchronously, but process items inside the chunk concurrently
-    for (const batch of taskBatches) {
-      const batchPromises = batch.map(async (task) => {
-        try {
-          const phaseText = task.column_values.find(col => col.id === 'dropdown_mm3x2wmx')?.text;
-          const priorityText = task.column_values.find(col => col.id === 'color_mm3x885a')?.text;
-          const assignedTier = task.column_values.find(col => col.id === 'dropdown_mm3xhker')?.text || 'Basic';
+    // SEQUENTIAL — one await per task preserves insertion order.
+    // DO NOT convert this back to Promise.all — parallel requests race each
+    // other and monday.com inserts them in an unpredictable order.
+    for (const task of allTemplateSubitems) {
+      try {
+        const phaseText    = task.column_values.find(col => col.id === 'dropdown_mm3x2wmx')?.text;
+        const priorityText = task.column_values.find(col => col.id === 'color_mm3x885a')?.text;
+        const assignedTier = task.column_values.find(col => col.id === 'dropdown_mm3xhker')?.text || 'Basic';
 
-          const subitemValues = {
-            status: { label: "Not Started" },
-            dropdown_mm3xhker: { labels: assignedTier.split(',').map(s => s.trim()) }
-          };
+        const subitemValues = {
+          status: { label: "Not Started" },
+          dropdown_mm3xhker: { labels: assignedTier.split(',').map(s => s.trim()) }
+        };
 
-          if (phaseText) subitemValues.dropdown_mm3x2wmx = { labels: phaseText.split(',').map(s => s.trim()) };
-          if (priorityText) subitemValues.color_mm3x885a = { label: priorityText };
+        if (phaseText)    subitemValues.dropdown_mm3x2wmx = { labels: phaseText.split(',').map(s => s.trim()) };
+        if (priorityText) subitemValues.color_mm3x885a    = { label: priorityText };
 
-          // monday.com's column_values param always expects a JSON-encoded string, even when the
-          // GraphQL variable type is JSON! — the type declaration and the wire format are separate concerns.
-          await mondayApiCall(createSubitemMutation, {
-            parentId: projectId.toString(),
-            itemName: task.name,
-            columnValues: JSON.stringify(subitemValues)
-          });
+        // column_values must be JSON! type AND JSON.stringify()'d — monday expects a JSON string on the wire
+        await mondayApiCall(createSubitemMutation, {
+          parentId:     projectId.toString(),
+          itemName:     task.name,
+          columnValues: JSON.stringify(subitemValues)
+        });
 
-          totalOperationsLogged++;
-        } catch (rowError) {
-          console.error(`⚠️ Non-fatal item skip on "${task.name}":`, rowError.message);
-        }
-      });
-
-      // Fire the 25 batch operations concurrently
-      await Promise.all(batchPromises);
-
-      // Take a short 150ms breather to allow monday's rate-limiter bucket to refill
-      await new Promise((resolve) => setTimeout(resolve, 150));
+        totalCreated++;
+      } catch (rowError) {
+        console.error(`⚠️ Skipped "${task.name}":`, rowError.message);
+      }
     }
 
-    // STEP 3: Complete execution by setting parent status to advanced confirmation checkpoint
+    // STEP 3: Mark parent project tasks status as loaded
     const updateParentMutation = `
       mutation($boardId: ID!, $itemId: ID!, $values: JSON!) {
         change_multiple_column_values(board_id: $boardId, item_id: $itemId, column_values: $values) {
@@ -111,19 +90,17 @@ export default async function handler(req, res) {
       }
     `;
 
-    console.log(`🏁 Throttled pipeline complete. Advancing status tracking directly to: "Tasks Loaded"`);
-
-    // FIX 2: JSON! variable requires a JSON *string* — must JSON.stringify() the object before passing
     await mondayApiCall(updateParentMutation, {
       boardId: PROJECTS_BOARD_ID,
-      itemId: projectId.toString(),
-      values: JSON.stringify({ "color_mm3ycrm1": { "label": "Tasks Loaded" } })
+      itemId:  projectId.toString(),
+      values:  JSON.stringify({ "color_mm3ycrm1": { "label": "Tasks Loaded" } })
     });
 
-    return res.status(200).json({ success: true, totalTasksLoaded: totalOperationsLogged });
+    console.log(`✅ Done — ${totalCreated} tasks created in order`);
+    return res.status(200).json({ success: true, totalTasksLoaded: totalCreated });
 
   } catch (error) {
-    console.error('❌ Master Task Pipeline Execution Interrupted:', error);
+    console.error('❌ Task pipeline failed:', error);
     return res.status(500).json({ success: false, error: error.message });
   }
 }
@@ -144,8 +121,8 @@ async function mondayApiCall(query, variables = null) {
 
   const data = await response.json();
 
-  if (!response.ok) throw new Error(`monday channel rejected with HTTP code: ${response.status}`);
-  if (data.errors) throw new Error(`GraphQL validation fault: ${JSON.stringify(data.errors)}`);
+  if (!response.ok) throw new Error(`monday HTTP error: ${response.status}`);
+  if (data.errors) throw new Error(`GraphQL error: ${JSON.stringify(data.errors)}`);
 
   return data;
 }
