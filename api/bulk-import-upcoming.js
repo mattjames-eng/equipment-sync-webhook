@@ -55,6 +55,8 @@ const COL = {
   lastEquipSync:     'date_mm3z1vqz',
   clientRelation:    'board_relation_mm3x8evw',
   venueRelation:     'board_relation_mm3xrm02',
+  clientNameText:    'text_mm435rt8',    // Client name from Flex — written always as fallback
+  venueNameText:     'text_mm43r22q',    // Venue name from Flex — written always as fallback
   pullsheetStatus:   'color_mm3y3bxj',   // "Not Synced"
 };
 
@@ -190,28 +192,30 @@ async function findContactByFlexUuid(flexUuid, nameFallback) {
     }
   }
 
-  // Fallback: name search (contacts not yet synced from Flex)
+  // Fallback: name match via items_page_by_column_values on the name column.
+  // More reliable than full-text search (query_params term) which can miss exact
+  // company names depending on monday's indexing.
   if (!nameFallback || nameFallback.includes('Unknown')) return null;
-  const safe = nameFallback.trim().replace(/"/g, '\\"');
-  console.log(`[bulk-import] 🔍 UUID miss — falling back to name search for: "${nameFallback}"`);
+  const safeName = nameFallback.trim();
+  console.log(`[bulk-import] 🔍 UUID miss — falling back to name lookup for: "${safeName}"`);
   try {
     const data = await mondayRequest(`
       query {
-        boards(ids: [${CONTACTS_BOARD_ID}]) {
-          items_page(limit: 50, query_params: { term: "${safe}" }) {
-            items { id name }
-          }
-        }
+        items_page_by_column_values(
+          limit: 5,
+          board_id: ${CONTACTS_BOARD_ID},
+          columns: [{ column_id: "name", column_values: ["${safeName.replace(/"/g, '\\"')}"] }]
+        ) { items { id name } }
       }
     `);
-    const items = data?.boards?.[0]?.items_page?.items || [];
-    const exact = items.find(i => i.name.trim().toLowerCase() === nameFallback.trim().toLowerCase());
+    const items = data?.items_page_by_column_values?.items || [];
+    const exact = items.find(i => i.name.trim().toLowerCase() === safeName.toLowerCase());
     if (exact) {
       console.log(`[bulk-import] ✅ Contact matched by name fallback: "${exact.name}"`);
       return exact.id;
     }
-  } catch {
-    return null;
+  } catch (e) {
+    console.warn(`[bulk-import] ⚠️ Name fallback lookup failed for "${safeName}":`, e.message);
   }
   return null;
 }
@@ -402,6 +406,11 @@ async function processQuote(quoteResult, options) {
     if (prepDate)   columnValues[COL.prepDate]   = { date: prepDate };
     if (returnDate) columnValues[COL.returnDate] = { date: returnDate };
     if (budget > 0) columnValues[COL.estimatedBudget] = String(budget);
+
+    // Always write the raw name text columns — visible fallback in the board
+    // if the relation lookup fails (e.g. contact not yet in monday)
+    if (clientName && !clientName.includes('Unknown')) columnValues[COL.clientNameText] = clientName;
+    if (venueName  && !venueName.includes('Unknown'))  columnValues[COL.venueNameText]  = venueName;
 
     if (clientItemId) columnValues[COL.clientRelation] = { item_ids: [parseInt(clientItemId)] };
     if (venueItemId)  columnValues[COL.venueRelation]  = { item_ids: [parseInt(venueItemId)] };
