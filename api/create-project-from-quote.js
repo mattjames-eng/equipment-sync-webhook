@@ -159,18 +159,20 @@ async function findContactByFlexUuid(flexUuid, nameFallback) {
         }
     }
 
-    // Fallback: name search (contacts not yet synced from Flex)
+    // Fallback: name match via items_page_by_column_values on the name column.
+    // More reliable than full-text search (query_params term) which can miss exact
+    // company names depending on monday's search indexing.
     if (!nameFallback || nameFallback.trim() === '' || nameFallback.includes('Unknown')) return null;
     const safeName = nameFallback.trim();
-    console.log(`🔍 UUID miss — falling back to name search for: "${safeName}"`);
+    console.log(`🔍 UUID miss — falling back to name lookup for: "${safeName}"`);
     try {
         const response = await fetch(MONDAY_API_URL, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_KEY },
-            body: JSON.stringify({ query: `query { boards(ids: [${CONTACTS_BOARD_ID}]) { items_page(limit: 50, query_params: { term: "${safeName.replace(/"/g, '\\"')}" }) { items { id name } } } }` })
+            body: JSON.stringify({ query: `query { items_page_by_column_values(limit: 5, board_id: ${CONTACTS_BOARD_ID}, columns: [{ column_id: "name", column_values: ["${safeName.replace(/"/g, '\\"')}"] }]) { items { id name } } }` })
         });
         const result = await response.json();
-        const items = result.data?.boards?.[0]?.items_page?.items || [];
+        const items = result.data?.items_page_by_column_values?.items || [];
         const exactMatch = items.find(item => item.name.trim().toLowerCase() === safeName.toLowerCase());
         if (exactMatch) {
             console.log(`✅ Contact matched by name fallback: "${exactMatch.name}"`);
