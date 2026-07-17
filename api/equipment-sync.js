@@ -1,14 +1,12 @@
 // ================================================================
-// Flex → monday.com Sync Webhook
+// Flex → monday.com Equipment Sync Webhook
 // Vercel Serverless Function
 //
-// Updated: June 16, 2026
-//
-// COLUMN MAP (Projects board 18415679761):
+// COLUMN MAP (Projects board — see PROJECTS_BOARD_ID):
 //   text_mm466djv  → Event Folder UUID   (top-level parent in Flex)
 //   text_mm4cwasc  → Quote UUID          (financial document / quote)
 //   text_mm3y7xwa  → Equipment List UUID (pullsheet child document)
-//   text_mm3x2yr6  → Flex Project #      (e.g. "26-0112")
+//   text_mm3x2yr6  → Flex Project #
 //   text_mm435rt8  → Client Name (from Flex)
 //   text_mm43r22q  → Venue Name (from Flex)
 // ================================================================
