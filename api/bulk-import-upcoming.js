@@ -256,10 +256,11 @@ async function searchFlex(prefix, maxResults, includeClosed) {
   return [];
 }
 
-// ── Bulk-fetch all existing Flex numbers already in Projects board ─────────────
-// Returns a Set of strings for O(1) de-dupe lookups.
-async function fetchExistingFlexNumbers() {
-  const existing = new Set();
+// ── Bulk-fetch all existing projects from the Projects board ──────────────────
+// Returns a Map keyed by lowercase flex number → { id, hasBudget }
+// Used for de-dupe AND to identify existing projects with missing budget data.
+async function fetchExistingProjects() {
+  const existing = new Map();
   let cursor = null;
 
   do {
@@ -270,7 +271,8 @@ async function fetchExistingFlexNumbers() {
           items_page(limit: 500${cursorClause}) {
             cursor
             items {
-              column_values(ids: ["${COL.flexProjectNum}"]) { text }
+              id
+              column_values(ids: ["${COL.flexProjectNum}", "${COL.estimatedBudget}"]) { id text }
             }
           }
         }
@@ -278,8 +280,15 @@ async function fetchExistingFlexNumbers() {
     `);
     const page = data?.boards?.[0]?.items_page;
     for (const item of (page?.items || [])) {
-      const val = item.column_values?.[0]?.text?.trim();
-      if (val) existing.add(val.toLowerCase());
+      const flexNumCol = item.column_values?.find(c => c.id === COL.flexProjectNum);
+      const budgetCol  = item.column_values?.find(c => c.id === COL.estimatedBudget);
+      const flexNum    = flexNumCol?.text?.trim();
+      if (flexNum) {
+        existing.set(flexNum.toLowerCase(), {
+          id:        item.id,
+          hasBudget: !!(budgetCol?.text && parseFloat(budgetCol.text) > 0),
+        });
+      }
     }
     cursor = page?.cursor || null;
   } while (cursor);
@@ -767,17 +776,25 @@ async function runImport({ prefix, maxResults, includeClosed, dryRun, resolveCon
 
   // ── PHASE 2: De-dupe against existing Projects board ────────────────────
   console.log('[bulk-import] Phase 2: Loading existing Projects...');
-  const existingNums = await fetchExistingFlexNumbers();
-  console.log(`[bulk-import] ${existingNums.size} existing projects in monday.com`);
+  const existingProjects = await fetchExistingProjects();
+  console.log(`[bulk-import] ${existingProjects.size} existing projects in monday.com`);
 
   const newQuotes = quotes.filter(q => {
     const num = q.barcode || (q.name || '').match(/^\d{2}-\d+/)?.[0];
     if (!num) return true;
-    return !existingNums.has(num.toLowerCase());
+    return !existingProjects.has(num.toLowerCase());
+  });
+
+  // Collect existing projects that have no budget — Vibe-created projects land here
+  const budgetBackfillQueue = quotes.filter(q => {
+    const num = q.barcode || (q.name || '').match(/^\d{2}-\d+/)?.[0];
+    if (!num) return false;
+    const existing = existingProjects.get(num.toLowerCase());
+    return existing && !existing.hasBudget;
   });
 
   const alreadyExists = quotes.length - newQuotes.length;
-  console.log(`[bulk-import] ${newQuotes.length} new quotes to import (${alreadyExists} already in monday.com)`);
+  console.log(`[bulk-import] ${newQuotes.length} new quotes to import (${alreadyExists} already in monday.com, ${budgetBackfillQueue.length} need budget backfill)`);
 
   const toProcess = newQuotes.slice(0, limit);
   const truncated = newQuotes.length > limit;
@@ -806,6 +823,53 @@ async function runImport({ prefix, maxResults, includeClosed, dryRun, resolveCon
     }
   }
 
+  // ── PHASE 3.5: Budget backfill for existing projects missing Estimated Budget ──
+  // Catches projects created via Vibe app (create-folder flow) that never got a
+  // totalPrice written because the quote was priced after the project was created.
+  const backfillResults = { updated: [], skipped: [], errors: [] };
+  if (budgetBackfillQueue.length > 0 && !dryRun) {
+    console.log(`[bulk-import] Phase 3.5: Backfilling budget for ${budgetBackfillQueue.length} projects...`);
+
+    for (const q of budgetBackfillQueue) {
+      const num      = q.barcode || (q.name || '').match(/^\d{2}-\d+/)?.[0];
+      const existing = existingProjects.get(num?.toLowerCase());
+      const quoteId  = q.id || q.elementId || q.uuid;
+
+      if (!existing?.id || !quoteId) {
+        backfillResults.skipped.push({ flexNum: num, reason: 'missing item ID or quote UUID' });
+        continue;
+      }
+
+      try {
+        // Fetch just totalPrice — fast single-field call
+        const hd     = await flexGet(`/api/element/${quoteId}/header-data?codeList=totalPrice`);
+        const budget = extractNumber(hd?.totalPrice);
+
+        if (budget > 0) {
+          await mondayRequest(`
+            mutation {
+              change_column_value(
+                board_id:  ${PROJECTS_BOARD_ID},
+                item_id:   ${existing.id},
+                column_id: "${COL.estimatedBudget}",
+                value:     ${JSON.stringify(String(budget))}
+              ) { id }
+            }
+          `);
+          console.log(`[bulk-import] 💰 Budget backfilled: ${num} → $${budget} (item ${existing.id})`);
+          backfillResults.updated.push({ flexNum: num, itemId: existing.id, budget });
+        } else {
+          console.log(`[bulk-import] ⏩ Budget backfill skipped: ${num} — Flex reports $0`);
+          backfillResults.skipped.push({ flexNum: num, reason: 'Flex totalPrice is $0' });
+        }
+      } catch (err) {
+        console.error(`[bulk-import] ❌ Budget backfill error for ${num}:`, err.message);
+        backfillResults.errors.push({ flexNum: num, reason: err.message });
+      }
+    }
+    console.log(`[bulk-import] Phase 3.5 done — Backfilled: ${backfillResults.updated.length}, Skipped: ${backfillResults.skipped.length}, Errors: ${backfillResults.errors.length}`);
+  }
+
   // ── PHASE 4: Build summary ────────────────────────────────────────────────
   const summary = {
     success:           true,
@@ -820,16 +884,18 @@ async function runImport({ prefix, maxResults, includeClosed, dryRun, resolveCon
     truncatedToLimit:  truncated,
     remainingToImport: truncated ? newQuotes.length - limit : 0,
     results: {
-      created: results.created.length,
-      skipped: results.skipped.length,
-      errors:  results.errors.length,
+      created:         results.created.length,
+      skipped:         results.skipped.length,
+      errors:          results.errors.length,
+      budgetBackfilled: backfillResults.updated.length,
       ...(dryRun && { preview: results.dryRun })
     },
-    createdProjects: results.created,
-    skippedDetails:  results.skipped,
-    errorDetails:    results.errors
+    createdProjects:       results.created,
+    skippedDetails:        results.skipped,
+    errorDetails:          results.errors,
+    budgetBackfillDetails: backfillResults.updated,
   };
 
-  console.log(`[bulk-import] ✅ Done — Created: ${results.created.length}, Skipped: ${results.skipped.length}, Errors: ${results.errors.length}`);
+  console.log(`[bulk-import] ✅ Done — Created: ${results.created.length}, Skipped: ${results.skipped.length}, Budget Backfilled: ${backfillResults.updated.length}, Errors: ${results.errors.length}`);
   return summary;
 }
