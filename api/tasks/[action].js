@@ -1,12 +1,12 @@
 /**
  * ShowFlow PM Checklist Loader
  *
- * Copies all subitems from the master template project into a new project,
- * one at a time in strict order. Sequential execution is intentional —
- * parallel/batch requests cause monday.com to insert tasks out of order.
+ * Copies all subitems from the master template project (see TEMPLATE_PROJECT_ID)
+ * into a target project, one at a time in strict insertion order.
  *
- * Template: TEMPLATE - PM Checklist (DO NOT DELETE) — item 12153638858
- * Current task count: 66
+ * ⚠️  Sequential execution is intentional — do NOT convert to Promise.all or batch.
+ *     Parallel requests race each other; monday.com inserts tasks in arrival order,
+ *     not submission order, which scrambles the checklist.
  *
  * Route:  POST /api/tasks/load-all
  * Author: Matt James, Antic Studios
