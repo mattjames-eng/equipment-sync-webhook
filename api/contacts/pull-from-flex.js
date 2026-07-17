@@ -14,7 +14,7 @@
  *     so we simply UPDATE those items.
  *
  * Lookback window:
- *   - Default: 24 hours (suitable for the daily 9 AM cron job)
+ *   - Default: 24 hours (suitable for a daily cron run)
  *   - Override via ?hours=N query param or body { hours: N }
  *   - Pass ?full=true to re-sync ALL Flex contacts regardless of lastEditDate
  *     (use sparingly — will touch every contact)
@@ -192,7 +192,7 @@ function resolveGroupForFlexContact(flexContact) {
   // Check the narrativeDescription for type hints (set by push-to-flex)
   const notes = (flexContact.narrativeDescription || '').toLowerCase();
   if (notes.includes('type: venue')) return VENUES_GROUP;
-  // Default all others to NEW ADDITIONS — Bertha will sort them
+  // Default all others to NEW ADDITIONS for manual triage
   return NEW_ADDITIONS_GROUP;
 }
 
@@ -1700,7 +1700,7 @@ export default async function handler(req, res) {
         keepGoing = false;
       } else {
         page++;
-        // Safety cap: limits pages per run to avoid runaway cron — see PAGE_CAP constant
+        // Safety cap: limits pages per run to avoid runaway cron
         if (page >= 20) {
           console.log('⚠️ Page cap reached — stopping. Run again or use ?full=true for more.');
           keepGoing = false;
