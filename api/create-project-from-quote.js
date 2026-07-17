@@ -37,7 +37,7 @@ const PROJECTS_BOARD_ID = '18415679761';
 const CONTACTS_BOARD_ID = '18415573401';
 
 const GOOGLE_APPS_SCRIPT_URL     = process.env.GOOGLE_APPS_SCRIPT_URL   || null;
-const GOOGLE_SERVICE_ACCOUNT_KEY = process.env.GOOGLE_SERVICE_ACCOUNT_KEY || null; // JSON string of service account credentials
+const GOOGLE_SERVICE_ACCOUNT_KEY = process.env.GOOGLE_SERVICE_ACCOUNT_KEY_2 || process.env.GOOGLE_SERVICE_ACCOUNT_KEY || null; // JSON string of service account credentials
 const FLEX_EVENT_DEFINITION_ID   = process.env.FLEX_EVENT_DEFINITION_ID || null;
 
 // Cached definitionId for Flex event folder lookup (populated on first call)
