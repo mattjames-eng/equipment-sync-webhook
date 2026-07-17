@@ -1,9 +1,13 @@
 /**
  * monday.com Tiered Project Task Template Generator (Throttled Batch Edition)
- * * This streamlined endpoint handles task generation for the new unified checklist workflow.
- * * Routes: POST /api/tasks/load-all
- * * Batches requests in chunks of 25 to balance speed and slide past monday's rate limits.
- * * Author: Matt James, Antic Studios
+ * 
+ * This streamlined endpoint handles task generation for the new unified checklist workflow.
+ * 
+ * Routes: POST /api/tasks/load-all
+ * 
+ * Batches requests in chunks of 25 to balance speed and slide past monday's rate limits.
+ * 
+ * Author: Matt James, Antic Studios
  */
 
 const MONDAY_API_URL = 'https://api.monday.com/v2';
@@ -48,9 +52,10 @@ export default async function handler(req, res) {
 
     // STEP 2: Separate the task checklist into clean batch pools of 25 items
     const taskBatches = chunkArray(allTemplateSubitems, 25);
-    
+
+    // FIX 1: $columnValues must be JSON! not String! — monday.com expects a JSON object, not a stringified value
     const createSubitemMutation = `
-      mutation($parentId: ID!, $itemName: String!, $columnValues: String!) {
+      mutation($parentId: ID!, $itemName: String!, $columnValues: JSON!) {
         create_subitem(parent_item_id: $parentId, item_name: $itemName, column_values: $columnValues) {
           id
         }
@@ -66,7 +71,7 @@ export default async function handler(req, res) {
           const phaseText = task.column_values.find(col => col.id === 'dropdown_mm3x2wmx')?.text;
           const priorityText = task.column_values.find(col => col.id === 'color_mm3x885a')?.text;
           const assignedTier = task.column_values.find(col => col.id === 'dropdown_mm3xhker')?.text || 'Basic';
-          
+
           const subitemValues = {
             status: { label: "Not Started" },
             dropdown_mm3xhker: { labels: assignedTier.split(',').map(s => s.trim()) }
@@ -75,11 +80,13 @@ export default async function handler(req, res) {
           if (phaseText) subitemValues.dropdown_mm3x2wmx = { labels: phaseText.split(',').map(s => s.trim()) };
           if (priorityText) subitemValues.color_mm3x885a = { label: priorityText };
 
+          // FIX 1 (cont): Pass subitemValues directly — do NOT JSON.stringify() when variable type is JSON!
           await mondayApiCall(createSubitemMutation, {
             parentId: projectId.toString(),
             itemName: task.name,
-            columnValues: JSON.stringify(subitemValues)
+            columnValues: subitemValues
           });
+
           totalOperationsLogged++;
         } catch (rowError) {
           console.error(`⚠️ Non-fatal item skip on "${task.name}":`, rowError.message);
@@ -88,7 +95,7 @@ export default async function handler(req, res) {
 
       // Fire the 25 batch operations concurrently
       await Promise.all(batchPromises);
-      
+
       // Take a short 150ms breather to allow monday's rate-limiter bucket to refill
       await new Promise((resolve) => setTimeout(resolve, 150));
     }
@@ -103,10 +110,12 @@ export default async function handler(req, res) {
     `;
 
     console.log(`🏁 Throttled pipeline complete. Advancing status tracking directly to: "Tasks Loaded"`);
+
+    // FIX 2: JSON! variable requires a JSON *string* — must JSON.stringify() the object before passing
     await mondayApiCall(updateParentMutation, {
       boardId: PROJECTS_BOARD_ID,
       itemId: projectId.toString(),
-      values: { "color_mm3ycrm1": { "label": "Tasks Loaded" } }
+      values: JSON.stringify({ "color_mm3ycrm1": { "label": "Tasks Loaded" } })
     });
 
     return res.status(200).json({ success: true, totalTasksLoaded: totalOperationsLogged });
@@ -132,7 +141,9 @@ async function mondayApiCall(query, variables = null) {
   });
 
   const data = await response.json();
+
   if (!response.ok) throw new Error(`monday channel rejected with HTTP code: ${response.status}`);
   if (data.errors) throw new Error(`GraphQL validation fault: ${JSON.stringify(data.errors)}`);
+
   return data;
 }
