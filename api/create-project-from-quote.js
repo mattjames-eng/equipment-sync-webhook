@@ -36,7 +36,8 @@ const FLEX_API_KEY  = process.env.FLEX_API_KEY_QUOTES || process.env.FLEX_API_KE
 const PROJECTS_BOARD_ID = '18415679761';
 const CONTACTS_BOARD_ID = '18415573401';
 
-const GOOGLE_APPS_SCRIPT_URL     = process.env.GOOGLE_APPS_SCRIPT_URL || null;
+const GOOGLE_APPS_SCRIPT_URL     = process.env.GOOGLE_APPS_SCRIPT_URL   || null;
+const GOOGLE_SERVICE_ACCOUNT_KEY = process.env.GOOGLE_SERVICE_ACCOUNT_KEY || null; // JSON string of service account credentials
 const FLEX_EVENT_DEFINITION_ID   = process.env.FLEX_EVENT_DEFINITION_ID || null;
 
 // Cached definitionId for Flex event folder lookup (populated on first call)
@@ -235,38 +236,163 @@ async function findExistingProjectByFlexNumber(flexNumber) {
 }
 
 // ================================================================
-// HELPER: Create Google Drive folder structure for project
+// HELPER: Get a short-lived Google OAuth2 access token from a
+// service account JSON key using the JWT Bearer flow.
+// No external libraries — pure fetch + built-in crypto.
+// ================================================================
+async function getGoogleAccessToken() {
+    if (!GOOGLE_SERVICE_ACCOUNT_KEY) throw new Error('GOOGLE_SERVICE_ACCOUNT_KEY env var not set');
+    const key     = JSON.parse(GOOGLE_SERVICE_ACCOUNT_KEY);
+    const scope   = 'https://www.googleapis.com/auth/drive';
+    const now     = Math.floor(Date.now() / 1000);
+    const header  = Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT' })).toString('base64url');
+    const claim   = Buffer.from(JSON.stringify({
+        iss: key.client_email, scope, aud: 'https://oauth2.googleapis.com/token',
+        exp: now + 3600, iat: now,
+    })).toString('base64url');
+
+    // Sign with RS256 using the service account private key
+    const { createSign } = await import('node:crypto');
+    const sign    = createSign('RSA-SHA256');
+    sign.update(`${header}.${claim}`);
+    const sig     = sign.sign(key.private_key, 'base64url');
+    const jwt     = `${header}.${claim}.${sig}`;
+
+    const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: `grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=${jwt}`,
+    });
+    const tokenData = await tokenRes.json();
+    if (!tokenData.access_token) throw new Error(`Token exchange failed: ${JSON.stringify(tokenData)}`);
+    return tokenData.access_token;
+}
+
+// ================================================================
+// HELPER: Recursively copies all files and subfolders from a Drive
+// source folder into a destination folder — mirrors GAS copyFolderContents.
+// Siblings are processed in parallel (Promise.all) for speed.
+// ================================================================
+async function _copyDriveFolderContents(sourceFolderId, destFolderId, authHeaders) {
+    const BASE = 'https://www.googleapis.com/drive/v3';
+
+    // List all direct children of source (files + subfolders)
+    const q   = encodeURIComponent(`'${sourceFolderId}' in parents and trashed = false`);
+    const listRes = await fetch(
+        `${BASE}/files?q=${q}&fields=files(id,name,mimeType)&supportsAllDrives=true&includeItemsFromAllDrives=true&pageSize=100`,
+        { headers: authHeaders }
+    );
+    const { files = [] } = await listRes.json();
+
+    await Promise.all(files.map(async child => {
+        if (child.mimeType === 'application/vnd.google-apps.folder') {
+            // Create matching subfolder, then recurse
+            const subRes = await fetch(`${BASE}/files?supportsAllDrives=true&fields=id`, {
+                method:  'POST',
+                headers: authHeaders,
+                body:    JSON.stringify({
+                    name:     child.name,
+                    mimeType: 'application/vnd.google-apps.folder',
+                    parents:  [destFolderId],
+                }),
+            });
+            const sub = await subRes.json();
+            if (sub.id) {
+                console.log(`  📁 Created subfolder: ${child.name}`);
+                await _copyDriveFolderContents(child.id, sub.id, authHeaders);
+            }
+        } else {
+            // Copy file into destination
+            await fetch(`${BASE}/files/${child.id}/copy?supportsAllDrives=true`, {
+                method:  'POST',
+                headers: authHeaders,
+                body:    JSON.stringify({ name: child.name, parents: [destFolderId] }),
+            });
+            console.log(`  📄 Copied file: ${child.name}`);
+        }
+    }));
+}
+
+// ================================================================
+// HELPER: Create Google Drive folder structure for project.
+// Mirrors GAS duplicateFolderTree exactly:
+//   - copies template folder (1tj247t4cSc4GjAbhdylmjcDhzpgmEuY8) recursively
+//   - places result in parent folder (0AAdFvqzEGrPzUk9PVA)
+//   - names root folder exactly projectName (same as GAS)
+//   - shares with PM as writer
+//
+// Primary:  direct Drive REST API v3 via service account (~2-5s vs GAS 28s)
+// Fallback: Google Apps Script URL if GOOGLE_SERVICE_ACCOUNT_KEY not set
 // ================================================================
 async function createProjectFolder(projectName, projectId, clientName, eventDate, pmEmail) {
+    const TEMPLATE_FOLDER_ID = '1tj247t4cSc4GjAbhdylmjcDhzpgmEuY8';
+    const PARENT_FOLDER_ID   = '0AAdFvqzEGrPzUk9PVA';
+    const BASE               = 'https://www.googleapis.com/drive/v3';
+
+    // ── Primary path: direct Drive API (fast, no GAS cold start) ──────────
+    if (GOOGLE_SERVICE_ACCOUNT_KEY) {
+        try {
+            console.log(`📁 Creating Google Drive folder for: ${projectName} (direct API)`);
+            const token   = await getGoogleAccessToken();
+            const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+
+            // Create root folder named exactly projectName, same as GAS
+            const rootRes = await fetch(`${BASE}/files?supportsAllDrives=true&fields=id,webViewLink`, {
+                method:  'POST',
+                headers,
+                body:    JSON.stringify({
+                    name:     projectName,
+                    mimeType: 'application/vnd.google-apps.folder',
+                    parents:  [PARENT_FOLDER_ID],
+                }),
+            });
+            const rootFolder = await rootRes.json();
+            if (!rootFolder.id) throw new Error(`Drive create root folder failed: ${JSON.stringify(rootFolder)}`);
+            console.log(`  📂 Created root folder: ${projectName}`);
+
+            // Recursively copy template tree into new root folder
+            await _copyDriveFolderContents(TEMPLATE_FOLDER_ID, rootFolder.id, headers);
+
+            // Share with PM (writer access), same as GAS shareWithUser
+            if (pmEmail) {
+                await fetch(`${BASE}/files/${rootFolder.id}/permissions?supportsAllDrives=true`, {
+                    method:  'POST',
+                    headers,
+                    body:    JSON.stringify({ type: 'user', role: 'writer', emailAddress: pmEmail }),
+                }).catch(e => console.warn(`⚠️ Could not share Drive folder with PM: ${e.message}`));
+                console.log(`  ✅ Shared folder with PM: ${pmEmail}`);
+            }
+
+            const folderUrl = rootFolder.webViewLink || `https://drive.google.com/drive/folders/${rootFolder.id}`;
+            console.log(`✅ Google Drive folder created: ${folderUrl}`);
+            return { success: true, folderId: rootFolder.id, folderUrl, folderName: projectName };
+
+        } catch (e) {
+            console.error(`❌ Drive API error: ${e.message}`);
+            // Fall through to GAS fallback
+        }
+    }
+
+    // ── Fallback path: Google Apps Script (slow ~28s, may timeout) ────────
     if (!GOOGLE_APPS_SCRIPT_URL) {
-        console.log(`⚠️ Google Apps Script URL not configured - skipping folder creation`);
+        console.log(`⚠️ No Drive credentials configured — skipping folder creation`);
         return null;
     }
 
     try {
-        console.log(`📁 Creating Google Drive folder for: ${projectName}`);
-
+        console.log(`📁 Creating Google Drive folder for: ${projectName} (GAS fallback)`);
         const response = await fetch(GOOGLE_APPS_SCRIPT_URL, {
-            method: 'POST',
+            method:  'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                projectName,
-                projectId,
-                clientName,
-                eventDate,
-                pmEmail
-            })
+            body:    JSON.stringify({ projectName, projectId, clientName, eventDate, pmEmail }),
         });
-
         const result = await response.json();
-
         if (result.success) {
             console.log(`✅ Google Drive folder created: ${result.folderUrl}`);
             return result;
-        } else {
-            console.error(`❌ Google Drive folder creation failed: ${result.error}`);
-            return null;
         }
+        console.error(`❌ GAS folder creation failed: ${result.error}`);
+        return null;
     } catch (e) {
         console.error(`❌ Google Drive API error:`, e);
         return null;
@@ -349,13 +475,14 @@ async function handleCreateFolder(req, res) {
     ]);
 
     // ── Build Flex payload — dates must be ISO date-time ───────────────────
-    const toFlexDT = d => d ? `${d.trim()}T00:00:00.000Z` : null;
+    const toFlexDT = (d, hour = 9) => d ? `${d.trim()}T${String(hour).padStart(2, '0')}:00:00.000Z` : null;
     const payload = {
         definitionId,
         name:             projectName.trim(),
-        eventDate:        toFlexDT(eventDate),
-        plannedStartDate: toFlexDT(prepDate || eventDate),
-        plannedEndDate:   toFlexDT(returnDate || eventDate),
+        open:             true,
+        eventDate:        toFlexDT(eventDate, 9),
+        plannedStartDate: toFlexDT(prepDate || eventDate, 9),
+        plannedEndDate:   toFlexDT(returnDate || eventDate, 17),
     };
     if (clientUUID) payload.clientId = clientUUID;
 
