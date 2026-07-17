@@ -480,6 +480,7 @@ async function handleCreateFolder(req, res) {
         definitionId,
         name:             projectName.trim(),
         open:             true,
+        statusId:         'ddde5e2c-aee7-11df-b8d5-00e08175e43e', // "Inquiry" — matches Flex UI default
         eventDate:        toFlexDT(eventDate, 9),
         plannedStartDate: toFlexDT(prepDate || eventDate, 9),
         plannedEndDate:   toFlexDT(returnDate || eventDate, 17),
