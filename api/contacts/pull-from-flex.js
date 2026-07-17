@@ -777,7 +777,7 @@ async function handlePOSync(req, res) {
 // ================================================================
 const GOOGLE_MAPS_KEY   = process.env.GEOCODING_API_KEY;
 const LOCATION_COL      = 'location_mm50h12r';
-const GEOCODE_CONCURRENCY = 5;
+const GEOCODE_CONCURRENCY = 5; // keep low — parallel geocode requests share a single API key quota
 
 async function geocodeAddress(rawAddress) {
   const url = 'https://maps.googleapis.com/maps/api/geocode/json?address='
