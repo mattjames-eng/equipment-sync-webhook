@@ -24,7 +24,6 @@
  * }
  *
  * Author: Matt James, Antic Studios
- * Author: Matt James, Antic Studios
  */
 
 export const config = { api: { bodyParser: true } };
@@ -81,7 +80,7 @@ async function createProjectFolder(projectName, projectId, clientName, eventDate
 }
 
 // ── Domain Classifier (mirrors create-project-from-quote.js) ─────────────────
-// FIX: added 'simple-project-element' → event-folder (confirmed from live Flex response)
+// 'simple-project-element' is also classified as event-folder based on observed Flex domain values
 function classifyDomain(result) {
   const domain = (result.domainId || result.domain || result.type || '').toLowerCase();
   if (['equipment-list', 'pull-sheet', 'pullsheet'].includes(domain))                                   return 'equipment-list';
@@ -290,7 +289,7 @@ async function fetchExistingFlexNumbers() {
 
 // ── Fetch header data for a quote UUID ────────────────────────────────────────
 // header-data requires codeList param — see create-project-from-quote.js for reference
-// FIX 2: parentElementId must be in codeList to get the event folder UUID
+// parentElementId must be explicitly requested in codeList to be included in the header-data response
 async function fetchHeaderData(quoteUUID) {
   return flexGet(`/api/element/${quoteUUID}/header-data?codeList=elementNumber,name,clientId,venueId,personResponsibleId,personResponsibleDefaultEmailAddress,eventDate,plannedStartDate,plannedEndDate,totalPrice,notes,equipmentList,parentElementId`);
 }
@@ -312,10 +311,10 @@ async function findEquipmentListUUID(quoteUUID) {
 // ─────────────────────────────────────────────────────────────────────────────
 async function processQuote(quoteResult, options) {
   const { dryRun, resolveContacts } = options;
-  // FIX: Flex returns name=null on numbered quotes — use displayString as fallback
+  // Flex may return name=null on numbered quotes — fall back to displayString
   const quoteName  = quoteResult.name || quoteResult.displayString || quoteResult.displayName || '(unnamed)';
   const quoteUUID  = quoteResult.id   || quoteResult.elementId     || quoteResult.uuid;
-  // FIX: de-dupe key is the barcode field (e.g. "26-0132"), not parsed from name
+  // De-dupe key is the barcode field, not a value parsed from the name string
   const flexNum    = quoteResult.barcode || quoteResult.name?.match(/^\d{2}-\d+/)?.[0] || quoteName;
 
   console.log(`[bulk-import] Processing: "${quoteName}" (UUID: ${quoteUUID})`);
@@ -325,8 +324,8 @@ async function processQuote(quoteResult, options) {
     const hd = await fetchHeaderData(quoteUUID);
 
     // ── Extract dates ──────────────────────────────────────────────────────
-    // FIX: header-data wraps dates in { data: "2026-...", fieldType: "date" } objects.
-    //      Use deepExtractName() + regex — see create-project-from-quote.js for reference.
+    // header-data wraps dates in nested objects — use deepExtractName() + regex to extract.
+    //      See create-project-from-quote.js for the same pattern.
     const today = new Date().toISOString().split('T')[0];
     function extractDate(field) {
       const raw = deepExtractName(field);
@@ -345,7 +344,7 @@ async function processQuote(quoteResult, options) {
     }
 
     // ── Extract budget ─────────────────────────────────────────────────────
-    // FIX: codeList returns totalPrice, not budgetedRevenue
+    // codeList returns totalPrice for budget; budgetedRevenue is not available via this endpoint
     const budget = extractNumber(hd.totalPrice || hd.budgetedRevenue || hd.resolvedBudgetedRevenue);
 
     // ── Skip empty shell quotes (numbered drafts with no real data) ────────
@@ -357,7 +356,7 @@ async function processQuote(quoteResult, options) {
     }
 
     // ── Resolve Event Folder UUID (parent) ─────────────────────────────────
-    // FIX: parentElementId is wrapped as { data: { id: "uuid", ... } } — must extract from .data
+    // parentElementId is returned as a nested object — extract the UUID from within .data
     let eventFolderUUID = extractUuid(hd.parentElementId?.data) || extractUuid(hd.parentElementId);
     if (!eventFolderUUID) {
       try {
@@ -370,7 +369,7 @@ async function processQuote(quoteResult, options) {
     const equipListUUID = await findEquipmentListUUID(quoteUUID);
 
     // ── Extract contact UUIDs from header data ─────────────────────────────
-    // FIX: codeList returns hd.clientId / hd.venueId (not hd.data.client / hd.data.venue)
+    // codeList maps client/venue to hd.clientId / hd.venueId directly, not nested under hd.data
     const clientUUID            = extractUuid(hd.clientId          || hd.data?.client);
     const venueUUID             = extractUuid(hd.venueId           || hd.data?.venue);
     const personResponsibleEmail = hd.personResponsibleDefaultEmailAddress?.data || null;
@@ -491,7 +490,7 @@ async function processQuote(quoteResult, options) {
 //        GET /api/bulk-import-upcoming?action=geocode-locations&batch=1
 //        GET /api/bulk-import-upcoming?action=geocode-locations&dryRun=true
 //
-// Vercel Hobby = 60s limit. Each batch processes 40 unique addresses (~44s).
+// Subject to serverless timeout. Process addresses in batches to stay within time limits.
 // Repeat with batch=0, 1, 2... until response says done: true.
 // ══════════════════════════════════════════════════════════════════════════════
 const GEOCODE_ADDRESS_COL  = 'long_text_mm3vkzc6';
