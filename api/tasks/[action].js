@@ -1,12 +1,14 @@
 /**
- * monday.com Tiered Project Task Template Generator (Sequential Edition)
+ * ShowFlow PM Checklist Loader
  *
- * Creates subitems one-at-a-time in strict template order.
- * Using Promise.all / concurrent batching causes monday.com to insert items
- * out of order because parallel requests race each other to the API.
- * Sequential await guarantees insertion order matches the template.
+ * Copies all subitems from the master template project into a new project,
+ * one at a time in strict order. Sequential execution is intentional —
+ * parallel/batch requests cause monday.com to insert tasks out of order.
  *
- * Routes: POST /api/tasks/load-all
+ * Template: TEMPLATE - PM Checklist (DO NOT DELETE) — item 12153638858
+ * Current task count: 66
+ *
+ * Route:  POST /api/tasks/load-all
  * Author: Matt James, Antic Studios
  */
 
