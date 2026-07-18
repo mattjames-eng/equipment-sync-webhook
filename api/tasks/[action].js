@@ -94,8 +94,16 @@ export default async function handler(req, res) {
 }
 
 /**
- * All the real work happens here — fetching the template, creating 65 subitems
- * sequentially, then flipping the parent status to "Tasks Loaded".
+ * All the real work happens here — fetching the template, creating all subitems
+ * in a single batched GraphQL mutation, then flipping the parent status to "Tasks Loaded".
+ *
+ * Why a single batched mutation?
+ * The Vercel Hobby plan caps function execution at 60 seconds. 65 sequential
+ * create_subitem calls at ~1.5s each = ~97s — over the limit. By sending all
+ * 65 creates as aliased mutations in one request, we make a single network
+ * round-trip (~2-3s total). Per the GraphQL spec, mutations execute serially,
+ * so insertion order is guaranteed identical to template order.
+ *
  * Called via waitUntil() so it keeps running after the 200 response is sent.
  */
 async function runTaskPipeline(projectId) {
@@ -105,48 +113,45 @@ async function runTaskPipeline(projectId) {
     const templateResponse = await mondayApiCall(templateQuery, { templateId: [TEMPLATE_PROJECT_ID] });
     const allTemplateSubitems = templateResponse.data?.items?.[0]?.subitems || [];
 
-    console.log(`🎯 Retrieved ${allTemplateSubitems.length} tasks from template`);
+    console.log(`🎯 Retrieved ${allTemplateSubitems.length} tasks from template — building batch mutation`);
 
-    const createSubitemMutation = `
-      mutation($parentId: ID!, $itemName: String!, $columnValues: JSON!) {
-        create_subitem(parent_item_id: $parentId, item_name: $itemName, column_values: $columnValues) {
-          id
-        }
-      }
-    `;
+    // Build one mega-mutation: all creates as aliases (t0, t1, t2…).
+    // GraphQL mutations are serial per spec — t0 completes before t1 starts,
+    // so monday.com inserts them in the same order they appear here.
+    const mutationAliases = [];
+    const variables = {};
 
-    let totalCreated = 0;
+    for (let i = 0; i < allTemplateSubitems.length; i++) {
+      const task = allTemplateSubitems[i];
+      const phaseText    = task.column_values.find(col => col.id === 'dropdown_mm3x2wmx')?.text;
+      const priorityText = task.column_values.find(col => col.id === 'color_mm3x885a')?.text;
+      const assignedTier = task.column_values.find(col => col.id === 'dropdown_mm3xhker')?.text || 'Basic';
 
-    // SEQUENTIAL — one await per task preserves insertion order.
-    // DO NOT convert this to Promise.all — parallel requests race each other and
-    // monday.com inserts them in unpredictable order, scrambling the checklist.
-    for (const task of allTemplateSubitems) {
-      try {
-        const phaseText    = task.column_values.find(col => col.id === 'dropdown_mm3x2wmx')?.text;
-        const priorityText = task.column_values.find(col => col.id === 'color_mm3x885a')?.text;
-        const assignedTier = task.column_values.find(col => col.id === 'dropdown_mm3xhker')?.text || 'Basic';
+      const subitemValues = {
+        status: { label: "Not Started" },
+        dropdown_mm3xhker: { labels: assignedTier.split(',').map(s => s.trim()) }
+      };
+      if (phaseText)    subitemValues.dropdown_mm3x2wmx = { labels: phaseText.split(',').map(s => s.trim()) };
+      if (priorityText) subitemValues.color_mm3x885a    = { label: priorityText };
 
-        const subitemValues = {
-          status: { label: "Not Started" },
-          dropdown_mm3xhker: { labels: assignedTier.split(',').map(s => s.trim()) }
-        };
+      variables[`name${i}`]   = task.name;
+      variables[`values${i}`] = JSON.stringify(subitemValues);
 
-        if (phaseText)    subitemValues.dropdown_mm3x2wmx = { labels: phaseText.split(',').map(s => s.trim()) };
-        if (priorityText) subitemValues.color_mm3x885a    = { label: priorityText };
-
-        // column_values must be JSON! type AND JSON.stringify()'d
-        await mondayApiCall(createSubitemMutation, {
-          parentId:     projectId.toString(),
-          itemName:     task.name,
-          columnValues: JSON.stringify(subitemValues)
-        });
-
-        totalCreated++;
-        console.log(`  ✓ [${totalCreated}/${allTemplateSubitems.length}] ${task.name}`);
-      } catch (rowError) {
-        console.error(`  ⚠️ Skipped "${task.name}":`, rowError.message);
-      }
+      mutationAliases.push(
+        `t${i}: create_subitem(parent_item_id: "${projectId}", item_name: $name${i}, column_values: $values${i}) { id }`
+      );
     }
+
+    // Declare every variable in the mutation signature
+    const varDeclarations = allTemplateSubitems
+      .map((_, i) => `$name${i}: String!, $values${i}: JSON!`)
+      .join(', ');
+
+    const batchMutation = `mutation CreateAll(${varDeclarations}) { ${mutationAliases.join(' ')} }`;
+
+    const batchResult = await mondayApiCall(batchMutation, variables);
+    const created = Object.keys(batchResult.data || {}).length;
+    console.log(`  ✓ Batch complete — ${created}/${allTemplateSubitems.length} tasks created`);
 
     // Flip parent project status to "Tasks Loaded"
     await mondayApiCall(
@@ -154,7 +159,7 @@ async function runTaskPipeline(projectId) {
       { boardId: PROJECTS_BOARD_ID, itemId: projectId.toString(), values: JSON.stringify({ "color_mm3ycrm1": { "label": "Tasks Loaded" } }) }
     );
 
-    console.log(`✅ Done — ${totalCreated}/${allTemplateSubitems.length} tasks created, status → "Tasks Loaded"`);
+    console.log(`✅ Done — ${created}/${allTemplateSubitems.length} tasks, status → "Tasks Loaded"`);
   } catch (error) {
     console.error('❌ runTaskPipeline failed:', error);
   }
