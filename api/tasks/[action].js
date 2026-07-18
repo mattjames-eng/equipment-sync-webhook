@@ -12,6 +12,8 @@
  * Author: Matt James, Antic Studios
  */
 
+export const maxDuration = 60; // Vercel max — 141 sequential tasks needs the full window
+
 const MONDAY_API_URL = 'https://api.monday.com/v2';
 const MONDAY_API_KEY = process.env.MONDAY_API_KEY;
 const PROJECTS_BOARD_ID = '18415679761';
@@ -35,6 +37,31 @@ export default async function handler(req, res) {
 
   try {
     console.log(`📥 Sequential Task Load starting for Project ID: ${projectId}`);
+
+    // STEP 0: Pre-flight — check if this project already has subitems.
+    // If it does, bail out immediately to prevent duplicates. The user
+    // must manually clear tasks before reloading.
+    const existingQuery = `query($id: [ID!]) { items(ids: $id) { subitems { id } } }`;
+    const existingResponse = await mondayApiCall(existingQuery, { id: [projectId.toString()] });
+    const existingSubitems = existingResponse.data?.items?.[0]?.subitems || [];
+
+    if (existingSubitems.length > 0) {
+      console.log(`⚠️ Project ${projectId} already has ${existingSubitems.length} tasks — aborting to prevent duplicates`);
+      return res.status(200).json({
+        success: false,
+        alreadyLoaded: true,
+        existingTaskCount: existingSubitems.length,
+        message: `Tasks already loaded (${existingSubitems.length} exist). Clear existing tasks first if you want to reload.`
+      });
+    }
+
+    // Flip to "Loading Tasks..." immediately so the user gets instant feedback
+    // and doesn't click the button again while the 141 sequential creates run.
+    await mondayApiCall(
+      `mutation($boardId: ID!, $itemId: ID!, $values: JSON!) { change_multiple_column_values(board_id: $boardId, item_id: $itemId, column_values: $values) { id } }`,
+      { boardId: PROJECTS_BOARD_ID, itemId: projectId.toString(), values: JSON.stringify({ "color_mm3ycrm1": { "label": "Loading Tasks..." } }) }
+    );
+    console.log(`⏳ Status → "Loading Tasks..." for project ${projectId}`);
 
     // STEP 1: Fetch all subitems from the master template project
     const templateQuery = `query($templateId: [ID!]) { items(ids: $templateId) { subitems { id name column_values { id text } } } }`;
