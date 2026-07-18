@@ -14,7 +14,7 @@
 
 import { waitUntil } from '@vercel/functions';
 
-export const maxDuration = 60; // seconds — 65 tasks × ~300ms ≈ 20s, well within limit
+export const maxDuration = 300; // seconds — 65 tasks × ~1.8s ≈ 120s, needs room to breathe
 
 const MONDAY_API_URL = 'https://api.monday.com/v2';
 const MONDAY_API_KEY = process.env.MONDAY_API_KEY;
