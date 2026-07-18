@@ -2,6 +2,7 @@
   "name": "showflow-webhooks",
   "version": "1.0.0",
   "dependencies": {
+    "@vercel/functions": "^1.0.0",
     "googleapis": "^140.0.0"
   },
   "engines": {
