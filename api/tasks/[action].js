@@ -76,13 +76,18 @@ export default async function handler(req, res) {
       });
     }
 
-    // Flip to "Loading Tasks..." immediately — this is the mutex flag that blocks
-    // any concurrent retry from passing the pre-flight check above.
+    // Flip to "Loading Tasks..." — this is the mutex flag that blocks any
+    // concurrent retry from passing the pre-flight check above.
     await mondayApiCall(
       `mutation($boardId: ID!, $itemId: ID!, $values: JSON!) { change_multiple_column_values(board_id: $boardId, item_id: $itemId, column_values: $values) { id } }`,
       { boardId: PROJECTS_BOARD_ID, itemId: projectId.toString(), values: JSON.stringify({ "color_mm3ycrm1": { "label": "Loading Tasks..." } }) }
     );
     console.log(`⏳ Status → "Loading Tasks..." for project ${projectId}`);
+
+    // Respond immediately with 200 so the HTTP client doesn't timeout and
+    // Vercel doesn't retry. The function continues running in the background
+    // (up to maxDuration) to create all tasks and flip status to "Tasks Loaded".
+    res.status(200).json({ success: true, message: 'Task loading started', projectId });
 
     // STEP 1: Fetch all subitems from the master template project
     const templateQuery = `query($templateId: [ID!]) { items(ids: $templateId) { subitems { id name column_values { id text } } } }`;
@@ -147,11 +152,13 @@ export default async function handler(req, res) {
     });
 
     console.log(`✅ Done — ${totalCreated} tasks created in order`);
-    return res.status(200).json({ success: true, totalTasksLoaded: totalCreated });
 
   } catch (error) {
     console.error('❌ Task pipeline failed:', error);
-    return res.status(500).json({ success: false, error: error.message });
+    // Only send error response if we haven't already responded
+    if (!res.headersSent) {
+      return res.status(500).json({ success: false, error: error.message });
+    }
   }
 }
 
