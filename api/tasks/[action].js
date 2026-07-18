@@ -12,7 +12,7 @@
  * Author: Matt James, Antic Studios
  */
 
-export const maxDuration = 60; // Vercel max — 141 sequential tasks needs the full window
+export const maxDuration = 60; // Vercel max — 65 sequential tasks needs the full window
 
 const MONDAY_API_URL = 'https://api.monday.com/v2';
 const MONDAY_API_KEY = process.env.MONDAY_API_KEY;
@@ -56,7 +56,7 @@ export default async function handler(req, res) {
     }
 
     // Flip to "Loading Tasks..." immediately so the user gets instant feedback
-    // and doesn't click the button again while the 141 sequential creates run.
+    // and doesn't click the button again while the 65 sequential creates run.
     await mondayApiCall(
       `mutation($boardId: ID!, $itemId: ID!, $values: JSON!) { change_multiple_column_values(board_id: $boardId, item_id: $itemId, column_values: $values) { id } }`,
       { boardId: PROJECTS_BOARD_ID, itemId: projectId.toString(), values: JSON.stringify({ "color_mm3ycrm1": { "label": "Loading Tasks..." } }) }
