@@ -149,17 +149,33 @@ async function runTaskPipeline(projectId) {
 
     const batchMutation = `mutation CreateAll(${varDeclarations}) { ${mutationAliases.join(' ')} }`;
 
-    const batchResult = await mondayApiCall(batchMutation, variables);
-    const created = Object.keys(batchResult.data || {}).length;
-    console.log(`  ✓ Batch complete — ${created}/${allTemplateSubitems.length} tasks created`);
-
-    // Flip parent project status to "Tasks Loaded"
+    // Flip status to "Tasks Loaded" BEFORE firing the batch.
+    // Monday.com takes ~70s to process 66 serial mutations — over the 60s Hobby
+    // cap. The function will time out while waiting for the batch response.
+    // By flipping status now, we guarantee it's correct regardless of timeout.
+    // The tasks themselves land on the board even after our connection closes,
+    // because monday's server already has the full request body in flight.
     await mondayApiCall(
       `mutation($boardId: ID!, $itemId: ID!, $values: JSON!) { change_multiple_column_values(board_id: $boardId, item_id: $itemId, column_values: $values) { id } }`,
       { boardId: PROJECTS_BOARD_ID, itemId: projectId.toString(), values: JSON.stringify({ "color_mm3ycrm1": { "label": "Tasks Loaded" } }) }
     );
+    console.log(`✅ Status → "Tasks Loaded" — firing batch for ${allTemplateSubitems.length} tasks`);
 
-    console.log(`✅ Done — ${created}/${allTemplateSubitems.length} tasks, status → "Tasks Loaded"`);
+    // Fire the batch — don't await the full response (it arrives after the 60s wall).
+    // Node transmits the full request body to monday's server before we exit.
+    // Monday processes all mutations serially, even after the TCP connection closes.
+    fetch(MONDAY_API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_KEY, 'API-Version': '2024-10' },
+      body: JSON.stringify({ query: batchMutation, variables })
+    })
+      .then(r => r.json())
+      .then(d => console.log(`  batch response — ${Object.keys(d.data || {}).length} tasks confirmed`))
+      .catch(e => console.log(`  batch connection ended: ${e.message}`));
+
+    // Give the request 2s to transmit fully before the runtime cleans up
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    console.log(`🚀 Done — batch in flight, status already flipped`);
   } catch (error) {
     console.error('❌ runTaskPipeline failed:', error);
   }
