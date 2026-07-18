@@ -38,12 +38,33 @@ export default async function handler(req, res) {
   try {
     console.log(`📥 Sequential Task Load starting for Project ID: ${projectId}`);
 
-    // STEP 0: Pre-flight — check if this project already has subitems.
-    // If it does, bail out immediately to prevent duplicates. The user
-    // must manually clear tasks before reloading.
-    const existingQuery = `query($id: [ID!]) { items(ids: $id) { subitems { id } } }`;
-    const existingResponse = await mondayApiCall(existingQuery, { id: [projectId.toString()] });
-    const existingSubitems = existingResponse.data?.items?.[0]?.subitems || [];
+    // STEP 0: Pre-flight — check BOTH the status column AND existing subitems.
+    // Checking status first blocks Vercel's automatic request retries (which arrive
+    // after a 504 gateway timeout). The status gets flipped to "Loading Tasks..."
+    // before any task creation, so a retry will see the flag and bail immediately
+    // without racing past the subitem check.
+    const preflightQuery = `
+      query($id: [ID!]) {
+        items(ids: $id) {
+          subitems { id }
+          column_values(ids: ["color_mm3ycrm1"]) { id text }
+        }
+      }
+    `;
+    const preflightResponse = await mondayApiCall(preflightQuery, { id: [projectId.toString()] });
+    const preflightItem     = preflightResponse.data?.items?.[0];
+    const existingSubitems  = preflightItem?.subitems || [];
+    const currentStatus     = preflightItem?.column_values?.find(c => c.id === 'color_mm3ycrm1')?.text || '';
+
+    if (currentStatus === 'Tasks Loaded' || currentStatus === 'Loading Tasks...') {
+      console.log(`⚠️ Project ${projectId} status is "${currentStatus}" — aborting to prevent duplicates`);
+      return res.status(200).json({
+        success: false,
+        alreadyLoaded: true,
+        currentStatus,
+        message: `Blocked — status is already "${currentStatus}". Clear tasks and reset status before reloading.`
+      });
+    }
 
     if (existingSubitems.length > 0) {
       console.log(`⚠️ Project ${projectId} already has ${existingSubitems.length} tasks — aborting to prevent duplicates`);
@@ -51,12 +72,12 @@ export default async function handler(req, res) {
         success: false,
         alreadyLoaded: true,
         existingTaskCount: existingSubitems.length,
-        message: `Tasks already loaded (${existingSubitems.length} exist). Clear existing tasks first if you want to reload.`
+        message: `Tasks already exist (${existingSubitems.length}). Clear existing tasks first if you want to reload.`
       });
     }
 
-    // Flip to "Loading Tasks..." immediately so the user gets instant feedback
-    // and doesn't click the button again while the 65 sequential creates run.
+    // Flip to "Loading Tasks..." immediately — this is the mutex flag that blocks
+    // any concurrent retry from passing the pre-flight check above.
     await mondayApiCall(
       `mutation($boardId: ID!, $itemId: ID!, $values: JSON!) { change_multiple_column_values(board_id: $boardId, item_id: $itemId, column_values: $values) { id } }`,
       { boardId: PROJECTS_BOARD_ID, itemId: projectId.toString(), values: JSON.stringify({ "color_mm3ycrm1": { "label": "Loading Tasks..." } }) }
