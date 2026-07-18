@@ -12,7 +12,9 @@
  * Author: Matt James, Antic Studios
  */
 
-export const maxDuration = 60; // Vercel max — 65 sequential tasks needs the full window
+import { waitUntil } from '@vercel/functions';
+
+export const maxDuration = 60; // seconds — 65 tasks × ~300ms ≈ 20s, well within limit
 
 const MONDAY_API_URL = 'https://api.monday.com/v2';
 const MONDAY_API_KEY = process.env.MONDAY_API_KEY;
@@ -35,61 +37,70 @@ export default async function handler(req, res) {
     return res.status(400).json({ success: false, error: 'Missing project ID' });
   }
 
-  try {
-    console.log(`📥 Sequential Task Load starting for Project ID: ${projectId}`);
+  console.log(`📥 Sequential Task Load starting for Project ID: ${projectId}`);
 
-    // STEP 0: Pre-flight — check BOTH the status column AND existing subitems.
-    // Checking status first blocks Vercel's automatic request retries (which arrive
-    // after a 504 gateway timeout). The status gets flipped to "Loading Tasks..."
-    // before any task creation, so a retry will see the flag and bail immediately
-    // without racing past the subitem check.
-    const preflightQuery = `
-      query($id: [ID!]) {
-        items(ids: $id) {
-          subitems { id }
-          column_values(ids: ["color_mm3ycrm1"]) { id text }
-        }
+  // STEP 0: Pre-flight — check BOTH the status column AND existing subitems.
+  // Checking status first blocks Vercel's automatic request retries (which arrive
+  // after a gateway timeout). The status gets flipped to "Loading Tasks..." before
+  // any task creation, so a retry will see the flag and bail immediately without
+  // racing past the subitem check.
+  const preflightQuery = `
+    query($id: [ID!]) {
+      items(ids: $id) {
+        subitems { id }
+        column_values(ids: ["color_mm3ycrm1"]) { id text }
       }
-    `;
-    const preflightResponse = await mondayApiCall(preflightQuery, { id: [projectId.toString()] });
-    const preflightItem     = preflightResponse.data?.items?.[0];
-    const existingSubitems  = preflightItem?.subitems || [];
-    const currentStatus     = preflightItem?.column_values?.find(c => c.id === 'color_mm3ycrm1')?.text || '';
-
-    if (currentStatus === 'Tasks Loaded' || currentStatus === 'Loading Tasks...') {
-      console.log(`⚠️ Project ${projectId} status is "${currentStatus}" — aborting to prevent duplicates`);
-      return res.status(200).json({
-        success: false,
-        alreadyLoaded: true,
-        currentStatus,
-        message: `Blocked — status is already "${currentStatus}". Clear tasks and reset status before reloading.`
-      });
     }
+  `;
+  const preflightResponse = await mondayApiCall(preflightQuery, { id: [projectId.toString()] });
+  const preflightItem     = preflightResponse.data?.items?.[0];
+  const existingSubitems  = preflightItem?.subitems || [];
+  const currentStatus     = preflightItem?.column_values?.find(c => c.id === 'color_mm3ycrm1')?.text || '';
 
-    if (existingSubitems.length > 0) {
-      console.log(`⚠️ Project ${projectId} already has ${existingSubitems.length} tasks — aborting to prevent duplicates`);
-      return res.status(200).json({
-        success: false,
-        alreadyLoaded: true,
-        existingTaskCount: existingSubitems.length,
-        message: `Tasks already exist (${existingSubitems.length}). Clear existing tasks first if you want to reload.`
-      });
-    }
+  if (currentStatus === 'Tasks Loaded' || currentStatus === 'Loading Tasks...') {
+    console.log(`⚠️ Project ${projectId} status is "${currentStatus}" — aborting to prevent duplicates`);
+    return res.status(200).json({
+      success: false,
+      alreadyLoaded: true,
+      currentStatus,
+      message: `Blocked — status is already "${currentStatus}". Clear tasks and reset status before reloading.`
+    });
+  }
 
-    // Flip to "Loading Tasks..." — this is the mutex flag that blocks any
-    // concurrent retry from passing the pre-flight check above.
-    await mondayApiCall(
-      `mutation($boardId: ID!, $itemId: ID!, $values: JSON!) { change_multiple_column_values(board_id: $boardId, item_id: $itemId, column_values: $values) { id } }`,
-      { boardId: PROJECTS_BOARD_ID, itemId: projectId.toString(), values: JSON.stringify({ "color_mm3ycrm1": { "label": "Loading Tasks..." } }) }
-    );
-    console.log(`⏳ Status → "Loading Tasks..." for project ${projectId}`);
+  if (existingSubitems.length > 0) {
+    console.log(`⚠️ Project ${projectId} already has ${existingSubitems.length} tasks — aborting`);
+    return res.status(200).json({
+      success: false,
+      alreadyLoaded: true,
+      existingTaskCount: existingSubitems.length,
+      message: `Tasks already exist (${existingSubitems.length}). Clear existing tasks first if you want to reload.`
+    });
+  }
 
-    // Respond immediately with 200 so the HTTP client doesn't timeout and
-    // Vercel doesn't retry. The function continues running in the background
-    // (up to maxDuration) to create all tasks and flip status to "Tasks Loaded".
-    res.status(200).json({ success: true, message: 'Task loading started', projectId });
+  // Flip to "Loading Tasks..." — this is the mutex flag that blocks any
+  // concurrent retry from passing the pre-flight check above.
+  await mondayApiCall(
+    `mutation($boardId: ID!, $itemId: ID!, $values: JSON!) { change_multiple_column_values(board_id: $boardId, item_id: $itemId, column_values: $values) { id } }`,
+    { boardId: PROJECTS_BOARD_ID, itemId: projectId.toString(), values: JSON.stringify({ "color_mm3ycrm1": { "label": "Loading Tasks..." } }) }
+  );
+  console.log(`⏳ Status → "Loading Tasks..." for project ${projectId}`);
 
-    // STEP 1: Fetch all subitems from the master template project
+  // Respond 200 immediately so the HTTP client gets a clean response and Vercel
+  // doesn't trigger an automatic retry. waitUntil() tells Vercel to keep this
+  // function instance alive until runTaskPipeline() resolves, even though the
+  // HTTP response has already been sent.
+  res.status(200).json({ success: true, message: 'Task loading started', projectId });
+  waitUntil(runTaskPipeline(projectId));
+}
+
+/**
+ * All the real work happens here — fetching the template, creating 65 subitems
+ * sequentially, then flipping the parent status to "Tasks Loaded".
+ * Called via waitUntil() so it keeps running after the 200 response is sent.
+ */
+async function runTaskPipeline(projectId) {
+  try {
+    // Fetch all subitems from the master template project
     const templateQuery = `query($templateId: [ID!]) { items(ids: $templateId) { subitems { id name column_values { id text } } } }`;
     const templateResponse = await mondayApiCall(templateQuery, { templateId: [TEMPLATE_PROJECT_ID] });
     const allTemplateSubitems = templateResponse.data?.items?.[0]?.subitems || [];
@@ -107,8 +118,8 @@ export default async function handler(req, res) {
     let totalCreated = 0;
 
     // SEQUENTIAL — one await per task preserves insertion order.
-    // DO NOT convert this back to Promise.all — parallel requests race each
-    // other and monday.com inserts them in an unpredictable order.
+    // DO NOT convert this to Promise.all — parallel requests race each other and
+    // monday.com inserts them in unpredictable order, scrambling the checklist.
     for (const task of allTemplateSubitems) {
       try {
         const phaseText    = task.column_values.find(col => col.id === 'dropdown_mm3x2wmx')?.text;
@@ -123,7 +134,7 @@ export default async function handler(req, res) {
         if (phaseText)    subitemValues.dropdown_mm3x2wmx = { labels: phaseText.split(',').map(s => s.trim()) };
         if (priorityText) subitemValues.color_mm3x885a    = { label: priorityText };
 
-        // column_values must be JSON! type AND JSON.stringify()'d — monday expects a JSON string on the wire
+        // column_values must be JSON! type AND JSON.stringify()'d
         await mondayApiCall(createSubitemMutation, {
           parentId:     projectId.toString(),
           itemName:     task.name,
@@ -131,34 +142,21 @@ export default async function handler(req, res) {
         });
 
         totalCreated++;
+        console.log(`  ✓ [${totalCreated}/${allTemplateSubitems.length}] ${task.name}`);
       } catch (rowError) {
-        console.error(`⚠️ Skipped "${task.name}":`, rowError.message);
+        console.error(`  ⚠️ Skipped "${task.name}":`, rowError.message);
       }
     }
 
-    // STEP 3: Mark parent project tasks status as loaded
-    const updateParentMutation = `
-      mutation($boardId: ID!, $itemId: ID!, $values: JSON!) {
-        change_multiple_column_values(board_id: $boardId, item_id: $itemId, column_values: $values) {
-          id
-        }
-      }
-    `;
+    // Flip parent project status to "Tasks Loaded"
+    await mondayApiCall(
+      `mutation($boardId: ID!, $itemId: ID!, $values: JSON!) { change_multiple_column_values(board_id: $boardId, item_id: $itemId, column_values: $values) { id } }`,
+      { boardId: PROJECTS_BOARD_ID, itemId: projectId.toString(), values: JSON.stringify({ "color_mm3ycrm1": { "label": "Tasks Loaded" } }) }
+    );
 
-    await mondayApiCall(updateParentMutation, {
-      boardId: PROJECTS_BOARD_ID,
-      itemId:  projectId.toString(),
-      values:  JSON.stringify({ "color_mm3ycrm1": { "label": "Tasks Loaded" } })
-    });
-
-    console.log(`✅ Done — ${totalCreated} tasks created in order`);
-
+    console.log(`✅ Done — ${totalCreated}/${allTemplateSubitems.length} tasks created, status → "Tasks Loaded"`);
   } catch (error) {
-    console.error('❌ Task pipeline failed:', error);
-    // Only send error response if we haven't already responded
-    if (!res.headersSent) {
-      return res.status(500).json({ success: false, error: error.message });
-    }
+    console.error('❌ runTaskPipeline failed:', error);
   }
 }
 
