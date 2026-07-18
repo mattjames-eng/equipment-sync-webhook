@@ -57,13 +57,17 @@ export default async function handler(req, res) {
   const existingSubitems  = preflightItem?.subitems || [];
   const currentStatus     = preflightItem?.column_values?.find(c => c.id === 'color_mm3ycrm1')?.text || '';
 
-  if (currentStatus === 'Tasks Loaded' || currentStatus === 'Loading Tasks...') {
-    console.log(`⚠️ Project ${projectId} status is "${currentStatus}" — aborting to prevent duplicates`);
+  // Only block on "Tasks Loaded" — NOT "Loading Tasks...".
+  // The button automation sets "Loading Tasks..." BEFORE the webhook fires,
+  // so if we block on that status, every legitimate first call gets killed.
+  // "Tasks Loaded" is the reliable post-success guard. Subitem count catches the rest.
+  if (currentStatus === 'Tasks Loaded') {
+    console.log(`⚠️ Project ${projectId} status is "Tasks Loaded" — aborting to prevent duplicates`);
     return res.status(200).json({
       success: false,
       alreadyLoaded: true,
       currentStatus,
-      message: `Blocked — status is already "${currentStatus}". Clear tasks and reset status before reloading.`
+      message: `Blocked — status is already "Tasks Loaded". Clear tasks and reset status before reloading.`
     });
   }
 
@@ -77,13 +81,9 @@ export default async function handler(req, res) {
     });
   }
 
-  // Flip to "Loading Tasks..." — this is the mutex flag that blocks any
-  // concurrent retry from passing the pre-flight check above.
-  await mondayApiCall(
-    `mutation($boardId: ID!, $itemId: ID!, $values: JSON!) { change_multiple_column_values(board_id: $boardId, item_id: $itemId, column_values: $values) { id } }`,
-    { boardId: PROJECTS_BOARD_ID, itemId: projectId.toString(), values: JSON.stringify({ "color_mm3ycrm1": { "label": "Loading Tasks..." } }) }
-  );
-  console.log(`⏳ Status → "Loading Tasks..." for project ${projectId}`);
+  // Status is already "Loading Tasks..." (set by the button automation that triggered this webhook).
+  // No need to set it again — skip straight to the pipeline.
+  console.log(`⏳ Status already "Loading Tasks..." (set by button automation) — proceeding for project ${projectId}`);
 
   // Respond 200 immediately so the HTTP client gets a clean response and Vercel
   // doesn't trigger an automatic retry. waitUntil() tells Vercel to keep this
