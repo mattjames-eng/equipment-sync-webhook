@@ -159,9 +159,9 @@ async function clearPeopleColumn(apiKey, boardId, itemId, columnId) {
 // Body:   { "text": "<raw booking confirmation email or text>" }
 // Returns:{ "success": true, "fields": { <mondayColumnId>: <value>, ... }, "parsed": { ... } }
 //
-// Requires env var: GEMINI_API_KEY
-// Model: gemini-1.5-flash — FREE tier: 1,500 calls/day, no credit card needed
-// Get key at: aistudio.google.com/apikey
+// Requires env var: GROQ_API_KEY
+// Model: llama-3.1-8b-instant via Groq — FREE tier: 14,400 calls/day, no credit card
+// Get key at: console.groq.com → API Keys
 // ─────────────────────────────────────────────────────────────────────────────
 async function handleParseTravel(req, res) {
   const { text } = req.body || {};
@@ -170,12 +170,12 @@ async function handleParseTravel(req, res) {
     return res.status(400).json({ error: 'Missing or too-short confirmation text' });
   }
 
-  const geminiKey = process.env.GEMINI_API_KEY;
-  if (!geminiKey) {
-    return res.status(500).json({ error: 'GEMINI_API_KEY not configured in Vercel environment' });
+  const groqKey = process.env.GROQ_API_KEY;
+  if (!groqKey) {
+    return res.status(500).json({ error: 'GROQ_API_KEY not configured in Vercel environment' });
   }
 
-  const prompt = `You are a travel booking data extractor for an event production company's staffing system.
+  const systemPrompt = `You are a travel booking data extractor for an event production company's staffing system.
 Parse the provided booking confirmation text and return ONLY a raw JSON object — no markdown, no explanation.
 
 Schema (use null for any field not found):
@@ -228,31 +228,33 @@ Rules:
 - Airport codes must be 3-letter IATA codes (e.g. "ORD" not "Chicago O'Hare")
 - flight_out is the first/outbound leg; flight_return is the return leg
 - If only one flight found (one-way), put it in flight_out
-- Return ONLY the JSON object, nothing else
+- Return ONLY the JSON object, nothing else`;
 
-Booking confirmation text:
-${text.substring(0, 4000)}`;
+  const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type':  'application/json',
+      'Authorization': `Bearer ${groqKey}`,
+    },
+    body: JSON.stringify({
+      model:       'llama-3.1-8b-instant',
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user',   content: text.substring(0, 4000) },
+      ],
+      temperature: 0,
+      max_tokens:  1000,
+    }),
+  });
 
-  const geminiRes = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiKey}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0, maxOutputTokens: 1000 },
-      }),
-    }
-  );
-
-  if (!geminiRes.ok) {
-    const err = await geminiRes.text();
-    console.error('[parse-travel] Gemini error:', err);
+  if (!groqRes.ok) {
+    const err = await groqRes.text();
+    console.error('[parse-travel] Groq error:', err);
     return res.status(500).json({ error: 'AI parsing failed', details: err });
   }
 
-  const aiResult = await geminiRes.json();
-  const rawContent = aiResult.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? '';
+  const aiResult = await groqRes.json();
+  const rawContent = aiResult.choices?.[0]?.message?.content?.trim() ?? '';
 
   let parsedData;
   try {
