@@ -160,7 +160,7 @@ async function clearPeopleColumn(apiKey, boardId, itemId, columnId) {
 // Returns:{ "success": true, "fields": { <mondayColumnId>: <value>, ... }, "parsed": { ... } }
 //
 // Requires env var: GEMINI_API_KEY
-// Model: gemini-2.0-flash — FREE tier: 1,500 calls/day, no credit card needed
+// Model: gemini-1.5-flash — FREE tier: 1,500 calls/day, no credit card needed
 // Get key at: aistudio.google.com/apikey
 // ─────────────────────────────────────────────────────────────────────────────
 async function handleParseTravel(req, res) {
@@ -234,7 +234,7 @@ Booking confirmation text:
 ${text.substring(0, 4000)}`;
 
   const geminiRes = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`,
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiKey}`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
