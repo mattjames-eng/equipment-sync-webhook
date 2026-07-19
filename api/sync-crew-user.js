@@ -240,41 +240,66 @@ function extractTimeNear(text, keyword) {
   return t ? normalizeTime(t[0]) : null;
 }
 
+// ── Known IATA airport codes (top 150 US + common international) ─────────────
+const IATA_AIRPORTS = new Set([
+  'ATL','LAX','ORD','DFW','DEN','JFK','SFO','SEA','LAS','MCO','EWR','CLT','PHX','IAH','MIA',
+  'BOS','MSP','FLL','DTW','PHL','LGA','BWI','SLC','SAN','DCA','MDW','TPA','PDX','HNL','STL',
+  'BNA','AUS','DAL','IAD','OAK','MCI','SMF','RDU','MSY','SJC','SNA','SAT','CLE','PIT','CVG',
+  'CMH','IND','MEM','OMA','RIC','BUF','BDL','ALB','PVD','SYR','ROC','ORF','RNO','ABQ','ELP',
+  'TUS','OGG','KOA','LIH','ITO','GEG','BOI','BIL','MSO','FSD','COS','GJT','JAC','BZN','FCA',
+  'LIT','TUL','OKC','ICT','DSM','MKE','MSN','GRR','LAN','TOL','EVV','SBN','TYS','BHM','HSV',
+  'MOB','PNS','VPS','JAX','SAV','CHS','GSP','AVL','CAE','MYR','GSO','RDU','ORF','SHV','BTR',
+  'GPT','JAN','AGS','EYW','RSW','SRQ','PIE','PBI','MLB','DAB','GNV','TLH','PFN','VLD','CSG',
+  'YYZ','YVR','YUL','YYC','YEG','YOW','YHZ','YWG','LHR','LGW','MAN','EDI','GLA','BHX','BRS',
+  'CDG','ORY','NCE','LYS','MRS','TLS','BOD','NTE','SVO','DME','LED','AMS','FRA','MUC','TXL',
+  'HAM','DUS','STR','FCO','MXP','VCE','NAP','BCN','MAD','AGP','PMI','LIS','OPO','ATH','IST',
+  'DXB','AUH','DOH','KWI','BAH','AMM','BEY','TLV','CAI','CMN','NBO','JNB','CPT','GRU','GIG',
+  'EZE','SCL','LIM','BOG','MDE','MEX','CUN','GDL','MTY','PTY','SJO','SJU','BGI','NAS','MBJ',
+  'YYZ','ICN','NRT','HND','KIX','CTS','OKA','PEK','PVG','HKG','TPE','SIN','BKK','KUL','CGK',
+  'SYD','MEL','BNE','PER','AKL','CHC','PPT','GUM','HNL',
+]);
+
 // ── Flight segment extractor ──────────────────────────────────────────────────
-// Finds all flight segments: [{flightNum, depAirport, arrAirport, depDate, depTime, arrDate, arrTime, airline}]
 function extractFlightSegments(text) {
   const segments = [];
 
-  // Match lines/blocks containing a flight number pattern (2-3 letter code + 1-4 digits)
-  // e.g. DL 1847, UA342, AA 2201, WN1234, B6 444
-  const flightRe = /\b([A-Z]{2,3})\s*(\d{1,4})\b/g;
-  let match;
+  // Split into lines so we can work line-by-line for better context
+  const lines = text.split('\n');
 
-  while ((match = flightRe.exec(text)) !== null) {
-    const flightNum = match[1] + match[2];
-    // Grab surrounding context (~300 chars)
-    const start = Math.max(0, match.index - 50);
-    const end   = Math.min(text.length, match.index + 300);
-    const ctx   = text.substring(start, end);
+  // Find lines that look like flight number declarations
+  // Pattern: standalone "DL 1847" or "Flight DL1847" or "Flight: DL 1847"
+  const flightLineRe = /(?:^|flight\s*(?:\d+|#|:)?\s*)([A-Z]{2})\s*(\d{3,4})\b/i;
 
-    // Extract airports — look for (ORD) or plain ORD near words like "from","depart","to","arriv"
+  // Known non-flight 2-letter combos to skip
+  const SKIP = new Set(['AM','PM','US','UK','EU','OR','AT','TO','IN','ON','BY','OF','IS','IT','NO']);
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const m = line.match(/\b([A-Z]{2})\s*(\d{3,4})\b/);
+    if (!m) continue;
+    if (SKIP.has(m[1])) continue;
+
+    const flightNum = m[1] + m[2];
+    // Grab context: this line + next 5 lines
+    const ctx = lines.slice(i, Math.min(lines.length, i + 6)).join('\n');
+
+    // Extract airports — ONLY from parenthesized codes or known IATA set
     const airports = [];
-    const airportRe = /\(([A-Z]{3})\)|(?:from|depart(?:ing)?|at|to|arriv(?:ing)?)[^A-Z\n]{0,30}([A-Z]{3})\b/gi;
-    let am;
-    while ((am = airportRe.exec(ctx)) !== null) {
-      const code = am[1] || am[2];
-      if (code && !['AM','PM','THE','AND','FOR','NOT','EST','CST','PST','MST'].includes(code)) {
-        airports.push(code);
-      }
+
+    // Priority 1: (ORD) style — most reliable
+    const parenAirports = [...ctx.matchAll(/\(([A-Z]{3})\)/g)].map(a => a[1]).filter(a => IATA_AIRPORTS.has(a));
+    airports.push(...parenAirports);
+
+    // Priority 2: standalone known IATA codes not inside a word
+    if (airports.length < 2) {
+      const standaloneAirports = [...ctx.matchAll(/\b([A-Z]{3})\b/g)]
+        .map(a => a[1])
+        .filter(a => IATA_AIRPORTS.has(a) && !airports.includes(a));
+      airports.push(...standaloneAirports);
     }
 
-    // Also just grab any 3-capital-letter word in context as candidate airport
-    const rawAirports = [...ctx.matchAll(/\b([A-Z]{3})\b/g)]
-      .map(a => a[1])
-      .filter(a => !/^(AM|PM|THE|AND|FOR|NOT|EST|CST|PST|MST|LLC|INC|USA|SUV|VAN|CAR|PDF|URL|API|SMS|ETA|ETD|ATA|ATD|DBA)$/.test(a));
-
-    const depAirport = airports[0] || rawAirports[0] || null;
-    const arrAirport = airports[1] || rawAirports[1] || null;
+    const depAirport = airports[0] || null;
+    const arrAirport = airports[1] || null;
 
     // Dates and times in context
     const dates = [...ctx.matchAll(new RegExp(DATE_PAT.source, 'gi'))].map(d => normalizeDate(d[0])).filter(Boolean);
@@ -282,7 +307,7 @@ function extractFlightSegments(text) {
 
     segments.push({
       flightNum,
-      airline:    match[1],
+      airline:    m[1],
       depAirport,
       arrAirport,
       depDate:    dates[0] || null,
@@ -364,7 +389,9 @@ async function handleParseTravel(req, res) {
   // ── HOTEL ─────────────────────────────────────────────────────────────────
   let hotel = null;
   if (hasHotel) {
-    const hotelConf    = extractConfirmation(t);
+    // Isolate hotel section to avoid stealing flight confirmation numbers
+    const hotelSection = t.match(/(?:hotel|resort|inn|suites|property|check[\s\-]?in)[^\n]{0,500}/is)?.[0] || t;
+    const hotelConf    = extractConfirmation(hotelSection);
     const checkinDate  = extractDateNear(t, 'check[\\s\\-]?in');
     const checkoutDate = extractDateNear(t, 'check[\\s\\-]?out');
     const checkinTime  = extractTimeNear(t, 'check[\\s\\-]?in');
@@ -386,9 +413,9 @@ async function handleParseTravel(req, res) {
       }
     }
 
-    // Address: look for street number + street name pattern
+    // Address: street number + name, must end with a street type word
     const address = extract(t, [
-      /(\d+\s+[A-Za-z][^\n]{5,60}(?:St|Ave|Blvd|Dr|Rd|Way|Ln|Ct|Pkwy|Plaza|Circle|Place)[^\n]{0,30})/i,
+      /(\d+\s+[A-Za-z0-9 ]{3,50}(?:St(?:reet)?|Ave(?:nue)?|Blvd|Boulevard|Dr(?:ive)?|Rd|Road|Way|Ln|Lane|Ct|Court|Pkwy|Parkway|Plaza|Circle|Pl(?:ace)?)[^\n]{0,40})/i,
     ]);
 
     // Phone
@@ -404,7 +431,12 @@ async function handleParseTravel(req, res) {
   // ── CAR RENTAL ────────────────────────────────────────────────────────────
   let car = null;
   if (hasCar) {
-    const carConf = extractConfirmation(t);
+    // Car confirmation — look specifically near rental/car keywords, not flight section
+    const carSection = t.match(/(?:rent(?:al)?|car\s*rental|vehicle)[^\n]{0,200}/is)?.[0] || t;
+    const carConf = extract(carSection, [
+      /(?:confirmation|booking\s*(?:ref|reference|number|code)|conf(?:irmation)?\s*(?:#|number|no\.?))[:\s#]*([A-Z0-9\-]{4,15})/i,
+      /\b([A-Z]{1,2}[\-]?\d{5,10})\b/,  // formats like E-5529183
+    ]);
 
     // Company name
     const company = extract(t, [
@@ -412,10 +444,10 @@ async function handleParseTravel(req, res) {
       /\b(Enterprise|Hertz|Avis|National|Budget|Alamo|Dollar|Thrifty|Sixt|Payless|Fox|Europcar|Firefly|Advantage)\b/i,
     ]);
 
-    // Vehicle type
+    // Vehicle type — specific keyword match first, then labeled field
     const vehicleType = extract(t, [
-      /(?:vehicle|car|class|type)[:\s]+([^\n]{2,40})/i,
-      /\b(Sedan|SUV|Truck|Van|Minivan|Convertible|Compact|Economy|Midsize|Full[\s\-]Size|Luxury|Pickup)\b/i,
+      /\b(Sedan|SUV|Truck|Van|Minivan|Convertible|Compact|Economy|Midsize|Full[\s\-]Size|Luxury|Pickup|Crossover|Cargo Van|Passenger Van)\b/i,
+      /(?:vehicle|car\s*type|class)[:\s]+([^\n,]{2,30})/i,
     ]);
 
     // Pickup location
@@ -423,10 +455,10 @@ async function handleParseTravel(req, res) {
       /(?:pickup|pick[\s\-]?up|collect(?:ion)?)\s*(?:location|at|from)?[:\s]+([^\n]{3,80})/i,
     ]);
 
-    const pickupDate = extractDateNear(t, 'pick[\\s\\-]?up|pickup|collect');
-    const pickupTime = extractTimeNear(t, 'pick[\\s\\-]?up|pickup|collect');
-    const returnDate = extractDateNear(t, 'return|drop[\\s\\-]?off');
-    const returnTime = extractTimeNear(t, 'return|drop[\\s\\-]?off');
+    const pickupDate = extractDateNear(carSection, 'pick[\\s\\-]?up|pickup|collect');
+    const pickupTime = extractTimeNear(carSection, 'pick[\\s\\-]?up|pickup|collect');
+    const returnDate = extractDateNear(carSection, 'return|drop[\\s\\-]?off');
+    const returnTime = extractTimeNear(carSection, 'return|drop[\\s\\-]?off');
 
     car = { company, confirmation: carConf, pickupLocation, vehicleType, pickupDate, pickupTime, returnDate, returnTime };
   }
