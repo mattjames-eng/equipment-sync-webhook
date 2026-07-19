@@ -153,16 +153,174 @@ async function clearPeopleColumn(apiKey, boardId, itemId, columnId) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// TRAVEL CONFIRMATION PARSER
+// TRAVEL CONFIRMATION PARSER — Universal Regex Engine
 // POST /api/travel/parse  (rewrite → ?route=parse-travel)
 //
 // Body:   { "text": "<raw booking confirmation email or text>" }
 // Returns:{ "success": true, "fields": { <mondayColumnId>: <value>, ... }, "parsed": { ... } }
 //
-// Requires env var: GEMINI_API_KEY
-// Model: gemini-2.0-flash — FREE tier: 1,500 calls/day, no credit card needed
-// Get key at: aistudio.google.com/apikey → Create API Key → Create NEW project
+// Zero external dependencies — pure JS regex, works for ANY airline/hotel/car vendor.
+// No API keys, no quotas, no rate limits, no cost. Ever.
 // ─────────────────────────────────────────────────────────────────────────────
+
+// ── Date normalizer → YYYY-MM-DD ─────────────────────────────────────────────
+function normalizeDate(str) {
+  if (!str) return null;
+  str = str.trim();
+
+  const MONTHS = { jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12 };
+
+  // MM/DD/YYYY or MM-DD-YYYY
+  let m = str.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+  if (m) return `${m[3]}-${m[1].padStart(2,'0')}-${m[2].padStart(2,'0')}`;
+
+  // YYYY-MM-DD already
+  m = str.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (m) return str;
+
+  // "July 25, 2026" or "Jul 25 2026" or "25 July 2026" or "25-JUL-26"
+  m = str.match(/(\d{1,2})[\s\-]([A-Za-z]{3,9})[\s\-,]*(\d{2,4})/);
+  if (m) {
+    const mon = MONTHS[m[2].toLowerCase().substring(0,3)];
+    if (mon) {
+      const yr = m[3].length === 2 ? '20' + m[3] : m[3];
+      return `${yr}-${String(mon).padStart(2,'0')}-${m[1].padStart(2,'0')}`;
+    }
+  }
+  m = str.match(/([A-Za-z]{3,9})[\s\.\-]+(\d{1,2})[,\s]+(\d{4})/);
+  if (m) {
+    const mon = MONTHS[m[1].toLowerCase().substring(0,3)];
+    if (mon) return `${m[3]}-${String(mon).padStart(2,'0')}-${m[2].padStart(2,'0')}`;
+  }
+
+  return null;
+}
+
+// ── Time normalizer → HH:MM 24hr ─────────────────────────────────────────────
+function normalizeTime(str) {
+  if (!str) return null;
+  str = str.trim();
+  const m = str.match(/(\d{1,2}):?(\d{2})?\s*(AM|PM|am|pm)?/i);
+  if (!m) return null;
+  let h = parseInt(m[1], 10);
+  const min = parseInt(m[2] || '0', 10);
+  const ampm = (m[3] || '').toUpperCase();
+  if (ampm === 'PM' && h !== 12) h += 12;
+  if (ampm === 'AM' && h === 12) h = 0;
+  return `${String(h).padStart(2,'0')}:${String(min).padStart(2,'0')}`;
+}
+
+// ── Grab first match from text using multiple patterns ────────────────────────
+function extract(text, patterns) {
+  for (const re of patterns) {
+    const m = text.match(re);
+    if (m) return (m[1] || m[0]).trim();
+  }
+  return null;
+}
+
+// ── Find all date+time pairs near a keyword ───────────────────────────────────
+const DATE_PAT  = /(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4}|\d{4}-\d{2}-\d{2}|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2},?\s+\d{4}|\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{2,4}|\d{1,2}-[A-Z]{3}-\d{2,4})/i;
+const TIME_PAT  = /(\d{1,2}:\d{2}\s*(?:AM|PM|am|pm)?|\d{1,2}\s*(?:AM|PM|am|pm))/i;
+const AIRPORT_PAT = /\b([A-Z]{3})\b/;
+
+function extractDateNear(text, keyword) {
+  const re = new RegExp(keyword + '[^\\n]{0,60}', 'i');
+  const m = text.match(re);
+  if (!m) return null;
+  const d = m[0].match(DATE_PAT);
+  return d ? normalizeDate(d[0]) : null;
+}
+
+function extractTimeNear(text, keyword) {
+  const re = new RegExp(keyword + '[^\\n]{0,60}', 'i');
+  const m = text.match(re);
+  if (!m) return null;
+  const t = m[0].match(TIME_PAT);
+  return t ? normalizeTime(t[0]) : null;
+}
+
+// ── Flight segment extractor ──────────────────────────────────────────────────
+// Finds all flight segments: [{flightNum, depAirport, arrAirport, depDate, depTime, arrDate, arrTime, airline}]
+function extractFlightSegments(text) {
+  const segments = [];
+
+  // Match lines/blocks containing a flight number pattern (2-3 letter code + 1-4 digits)
+  // e.g. DL 1847, UA342, AA 2201, WN1234, B6 444
+  const flightRe = /\b([A-Z]{2,3})\s*(\d{1,4})\b/g;
+  let match;
+
+  while ((match = flightRe.exec(text)) !== null) {
+    const flightNum = match[1] + match[2];
+    // Grab surrounding context (~300 chars)
+    const start = Math.max(0, match.index - 50);
+    const end   = Math.min(text.length, match.index + 300);
+    const ctx   = text.substring(start, end);
+
+    // Extract airports — look for (ORD) or plain ORD near words like "from","depart","to","arriv"
+    const airports = [];
+    const airportRe = /\(([A-Z]{3})\)|(?:from|depart(?:ing)?|at|to|arriv(?:ing)?)[^A-Z\n]{0,30}([A-Z]{3})\b/gi;
+    let am;
+    while ((am = airportRe.exec(ctx)) !== null) {
+      const code = am[1] || am[2];
+      if (code && !['AM','PM','THE','AND','FOR','NOT','EST','CST','PST','MST'].includes(code)) {
+        airports.push(code);
+      }
+    }
+
+    // Also just grab any 3-capital-letter word in context as candidate airport
+    const rawAirports = [...ctx.matchAll(/\b([A-Z]{3})\b/g)]
+      .map(a => a[1])
+      .filter(a => !/^(AM|PM|THE|AND|FOR|NOT|EST|CST|PST|MST|LLC|INC|USA|SUV|VAN|CAR|PDF|URL|API|SMS|ETA|ETD|ATA|ATD|DBA)$/.test(a));
+
+    const depAirport = airports[0] || rawAirports[0] || null;
+    const arrAirport = airports[1] || rawAirports[1] || null;
+
+    // Dates and times in context
+    const dates = [...ctx.matchAll(new RegExp(DATE_PAT.source, 'gi'))].map(d => normalizeDate(d[0])).filter(Boolean);
+    const times = [...ctx.matchAll(new RegExp(TIME_PAT.source, 'gi'))].map(t => normalizeTime(t[0])).filter(Boolean);
+
+    segments.push({
+      flightNum,
+      airline:    match[1],
+      depAirport,
+      arrAirport,
+      depDate:    dates[0] || null,
+      depTime:    times[0] || null,
+      arrDate:    dates[1] || dates[0] || null,
+      arrTime:    times[1] || null,
+    });
+  }
+
+  // Deduplicate by flightNum
+  const seen = new Set();
+  return segments.filter(s => {
+    if (seen.has(s.flightNum)) return false;
+    seen.add(s.flightNum);
+    return true;
+  });
+}
+
+// ── Airline name from carrier code ────────────────────────────────────────────
+const AIRLINE_CODES = {
+  AA:'American Airlines', AS:'Alaska Airlines', B6:'JetBlue', DL:'Delta Air Lines',
+  F9:'Frontier Airlines', G4:'Allegiant Air', HA:'Hawaiian Airlines', NK:'Spirit Airlines',
+  SY:'Sun Country Airlines', UA:'United Airlines', WN:'Southwest Airlines', WS:'WestJet',
+  AC:'Air Canada', BA:'British Airways', LH:'Lufthansa', AF:'Air France', KL:'KLM',
+  EK:'Emirates', QR:'Qatar Airways', AA2:'American Airlines',
+};
+function airlineName(code) {
+  return AIRLINE_CODES[code] || code;
+}
+
+// ── Confirmation number extractor ─────────────────────────────────────────────
+function extractConfirmation(text) {
+  return extract(text, [
+    /(?:confirmation|record\s*locator|booking\s*(?:ref|reference|number|code)|conf(?:irmation)?\s*(?:#|number|code|no\.?))[:\s#]*([A-Z0-9\-]{4,12})/i,
+    /(?:itinerary|reservation)\s*(?:number|#|no\.?)[:\s]*([A-Z0-9\-]{4,12})/i,
+  ]);
+}
+
 async function handleParseTravel(req, res) {
   const { text } = req.body || {};
 
@@ -170,104 +328,160 @@ async function handleParseTravel(req, res) {
     return res.status(400).json({ error: 'Missing or too-short confirmation text' });
   }
 
-  const geminiKey = process.env.GEMINI_API_KEY;
-  if (!geminiKey) {
-    return res.status(500).json({ error: 'GEMINI_API_KEY not configured in Vercel environment' });
-  }
+  // ── Detect what type(s) of confirmation this is ───────────────────────────
+  const t = text;
+  const lower = t.toLowerCase();
 
-  const prompt = `You are a travel booking data extractor for an event production company's staffing system.
-Parse the provided booking confirmation text and return ONLY a raw JSON object — no markdown, no explanation.
+  const hasFlight = /\b[A-Z]{2}\s*\d{3,4}\b/.test(t) || /depart|arrival|flight|airline|boarding/i.test(t);
+  const hasHotel  = /check[\s\-]?in|check[\s\-]?out|hotel|resort|inn|suites|property|room/i.test(t);
+  const hasCar    = /rental|rent[\s\-]?a[\s\-]?car|pickup|pick[\s\-]?up|vehicle|enterprise|hertz|avis|national|budget|alamo|dollar|thrifty/i.test(t);
 
-Schema (use null for any field not found):
-{
-  "flight_out": {
-    "airline": null,
-    "confirmation": null,
-    "flight_number": null,
-    "departure_airport": null,
-    "arrival_airport": null,
-    "departure_date": null,
-    "departure_time": null,
-    "arrival_date": null,
-    "arrival_time": null
-  },
-  "flight_return": {
-    "flight_number": null,
-    "departure_airport": null,
-    "arrival_airport": null,
-    "departure_date": null,
-    "departure_time": null,
-    "arrival_date": null,
-    "arrival_time": null
-  },
-  "hotel": {
-    "name": null,
-    "confirmation": null,
-    "address": null,
-    "phone": null,
-    "checkin_date": null,
-    "checkin_time": null,
-    "checkout_date": null,
-    "checkout_time": null
-  },
-  "car": {
-    "company": null,
-    "confirmation": null,
-    "pickup_location": null,
-    "vehicle_type": null,
-    "pickup_date": null,
-    "pickup_time": null,
-    "return_date": null,
-    "return_time": null
-  }
-}
+  // ── FLIGHTS ───────────────────────────────────────────────────────────────
+  const flightConfirmation = hasFlight ? extractConfirmation(t) : null;
+  const segments = hasFlight ? extractFlightSegments(t) : [];
 
-Rules:
-- All dates must be YYYY-MM-DD format
-- All times must be HH:MM 24-hour format (e.g. "14:30" not "2:30 PM")
-- Airport codes must be 3-letter IATA codes (e.g. "ORD" not "Chicago O'Hare")
-- flight_out is the first/outbound leg; flight_return is the return leg
-- If only one flight found (one-way), put it in flight_out
-- Return ONLY the JSON object, nothing else
+  // Determine outbound vs return
+  // Strategy: look for "return" or "departing [home city]" keywords near second segment
+  let flightOut    = segments[0] || null;
+  let flightReturn = segments[1] || null;
 
-Booking confirmation text:
-${text.substring(0, 4000)}`;
-
-  const geminiRes = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0, maxOutputTokens: 1000 },
-      }),
+  // If text explicitly labels a segment as "return"
+  const returnIdx = t.search(/\b(?:return|returning|inbound|back)\b/i);
+  if (returnIdx > 0 && segments.length >= 2) {
+    // whichever segment appears after the "return" keyword is the return leg
+    const afterReturn = t.substring(returnIdx);
+    const returnMatch = afterReturn.match(/\b([A-Z]{2,3})\s*(\d{1,4})\b/);
+    if (returnMatch) {
+      const returnFlightNum = returnMatch[1] + returnMatch[2];
+      const ri = segments.findIndex(s => s.flightNum === returnFlightNum);
+      if (ri > 0) {
+        flightOut    = segments.find((_, i) => i !== ri) || segments[0];
+        flightReturn = segments[ri];
+      }
     }
-  );
-
-  if (!geminiRes.ok) {
-    const err = await geminiRes.text();
-    console.error('[parse-travel] Gemini error:', err);
-    return res.status(500).json({ error: 'AI parsing failed', details: err });
   }
 
-  const aiResult = await geminiRes.json();
-  const rawContent = aiResult.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? '';
+  // ── HOTEL ─────────────────────────────────────────────────────────────────
+  let hotel = null;
+  if (hasHotel) {
+    const hotelConf    = extractConfirmation(t);
+    const checkinDate  = extractDateNear(t, 'check[\\s\\-]?in');
+    const checkoutDate = extractDateNear(t, 'check[\\s\\-]?out');
+    const checkinTime  = extractTimeNear(t, 'check[\\s\\-]?in');
+    const checkoutTime = extractTimeNear(t, 'check[\\s\\-]?out');
 
-  let parsedData;
-  try {
-    // Strip markdown fences if GPT wrapped in them anyway
-    const clean = rawContent.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim();
-    parsedData = JSON.parse(clean);
-  } catch (e) {
-    console.error('[parse-travel] JSON parse error. Raw:', rawContent);
-    return res.status(500).json({ error: 'Failed to parse AI response as JSON', raw: rawContent });
+    // Hotel name: look for property/hotel/resort label, or line before "check-in"
+    let hotelName = extract(t, [
+      /(?:property|hotel|resort|inn|suites|lodge)[:\s]+([^\n]{3,60})/i,
+      /(?:you(?:'re| are) staying at|your hotel(?:\s+is)?)[:\s]+([^\n]{3,60})/i,
+    ]);
+    if (!hotelName) {
+      // Grab the line immediately before "check-in" appears
+      const ciIdx = t.search(/check[\s\-]?in/i);
+      if (ciIdx > 0) {
+        const before = t.substring(0, ciIdx).trim();
+        const lines  = before.split('\n').map(l => l.trim()).filter(Boolean);
+        const candidate = lines[lines.length - 1];
+        if (candidate && candidate.length > 3 && candidate.length < 80) hotelName = candidate;
+      }
+    }
+
+    // Address: look for street number + street name pattern
+    const address = extract(t, [
+      /(\d+\s+[A-Za-z][^\n]{5,60}(?:St|Ave|Blvd|Dr|Rd|Way|Ln|Ct|Pkwy|Plaza|Circle|Place)[^\n]{0,30})/i,
+    ]);
+
+    // Phone
+    const phone = extract(t, [
+      /(?:phone|tel|call|front\s*desk)[:\s]*(\+?[\d\s\-\(\)\.]{7,20})/i,
+      /(\(\d{3}\)\s*\d{3}[\s\-]\d{4})/,
+      /(\d{3}[\s\-\.]\d{3}[\s\-\.]\d{4})/,
+    ]);
+
+    hotel = { name: hotelName, confirmation: hotelConf, address, phone, checkinDate, checkinTime, checkoutDate, checkoutTime };
   }
 
-  const fo = parsedData.flight_out    || {};
-  const fr = parsedData.flight_return || {};
-  const h  = parsedData.hotel         || {};
-  const c  = parsedData.car           || {};
+  // ── CAR RENTAL ────────────────────────────────────────────────────────────
+  let car = null;
+  if (hasCar) {
+    const carConf = extractConfirmation(t);
+
+    // Company name
+    const company = extract(t, [
+      /(?:rental\s*company|rented?\s*(?:from|by|with)|provided\s*by)[:\s]+([^\n]{2,40})/i,
+      /\b(Enterprise|Hertz|Avis|National|Budget|Alamo|Dollar|Thrifty|Sixt|Payless|Fox|Europcar|Firefly|Advantage)\b/i,
+    ]);
+
+    // Vehicle type
+    const vehicleType = extract(t, [
+      /(?:vehicle|car|class|type)[:\s]+([^\n]{2,40})/i,
+      /\b(Sedan|SUV|Truck|Van|Minivan|Convertible|Compact|Economy|Midsize|Full[\s\-]Size|Luxury|Pickup)\b/i,
+    ]);
+
+    // Pickup location
+    const pickupLocation = extract(t, [
+      /(?:pickup|pick[\s\-]?up|collect(?:ion)?)\s*(?:location|at|from)?[:\s]+([^\n]{3,80})/i,
+    ]);
+
+    const pickupDate = extractDateNear(t, 'pick[\\s\\-]?up|pickup|collect');
+    const pickupTime = extractTimeNear(t, 'pick[\\s\\-]?up|pickup|collect');
+    const returnDate = extractDateNear(t, 'return|drop[\\s\\-]?off');
+    const returnTime = extractTimeNear(t, 'return|drop[\\s\\-]?off');
+
+    car = { company, confirmation: carConf, pickupLocation, vehicleType, pickupDate, pickupTime, returnDate, returnTime };
+  }
+
+  // ── Build parsed object ───────────────────────────────────────────────────
+  const parsedData = {
+    flight_out: flightOut ? {
+      airline:           flightOut.airline ? airlineName(flightOut.airline) : null,
+      confirmation:      flightConfirmation,
+      flight_number:     flightOut.flightNum,
+      departure_airport: flightOut.depAirport,
+      arrival_airport:   flightOut.arrAirport,
+      departure_date:    flightOut.depDate,
+      departure_time:    flightOut.depTime,
+      arrival_date:      flightOut.arrDate,
+      arrival_time:      flightOut.arrTime,
+    } : { airline:null, confirmation:null, flight_number:null, departure_airport:null, arrival_airport:null, departure_date:null, departure_time:null, arrival_date:null, arrival_time:null },
+
+    flight_return: flightReturn ? {
+      flight_number:     flightReturn.flightNum,
+      departure_airport: flightReturn.depAirport,
+      arrival_airport:   flightReturn.arrAirport,
+      departure_date:    flightReturn.depDate,
+      departure_time:    flightReturn.depTime,
+      arrival_date:      flightReturn.arrDate,
+      arrival_time:      flightReturn.arrTime,
+    } : { flight_number:null, departure_airport:null, arrival_airport:null, departure_date:null, departure_time:null, arrival_date:null, arrival_time:null },
+
+    hotel: hotel ? {
+      name:          hotel.name,
+      confirmation:  hotel.confirmation,
+      address:       hotel.address,
+      phone:         hotel.phone,
+      checkin_date:  hotel.checkinDate,
+      checkin_time:  hotel.checkinTime,
+      checkout_date: hotel.checkoutDate,
+      checkout_time: hotel.checkoutTime,
+    } : { name:null, confirmation:null, address:null, phone:null, checkin_date:null, checkin_time:null, checkout_date:null, checkout_time:null },
+
+    car: car ? {
+      company:         car.company,
+      confirmation:    car.confirmation,
+      pickup_location: car.pickupLocation,
+      vehicle_type:    car.vehicleType,
+      pickup_date:     car.pickupDate,
+      pickup_time:     car.pickupTime,
+      return_date:     car.returnDate,
+      return_time:     car.returnTime,
+    } : { company:null, confirmation:null, pickup_location:null, vehicle_type:null, pickup_date:null, pickup_time:null, return_date:null, return_time:null },
+  };
+
+  const fo = parsedData.flight_out;
+  const fr = parsedData.flight_return;
+  const h  = parsedData.hotel;
+  const c  = parsedData.car;
 
   // Map parsed data → Crew Assignments column IDs
   const raw = {
