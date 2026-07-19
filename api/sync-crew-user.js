@@ -438,7 +438,7 @@ async function handleParseTravel(req, res) {
   let car = null;
   if (hasCar) {
     // Car confirmation — look specifically near rental/car keywords, not flight section
-    const carSection = t.match(/(?:rent(?:al)?|car\s*rental|vehicle)[^\n]{0,200}/is)?.[0] || t;
+    const carSection = t.match(/(?:rent(?:al)?|car\s*rental|vehicle).{0,200}/is)?.[0] || t;
     const carConf = extract(carSection, [
       /(?:confirmation|booking\s*(?:ref|reference|number|code)|conf(?:irmation)?\s*(?:#|number|no\.?))[:\s#]*([A-Z0-9\-]{4,15})/i,
       /\b([A-Z]{1,2}[\-]?\d{5,10})\b/,  // formats like E-5529183
