@@ -159,8 +159,9 @@ async function clearPeopleColumn(apiKey, boardId, itemId, columnId) {
 // Body:   { "text": "<raw booking confirmation email or text>" }
 // Returns:{ "success": true, "fields": { <mondayColumnId>: <value>, ... }, "parsed": { ... } }
 //
-// Requires env var: OPENAI_API_KEY
-// Model: gpt-4o-mini (~$0.001 per call — essentially free)
+// Requires env var: GEMINI_API_KEY
+// Model: gemini-2.0-flash — FREE tier: 1,500 calls/day, no credit card needed
+// Get key at: aistudio.google.com/apikey
 // ─────────────────────────────────────────────────────────────────────────────
 async function handleParseTravel(req, res) {
   const { text } = req.body || {};
@@ -169,12 +170,12 @@ async function handleParseTravel(req, res) {
     return res.status(400).json({ error: 'Missing or too-short confirmation text' });
   }
 
-  const openaiKey = process.env.OPENAI_API_KEY;
-  if (!openaiKey) {
-    return res.status(500).json({ error: 'OPENAI_API_KEY not configured in Vercel environment' });
+  const geminiKey = process.env.GEMINI_API_KEY;
+  if (!geminiKey) {
+    return res.status(500).json({ error: 'GEMINI_API_KEY not configured in Vercel environment' });
   }
 
-  const systemPrompt = `You are a travel booking data extractor for an event production company's staffing system.
+  const prompt = `You are a travel booking data extractor for an event production company's staffing system.
 Parse the provided booking confirmation text and return ONLY a raw JSON object — no markdown, no explanation.
 
 Schema (use null for any field not found):
@@ -227,33 +228,31 @@ Rules:
 - Airport codes must be 3-letter IATA codes (e.g. "ORD" not "Chicago O'Hare")
 - flight_out is the first/outbound leg; flight_return is the return leg
 - If only one flight found (one-way), put it in flight_out
-- Return ONLY the JSON object, nothing else`;
+- Return ONLY the JSON object, nothing else
 
-  const openaiRes = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type':  'application/json',
-      'Authorization': `Bearer ${openaiKey}`,
-    },
-    body: JSON.stringify({
-      model:       'gpt-4o-mini',
-      messages:    [
-        { role: 'system', content: systemPrompt },
-        { role: 'user',   content: text.substring(0, 4000) }, // cap at 4k chars
-      ],
-      temperature: 0,
-      max_tokens:  1000,
-    }),
-  });
+Booking confirmation text:
+${text.substring(0, 4000)}`;
 
-  if (!openaiRes.ok) {
-    const err = await openaiRes.text();
-    console.error('[parse-travel] OpenAI error:', err);
+  const geminiRes = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0, maxOutputTokens: 1000 },
+      }),
+    }
+  );
+
+  if (!geminiRes.ok) {
+    const err = await geminiRes.text();
+    console.error('[parse-travel] Gemini error:', err);
     return res.status(500).json({ error: 'AI parsing failed', details: err });
   }
 
-  const aiResult = await openaiRes.json();
-  const rawContent = aiResult.choices?.[0]?.message?.content?.trim() ?? '';
+  const aiResult = await geminiRes.json();
+  const rawContent = aiResult.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? '';
 
   let parsedData;
   try {
