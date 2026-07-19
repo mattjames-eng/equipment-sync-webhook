@@ -225,7 +225,8 @@ const TIME_PAT  = /(\d{1,2}:\d{2}\s*(?:AM|PM|am|pm)?|\d{1,2}\s*(?:AM|PM|am|pm))/
 const AIRPORT_PAT = /\b([A-Z]{3})\b/;
 
 function extractDateNear(text, keyword) {
-  const re = new RegExp(keyword + '[^\\n]{0,60}', 'i');
+  // Wrap in (?:...) so alternation in keyword doesn't break suffix attachment
+  const re = new RegExp('(?:' + keyword + ')[^\\n]{0,80}', 'i');
   const m = text.match(re);
   if (!m) return null;
   const d = m[0].match(DATE_PAT);
@@ -233,7 +234,8 @@ function extractDateNear(text, keyword) {
 }
 
 function extractTimeNear(text, keyword) {
-  const re = new RegExp(keyword + '[^\\n]{0,60}', 'i');
+  // Wrap in (?:...) so alternation in keyword doesn't break suffix attachment
+  const re = new RegExp('(?:' + keyword + ')[^\\n]{0,80}', 'i');
   const m = text.match(re);
   if (!m) return null;
   const t = m[0].match(TIME_PAT);
@@ -389,8 +391,12 @@ async function handleParseTravel(req, res) {
   // ── HOTEL ─────────────────────────────────────────────────────────────────
   let hotel = null;
   if (hasHotel) {
-    // Isolate hotel section to avoid stealing flight confirmation numbers
-    const hotelSection = t.match(/(?:hotel|resort|inn|suites|property|check[\s\-]?in)[^\n]{0,500}/is)?.[0] || t;
+    // Isolate hotel section — look back 400 chars before "check-in" so we
+    // capture confirmation lines that appear above "Property:" in the email
+    const ciIdx       = t.search(/check[\s\-]?in/i);
+    const hotelStart  = ciIdx > 0 ? Math.max(0, ciIdx - 400) : 0;
+    const hotelEnd    = ciIdx > 0 ? Math.min(t.length, ciIdx + 300) : t.length;
+    const hotelSection = t.substring(hotelStart, hotelEnd);
     const hotelConf    = extractConfirmation(hotelSection);
     const checkinDate  = extractDateNear(t, 'check[\\s\\-]?in');
     const checkoutDate = extractDateNear(t, 'check[\\s\\-]?out');
