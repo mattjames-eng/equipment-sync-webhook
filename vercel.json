@@ -35,6 +35,10 @@
     {
       "source": "/api/inventory/resolve-ooc",
       "destination": "/api/contacts/pull-from-flex?route=resolve-ooc"
+    },
+    {
+      "source": "/api/travel/parse",
+      "destination": "/api/sync-crew-user?route=parse-travel"
     }
   ],
   "functions": {
@@ -60,7 +64,7 @@
       "maxDuration": 60
     },
     "api/tasks/[action].js": {
-      "maxDuration": 60
+      "maxDuration": 300
     }
   },
   "crons": [
