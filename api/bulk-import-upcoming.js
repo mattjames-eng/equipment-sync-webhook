@@ -36,9 +36,17 @@ const MONDAY_API_URL  = 'https://api.monday.com/v2';
 const MONDAY_API_KEY  = process.env.MONDAY_API_KEY;
 
 // ── Board / Group IDs ─────────────────────────────────────────────────────────
-const PROJECTS_BOARD_ID  = '18415679761';
-const CONTACTS_BOARD_ID  = '18415573401';
-const UPCOMING_GROUP_ID  = 'group_mm3x407x'; // "Upcoming Projects" group
+const PROJECTS_BOARD_ID        = '18415679761';
+const CONTACTS_BOARD_ID        = '18415573401';
+const UPCOMING_GROUP_ID        = 'group_mm3x407x'; // "Upcoming Projects" group
+const EVENT_FOLDER_REGISTRY_ID = '18423176877';    // 📁 Event Folder Registry
+
+// ── Registry column IDs ───────────────────────────────────────────────────────
+const REG_COL_UUID    = 'text_mm5f4g7g';   // Flex Event Folder UUID
+const REG_COL_DRIVE   = 'link_mm5fz1b3';   // Google Drive Folder link
+const REG_COL_DATE    = 'date_mm5fz42n';   // Event Date
+const REG_COL_STATUS  = 'color_mm5fp4w3';  // Folder Status
+const REG_GROUP_ACTIVE = 'group_mm5fc60c'; // Active Events group
 
 // ── Projects Board Column IDs (from board inspection) ─────────────────────────
 const COL = {
@@ -58,7 +66,84 @@ const COL = {
   clientNameText:    'text_mm435rt8',    // Client name from Flex — written always as fallback
   venueNameText:     'text_mm43r22q',    // Venue name from Flex — written always as fallback
   pullsheetStatus:   'color_mm3y3bxj',   // "Not Synced"
+  driveFolderUrl:    'link_mm5fa4b8',    // Google Drive Folder link (from Event Folder Registry)
 };
+
+// ── Event Folder Registry helpers (mirrors create-project-from-quote.js) ─────
+
+async function findRegistryEntry(flexEventFolderUUID) {
+  if (!flexEventFolderUUID) return null;
+  try {
+    const data = await mondayRequest(`
+      query {
+        items_page_by_column_values(
+          limit: 5,
+          board_id: ${EVENT_FOLDER_REGISTRY_ID},
+          columns: [{ column_id: "${REG_COL_UUID}", column_values: ["${flexEventFolderUUID}"] }]
+        ) {
+          items {
+            id name
+            column_values(ids: ["${REG_COL_DRIVE}"]) { id text value }
+          }
+        }
+      }
+    `);
+    const items = data?.items_page_by_column_values?.items || [];
+    if (items.length === 0) return null;
+    const item     = items[0];
+    const driveCol = item.column_values?.find(c => c.id === REG_COL_DRIVE);
+    let driveUrl   = null;
+    if (driveCol?.value) {
+      try { driveUrl = JSON.parse(driveCol.value)?.url || driveCol.text || null; } catch { driveUrl = driveCol.text || null; }
+    }
+    console.log(`[registry] ✅ Found entry for ${flexEventFolderUUID}: "${item.name}" | drive: ${driveUrl || 'no link yet'}`);
+    return { itemId: item.id, driveUrl, driveFolderName: item.name };
+  } catch (e) {
+    console.warn(`[registry] ⚠️ Lookup failed for ${flexEventFolderUUID}: ${e.message}`);
+    return null;
+  }
+}
+
+async function writeRegistryEntry({ itemId, eventName, flexEventFolderUUID, driveUrl, eventDate }) {
+  const colValues = {
+    [REG_COL_UUID]:   flexEventFolderUUID || '',
+    [REG_COL_STATUS]: { label: driveUrl ? 'Active' : 'No Drive Folder' },
+  };
+  if (driveUrl)  colValues[REG_COL_DRIVE] = { url: driveUrl, text: 'Google Drive Folder' };
+  if (eventDate) colValues[REG_COL_DATE]  = { date: eventDate };
+  try {
+    if (itemId) {
+      await mondayRequest(`
+        mutation {
+          change_multiple_column_values(
+            board_id:      ${EVENT_FOLDER_REGISTRY_ID},
+            item_id:       ${itemId},
+            column_values: ${JSON.stringify(JSON.stringify(colValues))}
+          ) { id }
+        }
+      `);
+      console.log(`[registry] ✅ Updated entry ${itemId} for "${eventName}"`);
+      return itemId;
+    } else {
+      const data = await mondayRequest(`
+        mutation {
+          create_item(
+            board_id:      ${EVENT_FOLDER_REGISTRY_ID},
+            group_id:      "${REG_GROUP_ACTIVE}",
+            item_name:     ${JSON.stringify(eventName || 'Unnamed Event')},
+            column_values: ${JSON.stringify(JSON.stringify(colValues))}
+          ) { id }
+        }
+      `);
+      const newId = data?.create_item?.id;
+      console.log(`[registry] ✅ Created registry entry ${newId} for "${eventName}"`);
+      return newId;
+    }
+  } catch (e) {
+    console.warn(`[registry] ⚠️ Write failed for "${eventName}": ${e.message}`);
+    return null;
+  }
+}
 
 // ── Domain Classifier (mirrors create-project-from-quote.js) ─────────────────
 // 'simple-project-element' is also classified as event-folder based on observed Flex domain values
@@ -378,14 +463,21 @@ async function processQuote(quoteResult, options) {
     }
 
 
-    // ── Find monday.com Contact item IDs (optional) ────────────────────────
-    let clientItemId = null;
-    let venueItemId  = null;
+    // ── Find monday.com Contact item IDs + check Event Folder Registry ───────
+    let clientItemId   = null;
+    let venueItemId    = null;
+    let registryEntry  = null;
     if (resolveContacts) {
-      [clientItemId, venueItemId] = await Promise.all([
+      [clientItemId, venueItemId, registryEntry] = await Promise.all([
         findContactByFlexUuid(clientUUID, clientName),
-        findContactByFlexUuid(venueUUID,  venueName)
+        findContactByFlexUuid(venueUUID,  venueName),
+        eventFolderUUID ? findRegistryEntry(eventFolderUUID) : Promise.resolve(null),
       ]);
+    } else if (eventFolderUUID) {
+      registryEntry = await findRegistryEntry(eventFolderUUID);
+    }
+    if (registryEntry?.driveUrl) {
+      console.log(`[bulk-import] 📋 Registry hit — Drive folder: ${registryEntry.driveUrl}`);
     }
 
     // ── Build project name ─────────────────────────────────────────────────
@@ -414,6 +506,11 @@ async function processQuote(quoteResult, options) {
 
     if (clientItemId) columnValues[COL.clientRelation] = { item_ids: [parseInt(clientItemId)] };
     if (venueItemId)  columnValues[COL.venueRelation]  = { item_ids: [parseInt(venueItemId)] };
+
+    // Write Drive folder URL if registry already has one for this event folder
+    if (registryEntry?.driveUrl) {
+      columnValues[COL.driveFolderUrl] = { url: registryEntry.driveUrl, text: 'Google Drive Folder' };
+    }
 
     // ── Dry run: report without writing ───────────────────────────────────
     if (dryRun) {
@@ -451,6 +548,19 @@ async function processQuote(quoteResult, options) {
     // ?action=create-folder (in create-project-from-quote.js) is the single
     // owner of Drive folder creation — it runs once during the Vibe app
     // project setup flow. Bulk import is a data sync tool only.
+
+    // ── Seed Event Folder Registry (non-fatal, fire-and-forget) ───────────
+    // Ensures every imported event has a registry entry so the Vibe app
+    // can find it by UUID when creating the Drive folder later.
+    if (eventFolderUUID) {
+      writeRegistryEntry({
+        itemId:              registryEntry?.itemId || null,
+        eventName:           projectName,
+        flexEventFolderUUID: eventFolderUUID,
+        driveUrl:            registryEntry?.driveUrl || null,
+        eventDate:           eventDate || null,
+      }).catch(e => console.warn(`[bulk-import] ⚠️ Registry seed failed: ${e.message}`));
+    }
 
     return { status: 'created', name: projectName, flexNum, eventDate, budget, clientName, venueName, itemId };
 
