@@ -600,7 +600,10 @@ export default async function handler(req, res) {
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
     if (req.method === 'OPTIONS') return res.status(200).end();
-    if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+    // audit-drive-folders is GET; all other actions are POST
+    if (req.query?.action !== 'audit-drive-folders' && req.method !== 'POST') {
+        return res.status(405).json({ error: 'Method not allowed' });
+    }
 
     // ── Route: ?action=create-folder ──────────────────────────────────────────
     if (req.query?.action === 'create-folder') {
@@ -665,6 +668,160 @@ export default async function handler(req, res) {
 
         } catch (err) {
             console.error('[sync-budget] ❌ Error:', err.message);
+            return res.status(500).json({ ok: false, error: err.message });
+        }
+    }
+
+    // ── Route: ?action=audit-drive-folders ───────────────────────────────────
+    // Audits all Projects board items — checks whether a matching Google Drive
+    // folder exists for each project and optionally writes back the URL.
+    //
+    // GET /api/create-project-from-quote?action=audit-drive-folders
+    //   ?fix=true&dryRun=false  → write found Drive URLs to the Google Drive Folder column
+    //   ?group=<group_id>       → scope to one board group
+    //   ?dryRun=true (default)  → report only, no writes
+    //
+    // Returns: { ok, mode, summary, results[] }
+    if (req.query?.action === 'audit-drive-folders') {
+        const fix         = req.query?.fix     === 'true';
+        const dryRun      = req.query?.dryRun  !== 'false'; // safe default
+        const groupFilter = req.query?.group   || null;
+        const shouldWrite = fix && !dryRun;
+        const DRIVE_URL_COL    = 'link_mm5fa4b8';  // "Google Drive Folder" link column on Projects board
+        const AUDIT_PARENT_ID  = '0AAdFvqzEGrPzUk9PVA';
+        const AUDIT_BASE       = 'https://www.googleapis.com/drive/v3';
+
+        console.log(`\n🔍 Drive Folder Audit | fix=${fix} | dryRun=${dryRun} | group=${groupFilter || 'all'}`);
+
+        try {
+            if (!GOOGLE_SERVICE_ACCOUNT_KEY) {
+                return res.status(500).json({ ok: false, error: 'GOOGLE_SERVICE_ACCOUNT_KEY not configured' });
+            }
+            const auditToken      = await getGoogleAccessToken();
+            const auditAuthHeaders = { Authorization: `Bearer ${auditToken}`, 'Content-Type': 'application/json' };
+
+            // ── Fetch all projects from monday ────────────────────────────────
+            const auditProjects = [];
+            let auditCursor     = null;
+            do {
+                const cursorClause = auditCursor ? `, cursor: "${auditCursor}"` : '';
+                const groupClause  = groupFilter  ? `(ids: ["${groupFilter}"])` : '';
+                const auditQuery   = `query {
+                    boards(ids: [${PROJECTS_BOARD_ID}]) {
+                        groups ${groupClause} {
+                            id title
+                            items_page(limit: 100${cursorClause}) {
+                                cursor
+                                items {
+                                    id name
+                                    column_values(ids: ["text_mm3x2yr6", "${DRIVE_URL_COL}"]) { id text }
+                                }
+                            }
+                        }
+                    }
+                }`;
+                const auditRes  = await fetch(MONDAY_API_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_KEY },
+                    body:   JSON.stringify({ query: auditQuery }),
+                });
+                const auditData = await auditRes.json();
+                if (auditData.errors) throw new Error(`monday API: ${JSON.stringify(auditData.errors)}`);
+                const groups = auditData?.data?.boards?.[0]?.groups || [];
+                auditCursor  = null;
+                for (const group of groups) {
+                    const page = group.items_page;
+                    auditCursor = page?.cursor || null;
+                    for (const item of (page?.items || [])) {
+                        const flexCol  = item.column_values?.find(c => c.id === 'text_mm3x2yr6');
+                        const driveCol = item.column_values?.find(c => c.id === DRIVE_URL_COL);
+                        auditProjects.push({
+                            id:            item.id,
+                            name:          item.name,
+                            flexProjectNum: flexCol?.text?.trim()  || null,
+                            mondayDriveUrl: driveCol?.text?.trim() || null,
+                            group:         group.title,
+                        });
+                    }
+                }
+            } while (auditCursor);
+
+            console.log(`[audit] Found ${auditProjects.length} projects to check`);
+
+            // ── Search Drive for each project (5 at a time) ───────────────────
+            const auditResults = [];
+            const BATCH        = 5;
+            for (let i = 0; i < auditProjects.length; i += BATCH) {
+                const batch = auditProjects.slice(i, i + BATCH);
+                const batchRes = await Promise.all(batch.map(async proj => {
+                    console.log(`  🔍 "${proj.name}"`);
+                    try {
+                        const safeName = proj.name.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+                        const q = encodeURIComponent(
+                            `name = '${safeName}' and '${AUDIT_PARENT_ID}' in parents ` +
+                            `and mimeType = 'application/vnd.google-apps.folder' and trashed = false`
+                        );
+                        const driveRes = await fetch(
+                            `${AUDIT_BASE}/files?q=${q}&fields=files(id,name,webViewLink,createdTime)` +
+                            `&supportsAllDrives=true&includeItemsFromAllDrives=true`,
+                            { headers: auditAuthHeaders }
+                        );
+                        const driveData  = await driveRes.json();
+                        const folders    = driveData.files || [];
+                        const driveStatus = folders.length === 0 ? 'NOT_FOUND'
+                                          : folders.length === 1 ? 'FOUND'
+                                          :                        'MULTIPLE_FOUND';
+                        let action = driveStatus === 'NOT_FOUND'  ? 'NEEDS_FOLDER_CREATED'
+                                   : !proj.mondayDriveUrl && !fix ? 'FOUND_NOT_LINKED'
+                                   : !proj.mondayDriveUrl && fix  ? (shouldWrite ? 'WRITING_URL' : 'WOULD_WRITE_URL')
+                                   :                                 'ALREADY_LINKED';
+                        if (shouldWrite && !proj.mondayDriveUrl && folders.length > 0) {
+                            try {
+                                const writeVal = JSON.stringify(JSON.stringify({ url: folders[0].webViewLink, text: 'Google Drive Folder' }));
+                                const writeMut = `mutation { change_column_value(board_id: ${PROJECTS_BOARD_ID}, item_id: ${proj.id}, column_id: "${DRIVE_URL_COL}", value: ${writeVal}) { id } }`;
+                                const wr = await fetch(MONDAY_API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_KEY }, body: JSON.stringify({ query: writeMut }) });
+                                const wd = await wr.json();
+                                action = wd.errors ? `WRITE_FAILED: ${JSON.stringify(wd.errors)}` : 'URL_WRITTEN';
+                            } catch (we) { action = `WRITE_FAILED: ${we.message}`; }
+                        }
+                        return {
+                            mondayId: proj.id, projectName: proj.name, group: proj.group,
+                            flexProjectNum: proj.flexProjectNum, mondayDriveUrl: proj.mondayDriveUrl,
+                            driveStatus, action,
+                            driveFolders: folders.map(f => ({ id: f.id, name: f.name, url: f.webViewLink, createdTime: f.createdTime })),
+                            primaryDriveUrl: folders[0]?.webViewLink || null,
+                        };
+                    } catch (err) {
+                        return { mondayId: proj.id, projectName: proj.name, group: proj.group, driveStatus: 'ERROR', action: 'ERROR', error: err.message };
+                    }
+                }));
+                auditResults.push(...batchRes);
+            }
+
+            const summary = {
+                total:             auditResults.length,
+                found:             auditResults.filter(r => r.driveStatus === 'FOUND').length,
+                notFound:          auditResults.filter(r => r.driveStatus === 'NOT_FOUND').length,
+                multipleFound:     auditResults.filter(r => r.driveStatus === 'MULTIPLE_FOUND').length,
+                alreadyLinked:     auditResults.filter(r => r.action === 'ALREADY_LINKED').length,
+                foundNotLinked:    auditResults.filter(r => ['FOUND_NOT_LINKED','WOULD_WRITE_URL'].includes(r.action)).length,
+                urlsWritten:       auditResults.filter(r => r.action === 'URL_WRITTEN').length,
+                needsFolderCreate: auditResults.filter(r => r.action === 'NEEDS_FOLDER_CREATED').length,
+                errors:            auditResults.filter(r => r.driveStatus === 'ERROR').length,
+            };
+            console.log('[audit] Summary:', JSON.stringify(summary));
+
+            return res.status(200).json({
+                ok: true,
+                mode: shouldWrite ? 'WRITE' : 'DRY_RUN',
+                summary,
+                results: auditResults.sort((a, b) => {
+                    const ord = { NOT_FOUND: 0, MULTIPLE_FOUND: 1, FOUND: 2, ERROR: 3 };
+                    return (ord[a.driveStatus] ?? 9) - (ord[b.driveStatus] ?? 9);
+                }),
+            });
+        } catch (err) {
+            console.error('[audit] ❌ Error:', err.message);
             return res.status(500).json({ ok: false, error: err.message });
         }
     }
