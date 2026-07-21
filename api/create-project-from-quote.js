@@ -310,12 +310,45 @@ async function _copyDriveFolderContents(sourceFolderId, destFolderId, authHeader
 }
 
 // ================================================================
+// HELPER: Search Google Drive for an existing folder by exact name
+// within a specific parent folder.
+// Returns { id, name, webViewLink } if found, null otherwise.
+// ================================================================
+async function findExistingDriveFolder(folderName, parentFolderId, authHeaders) {
+    const BASE = 'https://www.googleapis.com/drive/v3';
+    // Escape single quotes in folder name for the Drive query
+    const safeName = folderName.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    const q = encodeURIComponent(
+        `name = '${safeName}' and '${parentFolderId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`
+    );
+    try {
+        const res = await fetch(
+            `${BASE}/files?q=${q}&fields=files(id,name,webViewLink)&supportsAllDrives=true&includeItemsFromAllDrives=true`,
+            { headers: authHeaders }
+        );
+        const data = await res.json();
+        const files = data.files || [];
+        if (files.length > 0) {
+            console.log(`  🔍 Existing Drive folder found: "${files[0].name}" (${files[0].id})`);
+            return files[0];
+        }
+    } catch (e) {
+        console.warn(`⚠️ Drive folder search failed: ${e.message}`);
+    }
+    return null;
+}
+
+// ================================================================
 // HELPER: Create Google Drive folder structure for project.
 // Mirrors GAS duplicateFolderTree exactly:
 //   - copies template folder (1tj247t4cSc4GjAbhdylmjcDhzpgmEuY8) recursively
 //   - places result in parent folder (0AAdFvqzEGrPzUk9PVA)
 //   - names root folder exactly projectName (same as GAS)
 //   - shares with PM as writer
+//
+// IDEMPOTENT: Checks for an existing folder with the same name in the
+// parent before creating. If found, returns the existing folder and
+// skips all creation — prevents duplicate Drive folders.
 //
 // Primary:  direct Drive REST API v3 via service account (faster, no cold-start delay)
 // Fallback: Google Apps Script URL if GOOGLE_SERVICE_ACCOUNT_KEY not set
@@ -331,6 +364,14 @@ async function createProjectFolder(projectName, projectId, clientName, eventDate
             console.log(`📁 Creating Google Drive folder for: ${projectName} (direct API)`);
             const token   = await getGoogleAccessToken();
             const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+
+            // ── IDEMPOTENCY CHECK: return existing folder if it already exists ──
+            const existing = await findExistingDriveFolder(projectName, PARENT_FOLDER_ID, headers);
+            if (existing) {
+                const folderUrl = existing.webViewLink || `https://drive.google.com/drive/folders/${existing.id}`;
+                console.log(`✅ Reusing existing Google Drive folder: ${folderUrl}`);
+                return { success: true, folderId: existing.id, folderUrl, folderName: projectName, existing: true };
+            }
 
             // Create root folder named exactly projectName, same as GAS
             const rootRes = await fetch(`${BASE}/files?supportsAllDrives=true&fields=id,webViewLink`, {
