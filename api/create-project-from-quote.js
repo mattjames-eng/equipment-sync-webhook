@@ -27,8 +27,16 @@ const MONDAY_API_KEY = process.env.MONDAY_API_KEY;
 const FLEX_BASE_URL = process.env.FLEX_BASE_URL || 'https://anticstudios.flexrentalsolutions.com/f5';
 const FLEX_API_KEY  = process.env.FLEX_API_KEY_QUOTES || process.env.FLEX_API_KEY;
 
-const PROJECTS_BOARD_ID = '18415679761';
-const CONTACTS_BOARD_ID = '18415573401';
+const PROJECTS_BOARD_ID        = '18415679761';
+const CONTACTS_BOARD_ID        = '18415573401';
+const EVENT_FOLDER_REGISTRY_ID = '18423176877'; // 📁 Event Folder Registry board
+
+// Registry column IDs (📁 Event Folder Registry board — 18423176877)
+const REG_COL_UUID   = 'text_mm5f4g7g';  // Flex Event Folder UUID
+const REG_COL_DRIVE  = 'link_mm5fz1b3';  // Google Drive Folder link
+const REG_COL_DATE   = 'date_mm5fz42n';  // Event Date
+const REG_COL_STATUS = 'color_mm5fp4w3'; // Folder Status
+const REG_GROUP_ACTIVE = 'group_mm5fc60c'; // Active Events group
 
 const GOOGLE_APPS_SCRIPT_URL     = process.env.GOOGLE_APPS_SCRIPT_URL   || null;
 const GOOGLE_SERVICE_ACCOUNT_KEY = process.env.GOOGLE_SERVICE_ACCOUNT_KEY_2 || process.env.GOOGLE_SERVICE_ACCOUNT_KEY || null; // JSON string of service account credentials
@@ -310,6 +318,101 @@ async function _copyDriveFolderContents(sourceFolderId, destFolderId, authHeader
 }
 
 // ================================================================
+// HELPER: Look up an event folder in the Event Folder Registry board
+// by its Flex Event Folder UUID.
+// Returns { itemId, driveUrl, driveFolderName } if found, null otherwise.
+// ================================================================
+async function findRegistryEntry(flexEventFolderUUID) {
+    if (!flexEventFolderUUID) return null;
+    try {
+        const query = `query {
+            items_page_by_column_values(
+                limit: 5,
+                board_id: ${EVENT_FOLDER_REGISTRY_ID},
+                columns: [{ column_id: "${REG_COL_UUID}", column_values: ["${flexEventFolderUUID}"] }]
+            ) {
+                items {
+                    id
+                    name
+                    column_values(ids: ["${REG_COL_DRIVE}"]) { id text value }
+                }
+            }
+        }`;
+        const res  = await fetch(MONDAY_API_URL, {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_KEY },
+            body:    JSON.stringify({ query }),
+        });
+        const data = await res.json();
+        const items = data?.data?.items_page_by_column_values?.items || [];
+        if (items.length === 0) return null;
+
+        const item     = items[0];
+        const driveCol = item.column_values?.find(c => c.id === REG_COL_DRIVE);
+        let driveUrl   = null;
+        if (driveCol?.value) {
+            try { driveUrl = JSON.parse(driveCol.value)?.url || driveCol.text || null; } catch { driveUrl = driveCol.text || null; }
+        }
+        console.log(`[registry] ✅ Found entry for UUID ${flexEventFolderUUID}: "${item.name}" | drive: ${driveUrl || 'no link yet'}`);
+        return { itemId: item.id, driveUrl, driveFolderName: item.name };
+    } catch (e) {
+        console.warn(`[registry] ⚠️ Lookup failed for ${flexEventFolderUUID}: ${e.message}`);
+        return null;
+    }
+}
+
+// ================================================================
+// HELPER: Write (create or update) an entry in the Event Folder
+// Registry board. Pass itemId to update an existing row, or null
+// to create a new one.
+// ================================================================
+async function writeRegistryEntry({ itemId, eventName, flexEventFolderUUID, driveUrl, eventDate }) {
+    const colValues = {
+        [REG_COL_UUID]:   flexEventFolderUUID || '',
+        [REG_COL_STATUS]: { label: driveUrl ? 'Active' : 'No Drive Folder' },
+    };
+    if (driveUrl)   colValues[REG_COL_DRIVE] = { url: driveUrl, text: 'Google Drive Folder' };
+    if (eventDate)  colValues[REG_COL_DATE]  = { date: eventDate };
+
+    try {
+        if (itemId) {
+            // Update existing row
+            const mutation = `mutation {
+                change_multiple_column_values(
+                    board_id:      ${EVENT_FOLDER_REGISTRY_ID},
+                    item_id:       ${itemId},
+                    column_values: ${JSON.stringify(JSON.stringify(colValues))}
+                ) { id }
+            }`;
+            const res  = await fetch(MONDAY_API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_KEY }, body: JSON.stringify({ query: mutation }) });
+            const data = await res.json();
+            if (data.errors) throw new Error(JSON.stringify(data.errors));
+            console.log(`[registry] ✅ Updated entry ${itemId} for "${eventName}"`);
+            return itemId;
+        } else {
+            // Create new row
+            const mutation = `mutation {
+                create_item(
+                    board_id:      ${EVENT_FOLDER_REGISTRY_ID},
+                    group_id:      "${REG_GROUP_ACTIVE}",
+                    item_name:     ${JSON.stringify(eventName || 'Unnamed Event')},
+                    column_values: ${JSON.stringify(JSON.stringify(colValues))}
+                ) { id }
+            }`;
+            const res  = await fetch(MONDAY_API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_KEY }, body: JSON.stringify({ query: mutation }) });
+            const data = await res.json();
+            if (data.errors) throw new Error(JSON.stringify(data.errors));
+            const newId = data?.data?.create_item?.id;
+            console.log(`[registry] ✅ Created registry entry ${newId} for "${eventName}"`);
+            return newId;
+        }
+    } catch (e) {
+        console.warn(`[registry] ⚠️ Write failed for "${eventName}": ${e.message}`);
+        return null;
+    }
+}
+
+// ================================================================
 // HELPER: Search Google Drive for an existing folder by exact name
 // within a specific parent folder.
 // Returns { id, name, webViewLink } if found, null otherwise.
@@ -548,12 +651,91 @@ async function handleCreateFolder(req, res) {
     if (!elementId) throw new Error(`Flex returned no elementId. Response: ${flexText}`);
     console.log(`[create-folder] ✅ Flex element created: ${elementId} (${elementNumber})`);
 
-    // ── Create Google Drive folder (non-fatal) ─────────────────────────────
-    let driveFolder = null;
+    // ── Check Event Folder Registry before touching Drive ─────────────────
+    // If a registry entry already has a Drive link, reuse it entirely.
+    let driveFolder    = null;
+    let registryItemId = null;
+    const existingEntry = await findRegistryEntry(elementId);
+
+    if (existingEntry?.driveUrl) {
+        // Already in registry with a Drive link — skip creation entirely
+        console.log(`[create-folder] 📋 Registry hit — reusing existing Drive folder: ${existingEntry.driveUrl}`);
+        driveFolder    = { success: true, folderUrl: existingEntry.driveUrl, folderName: existingEntry.driveFolderName, existing: true };
+        registryItemId = existingEntry.itemId;
+    } else {
+        // Not in registry (or no Drive link yet) — create the Drive folder
+        try {
+            driveFolder = await createProjectFolder(projectName.trim(), elementId, clientName || '', eventDate.trim(), pmEmail || '');
+        } catch (driveErr) {
+            console.warn(`[create-folder] ⚠️ Drive folder skipped: ${driveErr.message}`);
+        }
+
+        // Write to registry (create or update) — non-fatal
+        try {
+            registryItemId = await writeRegistryEntry({
+                itemId:              existingEntry?.itemId || null, // update if partial entry existed
+                eventName:           elementName,
+                flexEventFolderUUID: elementId,
+                driveUrl:            driveFolder?.folderUrl || null,
+                eventDate:           eventDate.trim(),
+            });
+        } catch (regErr) {
+            console.warn(`[create-folder] ⚠️ Registry write skipped: ${regErr.message}`);
+        }
+    }
+
+    // ── Write event dates to the monday Projects board item ──────────────────
+    // create-folder owns the initial date write since it's the first time we
+    // have eventDate/prepDate/returnDate. If a project item already exists for
+    // this event folder UUID, update it; otherwise create a stub item so dates
+    // are visible in monday from day one (before any quote is synced).
     try {
-        driveFolder = await createProjectFolder(projectName.trim(), elementId, clientName || '', eventDate.trim(), pmEmail || '');
-    } catch (driveErr) {
-        console.warn(`[create-folder] ⚠️ Drive folder skipped: ${driveErr.message}`);
+        const dateColumnValues = {
+            text_mm466djv: elementId,   // Flex Project UUID (event folder)
+            ...(eventDate  && { date_mm3xca9r: { date: eventDate.trim()  } }),
+            ...(prepDate   && { date_mm4at0qc: { date: prepDate.trim()   } }),
+            ...(returnDate && { date_mm4a7fn6: { date: returnDate.trim() } }),
+            ...(driveFolder?.folderUrl && { link_mm5fa4b8: { url: driveFolder.folderUrl, text: 'Google Drive Folder' } }),
+        };
+
+        // Check if a project already exists for this event folder UUID
+        const existingByUUID = await (async () => {
+            const q = `query {
+                items_page_by_column_values(
+                    limit: 5,
+                    board_id: ${PROJECTS_BOARD_ID},
+                    columns: [{ column_id: "text_mm466djv", column_values: ["${elementId}"] }]
+                ) { items { id name } }
+            }`;
+            const r    = await fetch(MONDAY_API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_KEY }, body: JSON.stringify({ query: q }) });
+            const data = await r.json();
+            return data?.data?.items_page_by_column_values?.items?.[0] || null;
+        })();
+
+        if (existingByUUID) {
+            const mut = `mutation {
+                change_multiple_column_values(
+                    board_id:      ${PROJECTS_BOARD_ID},
+                    item_id:       ${existingByUUID.id},
+                    column_values: ${JSON.stringify(JSON.stringify(dateColumnValues))}
+                ) { id }
+            }`;
+            await fetch(MONDAY_API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_KEY }, body: JSON.stringify({ query: mut }) });
+            console.log(`[create-folder] ✅ Updated dates on existing project "${existingByUUID.name}" (${existingByUUID.id})`);
+        } else {
+            const mut = `mutation {
+                create_item(
+                    board_id:      ${PROJECTS_BOARD_ID},
+                    item_name:     ${JSON.stringify(elementName)},
+                    column_values: ${JSON.stringify(JSON.stringify(dateColumnValues))}
+                ) { id }
+            }`;
+            const r    = await fetch(MONDAY_API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_KEY }, body: JSON.stringify({ query: mut }) });
+            const data = await r.json();
+            console.log(`[create-folder] ✅ Created stub project item ${data?.data?.create_item?.id} with event dates`);
+        }
+    } catch (mondayErr) {
+        console.warn(`[create-folder] ⚠️ monday date write skipped: ${mondayErr.message}`);
     }
 
     return res.status(200).json({
@@ -561,9 +743,13 @@ async function handleCreateFolder(req, res) {
         flexEventFolderId: elementId,
         flexElementNumber: elementNumber,
         flexElementName:   elementName,
+        eventDate:         eventDate?.trim()  || null,
+        prepDate:          prepDate?.trim()   || null,
+        returnDate:        returnDate?.trim()  || null,
         clientLinked:      !!clientUUID,
         clientFlexId:      clientUUID || null,
         driveFolder:       driveFolder || null,
+        registryItemId:    registryItemId || null,
     });
 }
 
@@ -1028,11 +1214,29 @@ export default async function handler(req, res) {
 
 
         // ===== STEP 5: Scan monday registry + duplicate check =====
-        const [matchedClientId, matchedVenueId, existingProjectId] = await Promise.all([
+        // Also check Event Folder Registry for an existing Drive link
+        const [matchedClientId, matchedVenueId, existingProjectId, registryEntry] = await Promise.all([
             findContactByFlexUuid(clientUuid, clientResolvedName),
             findContactByFlexUuid(venueUuid,  venueResolvedName),
-            findExistingProjectByFlexNumber(quoteNumber)
+            findExistingProjectByFlexNumber(quoteNumber),
+            eventFolderUUID ? findRegistryEntry(eventFolderUUID) : Promise.resolve(null),
         ]);
+        if (registryEntry?.driveUrl) {
+            console.log(`[sync] 📋 Registry hit — Drive folder exists: ${registryEntry.driveUrl}`);
+        } else if (eventFolderUUID) {
+            // Ensure registry has an entry for this event folder (Drive link may come later via create-folder)
+            findRegistryEntry(eventFolderUUID).then(existing => {
+                if (!existing) {
+                    writeRegistryEntry({
+                        itemId: null,
+                        eventName: projectName,
+                        flexEventFolderUUID: eventFolderUUID,
+                        driveUrl: null,
+                        eventDate: data?.eventDate ? (deepExtractName(data.eventDate) || '').match(/(\d{4}-\d{2}-\d{2})/)?.[1] || null : null,
+                    }).catch(e => console.warn('[sync] Registry seed failed:', e.message));
+                }
+            }).catch(() => {});
+        }
 
         // ===== STEP 6: Build the unified row mapping data frame object =====
         const columnValues = {
