@@ -30,7 +30,7 @@ const GOOGLE_SERVICE_ACCOUNT_KEY = process.env.GOOGLE_SERVICE_ACCOUNT_KEY_2 || p
 
 const PROJECTS_BOARD_ID = '18415679761';
 const PARENT_FOLDER_ID  = '0AAdFvqzEGrPzUk9PVA';  // Shared Drive parent — same as create-project-from-quote.js
-const DRIVE_URL_COL     = 'link_mm4y2drive';        // New column added to store Drive folder URL
+const DRIVE_URL_COL     = 'link_mm5fa4b8';           // "Google Drive Folder" link column on Projects board
 
 // ── Google OAuth (mirrors create-project-from-quote.js) ──────────────────────
 async function getGoogleAccessToken() {
