@@ -1585,20 +1585,22 @@ async function handleResolveOocRoute(req, res) {
   if (!subitemId) return res.status(400).json({ error: 'Missing pulseId' });
 
   try {
-    const query = `{ items(ids:[${subitemId}]) { column_values(ids:["${OOC_SUB_COL.flexOocId}","${OOC_SUB_COL.reportedDate}","${OOC_SUB_COL.repairStatus}"]) { id text } } }`;
+    // Read flexOocId, reportedDate, AND resolvedDate — resolvedDate used as de-dupe guard
+    const query = `{ items(ids:[${subitemId}]) { column_values(ids:["${OOC_SUB_COL.flexOocId}","${OOC_SUB_COL.reportedDate}","${OOC_SUB_COL.resolvedDate}"]) { id text } } }`;
     const mondayRes  = await fetch(MONDAY_API_URL, { method:'POST', headers:{'Content-Type':'application/json','Authorization':MONDAY_API_KEY}, body:JSON.stringify({query}) });
     const mondayData = await mondayRes.json();
     const cols        = mondayData.data?.items?.[0]?.column_values || [];
-    const flexOocId   = cols.find(c => c.id === OOC_SUB_COL.flexOocId)?.text?.trim();
+    const flexOocId    = cols.find(c => c.id === OOC_SUB_COL.flexOocId)?.text?.trim();
     const reportedDate = cols.find(c => c.id === OOC_SUB_COL.reportedDate)?.text?.trim();
-    const repairStatus = cols.find(c => c.id === OOC_SUB_COL.repairStatus)?.text?.trim();
+    const resolvedDate = cols.find(c => c.id === OOC_SUB_COL.resolvedDate)?.text?.trim();
 
-    if (repairStatus !== 'Resolved') return res.status(200).json({ ok:true, skipped:true, reason:'Not resolved' });
-    if (!flexOocId)                  return res.status(200).json({ ok:true, skipped:true, reason:'No Flex OOC ID' });
+    // De-dupe: if already resolved (resolvedDate stamped), skip — prevents automation loop
+    if (resolvedDate) return res.status(200).json({ ok:true, skipped:true, reason:'Already resolved', resolvedDate });
+    if (!flexOocId)   return res.status(200).json({ ok:true, skipped:true, reason:'No Flex OOC ID' });
 
+    // Call Flex to resolve
     const flexRes = await fetch(`${FLEX_BASE_URL}/api/ooc-record/resolve?id=${encodeURIComponent(flexOocId)}`,
       { method:'PUT', headers:{'X-Auth-Token':FLEX_API_KEY,'Accept':'application/json'} });
-    // Bug fix 1: abort if Flex rejects — prevents monday drifting out of sync
     if (!flexRes.ok) {
       const errText = await flexRes.text().catch(() => '');
       console.error(`❌ Flex resolve failed ${flexOocId}: ${flexRes.status} ${errText}`);
@@ -1606,11 +1608,15 @@ async function handleResolveOocRoute(req, res) {
     }
     console.log(`✅ Flex OOC ${flexOocId} resolved`);
 
+    // Write back to monday: set Repair Status → Resolved, stamp resolvedDate and daysDown
     const today    = new Date().toISOString().split('T')[0];
     const rawDays  = reportedDate ? Math.round((new Date(today) - new Date(reportedDate)) / 86400000) : null;
     const daysDown = (rawDays !== null && !isNaN(rawDays)) ? rawDays : null;
-    const updateCv = JSON.stringify({ [OOC_SUB_COL.resolvedDate]:{ date:today }, ...(daysDown !== null && { [OOC_SUB_COL.daysDown]:daysDown }) });
-    // Bug fix 2: await and validate the monday write-back
+    const updateCv = JSON.stringify({
+      [OOC_SUB_COL.repairStatus]: { label: 'Resolved' },
+      [OOC_SUB_COL.resolvedDate]: { date: today },
+      ...(daysDown !== null && { [OOC_SUB_COL.daysDown]: daysDown })
+    });
     const mondayWriteRes  = await fetch(MONDAY_API_URL, { method:'POST', headers:{'Content-Type':'application/json','Authorization':MONDAY_API_KEY},
       body:JSON.stringify({ query:`mutation { change_multiple_column_values(board_id:${REPAIR_TRACKER_SUBITEMS_BOARD_ID},item_id:${subitemId},column_values:${JSON.stringify(updateCv)}) { id } }` }) });
     const mondayWriteData = await mondayWriteRes.json();
