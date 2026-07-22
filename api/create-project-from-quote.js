@@ -589,7 +589,7 @@ async function resolveEventFolderDefinitionId() {
 // Called by the Vibe "Project Setup" app BEFORE a full project exists.
 //
 // POST /api/create-project-from-quote?action=create-folder
-// Body: { projectName, eventDate, clientName?, pmEmail? }
+// Body: { projectName, prepDate?, returnDate?, clientName?, venueName?, pmEmail? }
 // Response: { ok, flexEventFolderId, flexElementNumber, flexElementName,
 //             clientLinked, clientFlexId, driveFolder }
 // ================================================================
