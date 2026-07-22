@@ -663,6 +663,15 @@ async function handleCreateFolder(req, res) {
         console.log(`[create-folder] 📋 Registry hit — reusing existing Drive folder: ${existingEntry.driveUrl}`);
         driveFolder    = { success: true, folderUrl: existingEntry.driveUrl, folderName: existingEntry.driveFolderName, existing: true };
         registryItemId = existingEntry.itemId;
+    // ── Resolve venue to a Monday Contacts board item ID ─────────────────────────
+    // Used to write the board_relation on both the Registry and any existing projects.
+    let mondayVenueId = null;
+    if (venueUUID || venueName?.trim()) {
+        mondayVenueId = await findContactByFlexUuid(venueUUID, venueName?.trim() || null);
+        if (mondayVenueId) console.log(`[create-folder] ✅ Venue resolved to monday contact: ${mondayVenueId}`);
+        else               console.log(`[create-folder] ⚠️ Venue not found in Contacts board — relation will be empty`);
+    }
+
     } else {
         // Not in registry (or no Drive link yet) — create the Drive folder
         try {
@@ -683,15 +692,6 @@ async function handleCreateFolder(req, res) {
         } catch (regErr) {
             console.warn(`[create-folder] ⚠️ Registry write skipped: ${regErr.message}`);
         }
-    }
-
-    // ── Resolve venue to a Monday Contacts board item ID ─────────────────────────
-    // Used to write the board_relation on both the Registry and any existing projects.
-    let mondayVenueId = null;
-    if (venueUUID || venueName?.trim()) {
-        mondayVenueId = await findContactByFlexUuid(venueUUID, venueName?.trim() || null);
-        if (mondayVenueId) console.log(`[create-folder] ✅ Venue resolved to monday contact: ${mondayVenueId}`);
-        else               console.log(`[create-folder] ⚠️ Venue not found in Contacts board — relation will be empty`);
     }
 
     // ── Propagate event dates + Drive link to any existing quote-based projects ──
