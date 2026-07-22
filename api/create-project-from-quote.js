@@ -656,7 +656,15 @@ async function handleCreateFolder(req, res) {
     // If a registry entry already has a Drive link, reuse it entirely.
     let driveFolder    = null;
     let registryItemId = null;
-    let mondayVenueId  = null;
+
+    // ── Resolve venue FIRST — needed by registry write AND propagation ────────
+    let mondayVenueId = null;
+    if (venueUUID || venueName?.trim()) {
+        mondayVenueId = await findContactByFlexUuid(venueUUID, venueName?.trim() || null);
+        if (mondayVenueId) console.log(`[create-folder] ✅ Venue resolved to monday contact: ${mondayVenueId}`);
+        else               console.log(`[create-folder] ⚠️ Venue not found in Contacts board — relation will be empty`);
+    }
+
     const existingEntry = await findRegistryEntry(elementId);
 
     if (existingEntry?.driveUrl) {
@@ -684,13 +692,6 @@ async function handleCreateFolder(req, res) {
         } catch (regErr) {
             console.warn(`[create-folder] ⚠️ Registry write skipped: ${regErr.message}`);
         }
-    }
-
-    // ── Resolve venue to a Monday Contacts board item ID ─────────────────────────
-    if (venueUUID || venueName?.trim()) {
-        mondayVenueId = await findContactByFlexUuid(venueUUID, venueName?.trim() || null);
-        if (mondayVenueId) console.log(`[create-folder] ✅ Venue resolved to monday contact: ${mondayVenueId}`);
-        else               console.log(`[create-folder] ⚠️ Venue not found in Contacts board — relation will be empty`);
     }
 
     // ── Propagate event dates + Drive link to any existing quote-based projects ──
