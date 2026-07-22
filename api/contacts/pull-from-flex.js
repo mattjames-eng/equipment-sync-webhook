@@ -297,7 +297,7 @@ async function writeExternalNumberToFlex(flexId, mondayItemId) {
 // ================================================================
 // HELPER: Process a single Flex contact — create or update in Monday
 // ================================================================
-async function processFlexContact(flexContact) {
+async function processFlexContact(flexContact, seenFlexIds) {
   const flexId = flexContact.id;
   const name   = flexContact.name || flexContact.preferredDisplayString || null;
 
@@ -312,6 +312,18 @@ async function processFlexContact(flexContact) {
     return { action: 'skipped', reason: 'deleted' };
   }
 
+  // ── Pagination dedup guard ─────────────────────────────────────────────────
+  // Flex sorts contacts by lastEditDate desc. After we create a Monday item we
+  // write the Monday item ID back into Flex externalNumber, which updates the
+  // contact's lastEditDate. That causes the same contact to bubble up and
+  // reappear on a later page in the same run — exactly how duplicates are born.
+  // The seenFlexIds Set prevents processing the same UUID twice per run.
+  if (seenFlexIds && seenFlexIds.has(flexId)) {
+    console.log(`⏭️  Already processed ${flexId} this run — skipping (pagination dedup)`);
+    return { action: 'skipped', reason: 'pagination-dedup' };
+  }
+  if (seenFlexIds) seenFlexIds.add(flexId);
+
   console.log(`\n▶ Processing: "${name}" (Flex: ${flexId})`);
 
   // 1. Check if we have a Monday item already linked to this Flex UUID
@@ -324,14 +336,16 @@ async function processFlexContact(flexContact) {
     return { action: 'updated', flexId, mondayId: mondayItem.id, name };
   }
 
-  // 2. Check if externalNumber points to a Monday item (set during a previous create)
-  if (flexContact.externalNumber) {
-    const byExternal = await findMondayItemByFlexId(flexId);
-    if (byExternal) {
-      console.log(`  → Matched via externalNumber: ${byExternal.id}`);
-      await updateMondayContact(byExternal.id, flexContact);
-      return { action: 'updated', flexId, mondayId: byExternal.id, name };
-    }
+  // 2. Check if externalNumber holds a Monday item ID written during a previous create.
+  //    This is a fallback for contacts where the UUID column index hadn't propagated
+  //    yet when step 1 ran — the monday item ID was already stored in Flex.
+  //    (Previous version incorrectly called findMondayItemByFlexId again — same as step 1.)
+  if (flexContact.externalNumber && /^\d{6,}$/.test(String(flexContact.externalNumber).trim())) {
+    const mondayItemId = String(flexContact.externalNumber).trim();
+    console.log(`  → Matched via Flex externalNumber (monday ID: ${mondayItemId})`);
+    const fullContact = await fetchFlexContactFull(flexId) || flexContact;
+    await updateMondayContact(mondayItemId, fullContact);
+    return { action: 'updated', flexId, mondayId: mondayItemId, name };
   }
 
   // 3. Fuzzy name match as last resort before creating
@@ -1669,6 +1683,7 @@ export default async function handler(req, res) {
 
     // ─── Paginate through Flex contacts ───────────────────────
     const results = { created: 0, updated: 0, linked: 0, skipped: 0, errors: 0, details: [] };
+    const seenFlexIds = new Set(); // Track processed UUIDs — prevents pagination-driven duplicates
     let page = 0;
     let keepGoing = true;
 
@@ -1685,7 +1700,7 @@ export default async function handler(req, res) {
 
       for (const contact of contacts) {
         try {
-          const outcome = await processFlexContact(contact);
+          const outcome = await processFlexContact(contact, seenFlexIds);
           results[outcome.action] = (results[outcome.action] || 0) + 1;
           results.details.push(outcome);
         } catch (e) {
