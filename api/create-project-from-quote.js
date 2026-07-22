@@ -462,7 +462,7 @@ async function findExistingDriveFolder(folderName, parentFolderId, authHeaders) 
 // Primary:  direct Drive REST API v3 via service account (faster, no cold-start delay)
 // Fallback: Google Apps Script URL if GOOGLE_SERVICE_ACCOUNT_KEY not set
 // ================================================================
-async function createProjectFolder(projectName, projectId, clientName, eventDate, pmEmail) {
+async function createProjectFolder(projectName, projectId, clientName, pmEmail) {
     const TEMPLATE_FOLDER_ID = '1tj247t4cSc4GjAbhdylmjcDhzpgmEuY8';
     const PARENT_FOLDER_ID   = '0AAdFvqzEGrPzUk9PVA';
     const BASE               = 'https://www.googleapis.com/drive/v3';
@@ -666,7 +666,7 @@ async function handleCreateFolder(req, res) {
     } else {
         // Not in registry (or no Drive link yet) — create the Drive folder
         try {
-            driveFolder = await createProjectFolder(projectName.trim(), elementId, clientName || '', eventDate.trim(), pmEmail || '');
+            driveFolder = await createProjectFolder(projectName.trim(), elementId, clientName || '', pmEmail || '');
         } catch (driveErr) {
             console.warn(`[create-folder] ⚠️ Drive folder skipped: ${driveErr.message}`);
         }
