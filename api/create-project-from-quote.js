@@ -14,9 +14,15 @@
  * 4. Extracts clean contact UUID strings, filtering out literal key titles
  * 5. Resolves human-readable text identities via /api/contact/{uuid}/identity
  * 6. Matches names against the monday Contacts board and links relations inline
- * 7. SEARCHES for existing project by Flex number to prevent duplicates
- * 8. Updates existing project OR creates new one atomically
- * 9. Creates Google Drive folder structure from template
+ * 7. SEARCHES for existing project by Flex QUOTE NUMBER to prevent duplicates
+ * 8. Updates existing project OR creates new one — keyed by quote, NOT event folder
+ * 9. Drive folder creation is handled by ?action=create-folder (called from Vibe app)
+ *
+ * Architecture:
+ *   Projects are ONLY created from quotes. One quote = one project.
+ *   Multiple quotes can share the same event folder UUID (same event, different scopes).
+ *   ?action=create-folder creates the Flex event folder + Google Drive folder structure,
+ *   then propagates dates/Drive link to any quote-based projects that already exist.
  * 
  * Author: Matt James, Antic Studios
  */
@@ -684,58 +690,56 @@ async function handleCreateFolder(req, res) {
         }
     }
 
-    // ── Write event dates to the monday Projects board item ──────────────────
-    // create-folder owns the initial date write since it's the first time we
-    // have eventDate/prepDate/returnDate. If a project item already exists for
-    // this event folder UUID, update it; otherwise create a stub item so dates
-    // are visible in monday from day one (before any quote is synced).
+    // ── Propagate event dates + Drive link to any existing quote-based projects ──
+    // Projects are ONLY created by the quote sync handler (POST with quoteNumber).
+    // create-folder does NOT create stub projects. If one or more projects already
+    // exist for this event folder UUID (quotes were synced first, or this is a
+    // re-run), push the dates and Drive link onto ALL of them.
+    //
+    // Multiple quotes can share the same event folder (two separate projects at the
+    // same event) — so we update ALL matches, not just the first.
     try {
         const dateColumnValues = {
-            text_mm466djv: elementId,   // Flex Project UUID (event folder)
+            text_mm466djv: elementId,   // Flex Event Folder UUID
             ...(eventDate  && { date_mm3xca9r: { date: eventDate.trim()  } }),
             ...(prepDate   && { date_mm4at0qc: { date: prepDate.trim()   } }),
             ...(returnDate && { date_mm4a7fn6: { date: returnDate.trim() } }),
             ...(driveFolder?.folderUrl && { link_mm5fa4b8: { url: driveFolder.folderUrl, text: 'Google Drive Folder' } }),
         };
 
-        // Check if a project already exists for this event folder UUID
-        const existingByUUID = await (async () => {
+        // Find ALL projects that already share this event folder UUID
+        const existingProjects = await (async () => {
             const q = `query {
                 items_page_by_column_values(
-                    limit: 5,
+                    limit: 10,
                     board_id: ${PROJECTS_BOARD_ID},
                     columns: [{ column_id: "text_mm466djv", column_values: ["${elementId}"] }]
                 ) { items { id name } }
             }`;
             const r    = await fetch(MONDAY_API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_KEY }, body: JSON.stringify({ query: q }) });
             const data = await r.json();
-            return data?.data?.items_page_by_column_values?.items?.[0] || null;
+            return data?.data?.items_page_by_column_values?.items || [];
         })();
 
-        if (existingByUUID) {
-            const mut = `mutation {
-                change_multiple_column_values(
-                    board_id:      ${PROJECTS_BOARD_ID},
-                    item_id:       ${existingByUUID.id},
-                    column_values: ${JSON.stringify(JSON.stringify(dateColumnValues))}
-                ) { id }
-            }`;
-            await fetch(MONDAY_API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_KEY }, body: JSON.stringify({ query: mut }) });
-            console.log(`[create-folder] ✅ Updated dates on existing project "${existingByUUID.name}" (${existingByUUID.id})`);
+        if (existingProjects.length > 0) {
+            // Update ALL matching projects — each quote is its own project but they share this event folder
+            await Promise.all(existingProjects.map(async (proj) => {
+                const mut = `mutation {
+                    change_multiple_column_values(
+                        board_id:      ${PROJECTS_BOARD_ID},
+                        item_id:       ${proj.id},
+                        column_values: ${JSON.stringify(JSON.stringify(dateColumnValues))}
+                    ) { id }
+                }`;
+                await fetch(MONDAY_API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_KEY }, body: JSON.stringify({ query: mut }) });
+                console.log(`[create-folder] ✅ Updated dates on project "${proj.name}" (${proj.id})`);
+            }));
+            console.log(`[create-folder] ✅ Propagated dates/Drive link to ${existingProjects.length} project(s) for event folder ${elementId}`);
         } else {
-            const mut = `mutation {
-                create_item(
-                    board_id:      ${PROJECTS_BOARD_ID},
-                    item_name:     ${JSON.stringify(elementName)},
-                    column_values: ${JSON.stringify(JSON.stringify(dateColumnValues))}
-                ) { id }
-            }`;
-            const r    = await fetch(MONDAY_API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_KEY }, body: JSON.stringify({ query: mut }) });
-            const data = await r.json();
-            console.log(`[create-folder] ✅ Created stub project item ${data?.data?.create_item?.id} with event dates`);
+            console.log(`[create-folder] ℹ️ No existing projects for event folder ${elementId} — dates will be applied when quotes sync`);
         }
     } catch (mondayErr) {
-        console.warn(`[create-folder] ⚠️ monday date write skipped: ${mondayErr.message}`);
+        console.warn(`[create-folder] ⚠️ monday date propagation skipped: ${mondayErr.message}`);
     }
 
     return res.status(200).json({
