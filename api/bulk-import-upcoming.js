@@ -368,7 +368,7 @@ async function fetchExistingProjects() {
 // header-data requires codeList param — see create-project-from-quote.js for reference
 // parentElementId must be explicitly requested in codeList to be included in the header-data response
 async function fetchHeaderData(quoteUUID) {
-  return flexGet(`/api/element/${quoteUUID}/header-data?codeList=elementNumber,name,clientId,venueId,personResponsibleId,personResponsibleDefaultEmailAddress,eventDate,plannedStartDate,plannedEndDate,totalPrice,notes,equipmentList,parentElementId`);
+  return flexGet(`/api/element/${quoteUUID}/header-data?codeList=elementNumber,name,typeDefinition,clientId,venueId,personResponsibleId,personResponsibleDefaultEmailAddress,eventDate,plannedStartDate,plannedEndDate,totalPrice,notes,equipmentList,parentElementId`);
 }
 
 // ── Find equipment list for a quote (same fallback chain as create-project) ───
@@ -399,6 +399,18 @@ async function processQuote(quoteResult, options) {
   try {
     // ── Fetch header data ──────────────────────────────────────────────────
     const hd = await fetchHeaderData(quoteUUID);
+
+    // ── Guard: reject invoices and credit notes ──────────────────────────────
+    // Flex uses the same financial-document domain for quotes AND invoices. The
+    // typeDefinition field (if present) gives us the human-readable type name.
+    // Belt-and-suspenders: also check the quote name from the search result.
+    const typeName     = deepExtractName(hd.typeDefinition) || '';
+    const INVOICE_RE   = /\binvoice\b|\bcredit\s*note\b|\bcredit\s*memo\b/i;
+    if (INVOICE_RE.test(typeName) || INVOICE_RE.test(quoteName)) {
+      const detected = INVOICE_RE.test(typeName) ? `typeDefinition="${typeName}"` : `name="${quoteName}"`;
+      console.log(`[bulk-import] ⏩ Skipping invoice/credit document (${detected}): "${quoteName}"`);
+      return { status: 'skipped', name: quoteName, flexNum, reason: `not a quote — detected as invoice/credit (${detected})` };
+    }
 
     // ── Extract dates ──────────────────────────────────────────────────────
     // header-data wraps dates in nested objects — use deepExtractName() + regex to extract.
@@ -856,8 +868,19 @@ async function runImport({ prefix, maxResults, includeClosed, dryRun, resolveCon
   const allResults = await searchFlex(prefix, maxResults, includeClosed);
   const hitLimit   = allResults.length >= maxResults;
 
-  const quotes = allResults.filter(r => classifyDomain(r) === 'quote');
-  console.log(`[bulk-import] Found ${allResults.length} total Flex results → ${quotes.length} quotes`);
+  const allFinancial = allResults.filter(r => classifyDomain(r) === 'quote');
+  // Pre-filter: Flex invoices share the same financial-document domain as quotes.
+  // Name-based check catches most invoices before we even hit header-data.
+  const INVOICE_KEYWORDS = /\binvoice\b|\binvoices\b|\bcredit\s*note\b|\bcredit\s*memo\b/i;
+  const quotes = allFinancial.filter(r => {
+    const displayName = r.name || r.displayString || r.displayName || '';
+    if (INVOICE_KEYWORDS.test(displayName)) {
+      console.log(`[bulk-import] ⏩ Pre-filter: skipping non-quote financial document: "${displayName}"`);
+      return false;
+    }
+    return true;
+  });
+  console.log(`[bulk-import] Found ${allResults.length} total Flex results → ${allFinancial.length} financial documents → ${quotes.length} quotes (${allFinancial.length - quotes.length} invoices/credits pre-filtered)`);
 
   // ── PHASE 2: De-dupe against existing Projects board ────────────────────
   console.log('[bulk-import] Phase 2: Loading existing Projects...');
