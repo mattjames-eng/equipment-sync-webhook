@@ -42,6 +42,7 @@ const REG_COL_UUID   = 'text_mm5f4g7g';  // Flex Event Folder UUID
 const REG_COL_DRIVE  = 'link_mm5fz1b3';  // Google Drive Folder link
 const REG_COL_DATE   = 'date_mm5fz42n';  // Event Date
 const REG_COL_STATUS = 'color_mm5fp4w3'; // Folder Status
+const REG_COL_VENUE  = 'board_relation_mm5gaek9'; // Venue board relation → Contacts & Companies
 const REG_GROUP_ACTIVE = 'group_mm5fc60c'; // Active Events group
 
 const GOOGLE_APPS_SCRIPT_URL     = process.env.GOOGLE_APPS_SCRIPT_URL   || null;
@@ -372,13 +373,14 @@ async function findRegistryEntry(flexEventFolderUUID) {
 // Registry board. Pass itemId to update an existing row, or null
 // to create a new one.
 // ================================================================
-async function writeRegistryEntry({ itemId, eventName, flexEventFolderUUID, driveUrl, eventDate }) {
+async function writeRegistryEntry({ itemId, eventName, flexEventFolderUUID, driveUrl, eventDate, mondayVenueId }) {
     const colValues = {
         [REG_COL_UUID]:   flexEventFolderUUID || '',
         [REG_COL_STATUS]: { label: driveUrl ? 'Active' : 'No Drive Folder' },
     };
-    if (driveUrl)   colValues[REG_COL_DRIVE] = { url: driveUrl, text: 'Google Drive Folder' };
-    if (eventDate)  colValues[REG_COL_DATE]  = { date: eventDate };
+    if (driveUrl)      colValues[REG_COL_DRIVE] = { url: driveUrl, text: 'Google Drive Folder' };
+    if (eventDate)     colValues[REG_COL_DATE]  = { date: eventDate };
+    if (mondayVenueId) colValues[REG_COL_VENUE] = { item_ids: [parseInt(mondayVenueId, 10)] };
 
     try {
         if (itemId) {
@@ -594,7 +596,7 @@ async function resolveEventFolderDefinitionId() {
 //             clientLinked, clientFlexId, driveFolder }
 // ================================================================
 async function handleCreateFolder(req, res) {
-    const { projectName, eventDate, prepDate, returnDate, clientName, pmEmail } = req.body || {};
+    const { projectName, eventDate, prepDate, returnDate, clientName, venueName, pmEmail } = req.body || {};
 
     if (!projectName?.trim()) {
         return res.status(400).json({ error: 'projectName is required' });
@@ -612,12 +614,13 @@ async function handleCreateFolder(req, res) {
         return res.status(400).json({ error: 'returnDate must be YYYY-MM-DD format' });
     }
 
-    console.log(`\n🚀 create-folder | "${projectName}" | event: ${eventDate} | prep: ${prepDate || 'none'} | return: ${returnDate || 'none'} | client: ${clientName || 'none'} | pm: ${pmEmail || 'none'}`);
+    console.log(`\n🚀 create-folder | "${projectName}" | event: ${eventDate} | prep: ${prepDate || 'none'} | return: ${returnDate || 'none'} | client: ${clientName || 'none'} | venue: ${venueName || 'none'} | pm: ${pmEmail || 'none'}`);
 
-    // ── Resolve definitionId + client UUID in parallel ─────────────────────
-    const [definitionId, clientUUID] = await Promise.all([
+    // ── Resolve definitionId + client UUID + venue UUID in parallel ──────────
+    const [definitionId, clientUUID, venueUUID] = await Promise.all([
         resolveEventFolderDefinitionId(),
         clientName?.trim() ? resolveClientUUIDByName(clientName.trim()) : Promise.resolve(null),
+        venueName?.trim()  ? resolveClientUUIDByName(venueName.trim())  : Promise.resolve(null),
     ]);
 
     // ── Build Flex payload — dates must be ISO date-time ───────────────────
@@ -633,6 +636,7 @@ async function handleCreateFolder(req, res) {
         plannedEndDate:   toFlexDT(returnDate || eventDate, 17),
     };
     if (clientUUID) payload.clientId = clientUUID;
+    if (venueUUID)  payload.venueId  = venueUUID;
 
     // ── POST to Flex /api/element ──────────────────────────────────────────
     console.log(`[create-folder] 📤 POSTing to Flex /api/element`);
@@ -684,10 +688,20 @@ async function handleCreateFolder(req, res) {
                 flexEventFolderUUID: elementId,
                 driveUrl:            driveFolder?.folderUrl || null,
                 eventDate:           eventDate.trim(),
+                mondayVenueId:       mondayVenueId || null,
             });
         } catch (regErr) {
             console.warn(`[create-folder] ⚠️ Registry write skipped: ${regErr.message}`);
         }
+    }
+
+    // ── Resolve venue to a Monday Contacts board item ID ─────────────────────────
+    // Used to write the board_relation on both the Registry and any existing projects.
+    let mondayVenueId = null;
+    if (venueUUID || venueName?.trim()) {
+        mondayVenueId = await findContactByFlexUuid(venueUUID, venueName?.trim() || null);
+        if (mondayVenueId) console.log(`[create-folder] ✅ Venue resolved to monday contact: ${mondayVenueId}`);
+        else               console.log(`[create-folder] ⚠️ Venue not found in Contacts board — relation will be empty`);
     }
 
     // ── Propagate event dates + Drive link to any existing quote-based projects ──
@@ -705,6 +719,7 @@ async function handleCreateFolder(req, res) {
             ...(prepDate   && { date_mm4at0qc: { date: prepDate.trim()   } }),
             ...(returnDate && { date_mm4a7fn6: { date: returnDate.trim() } }),
             ...(driveFolder?.folderUrl && { link_mm5fa4b8: { url: driveFolder.folderUrl, text: 'Google Drive Folder' } }),
+            ...(mondayVenueId && { board_relation_mm3xrm02: { item_ids: [parseInt(mondayVenueId, 10)] } }),
         };
 
         // Find ALL projects that already share this event folder UUID
@@ -752,6 +767,9 @@ async function handleCreateFolder(req, res) {
         returnDate:        returnDate?.trim()  || null,
         clientLinked:      !!clientUUID,
         clientFlexId:      clientUUID || null,
+        venueLinked:       !!mondayVenueId,
+        venueFlexId:       venueUUID || null,
+        venueMondayId:     mondayVenueId || null,
         driveFolder:       driveFolder || null,
         registryItemId:    registryItemId || null,
     });
