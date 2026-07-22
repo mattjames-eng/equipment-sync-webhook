@@ -656,6 +656,7 @@ async function handleCreateFolder(req, res) {
     // If a registry entry already has a Drive link, reuse it entirely.
     let driveFolder    = null;
     let registryItemId = null;
+    let mondayVenueId  = null;
     const existingEntry = await findRegistryEntry(elementId);
 
     if (existingEntry?.driveUrl) {
@@ -686,8 +687,6 @@ async function handleCreateFolder(req, res) {
     }
 
     // ── Resolve venue to a Monday Contacts board item ID ─────────────────────────
-    // Declared at outer scope so registry write + propagation both have access.
-    let mondayVenueId = null;
     if (venueUUID || venueName?.trim()) {
         mondayVenueId = await findContactByFlexUuid(venueUUID, venueName?.trim() || null);
         if (mondayVenueId) console.log(`[create-folder] ✅ Venue resolved to monday contact: ${mondayVenueId}`);
