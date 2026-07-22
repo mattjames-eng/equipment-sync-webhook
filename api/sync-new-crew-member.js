@@ -16,33 +16,14 @@ const CONTACTS_INDIVIDUALS_GROUP = 'group_mm3y3xvh'; // 🤝 NEW ADDITIONS (grou
 const CREW_LOGIN_COLUMN = 'multiple_person_mm3yfksh';
 
 // Crew Database → Contacts column map
+// NOTE: Contacts board was restructured — only map to columns that actually exist.
+// Removed 23 dead mappings pointing to deleted columns (all mm4f* IDs).
 const COLUMN_MAP = {
-  email_mm3yfhmg:     { id: 'email_mm3vezw3',    type: 'email'     },
-  phone_mm3yd44g:     { id: 'phone_mm3vwfvj',    type: 'phone'     },
-  text_mm4cmcr2:      { id: 'text_mm4f57rc',     type: 'text'      },
-  text_mm3yy0pk:      { id: 'text_mm4fb3vm',     type: 'text'      },
-  long_text_mm3yj0b2: { id: 'long_text_mm4fc8h7',type: 'long_text' },
-  dropdown_mm3y41ay:  { id: 'dropdown_mm4fb5a2', type: 'dropdown'  },
-  dropdown_mm3yd2n8:  { id: 'dropdown_mm4f2wwk', type: 'dropdown'  },
-  dropdown_mm3yexty:  { id: 'dropdown_mm4f5748', type: 'dropdown'  },
-  dropdown_mm3ygwvc:  { id: 'dropdown_mm4fgn2w', type: 'dropdown'  },
-  numeric_mm3ytmkt:   { id: 'numeric_mm4frczz',  type: 'number'    },
-  numeric_mm3ytc86:   { id: 'numeric_mm4ff2a6',  type: 'number'    },
-  boolean_mm3ywe31:   { id: 'boolean_mm4f3cpf',  type: 'checkbox'  },
-  numeric_mm3yny33:   { id: 'numeric_mm4fzb53',  type: 'number'    },
-  numeric_mm3y14jk:   { id: 'numeric_mm4f2cqq',  type: 'number'    },
-  numeric_mm3y6ps9:   { id: 'numeric_mm4f7hmq',  type: 'number'    },
-  numeric_mm3yhyg9:   { id: 'numeric_mm4fvb7h',  type: 'number'    },
-  numeric_mm3yzv3r:   { id: 'numeric_mm4fv558',  type: 'number'    },
-  numeric_mm3yhbcs:   { id: 'numeric_mm4f2wt1',  type: 'number'    },
-  numeric_mm3ymc1r:   { id: 'numeric_mm4fs05y',  type: 'number'    },
-  numeric_mm3yb7h9:   { id: 'numeric_mm4fefza',  type: 'number'    },
-  numeric_mm49tmm2:   { id: 'numeric_mm4f1prf',  type: 'number'    },
-  numeric_mm49pf3k:   { id: 'numeric_mm4fa563',  type: 'number'    },
-  numeric_mm49mp0s:   { id: 'numeric_mm4f3vsh',  type: 'number'    },
-  numeric_mm49vv1s:   { id: 'numeric_mm4fcy36',  type: 'number'    },
-  color_mm3yqky6:     { id: 'color_mm4fhana',    type: 'status'    },
-  color_mm3ycyqg:     { id: 'color_mm4f2zz3',    type: 'status'    },
+  email_mm3yfhmg:     { id: 'email_mm3vezw3',       type: 'email'     }, // Email
+  phone_mm3yd44g:     { id: 'phone_mm3vwfvj',       type: 'phone'     }, // Phone
+  text_mm4cmcr2:      { id: 'text_mm4f57rc',        type: 'text'      }, // Drivers License #
+  text_mm3yy0pk:      { id: 'text_mm3vg7e8',        type: 'text'      }, // Emergency Contact → Usual Contact
+  long_text_mm3yj0b2: { id: 'long_text_mm3y8wh4',   type: 'long_text' }, // Notes → Account Notes
 };
 
 // ================================================================
