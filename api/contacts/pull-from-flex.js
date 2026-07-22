@@ -1598,14 +1598,26 @@ async function handleResolveOocRoute(req, res) {
 
     const flexRes = await fetch(`${FLEX_BASE_URL}/api/ooc-record/resolve?id=${encodeURIComponent(flexOocId)}`,
       { method:'PUT', headers:{'X-Auth-Token':FLEX_API_KEY,'Accept':'application/json'} });
-    if (!flexRes.ok) console.error(`❌ Flex resolve failed ${flexOocId}: ${flexRes.status}`);
-    else             console.log(`✅ Flex OOC ${flexOocId} resolved`);
+    // Bug fix 1: abort if Flex rejects — prevents monday drifting out of sync
+    if (!flexRes.ok) {
+      const errText = await flexRes.text().catch(() => '');
+      console.error(`❌ Flex resolve failed ${flexOocId}: ${flexRes.status} ${errText}`);
+      return res.status(502).json({ error: `Flex rejected resolve for OOC ID ${flexOocId}`, status: flexRes.status });
+    }
+    console.log(`✅ Flex OOC ${flexOocId} resolved`);
 
     const today    = new Date().toISOString().split('T')[0];
-    const daysDown = reportedDate ? Math.round((new Date(today) - new Date(reportedDate)) / 86400000) : null;
+    const rawDays  = reportedDate ? Math.round((new Date(today) - new Date(reportedDate)) / 86400000) : null;
+    const daysDown = (rawDays !== null && !isNaN(rawDays)) ? rawDays : null;
     const updateCv = JSON.stringify({ [OOC_SUB_COL.resolvedDate]:{ date:today }, ...(daysDown !== null && { [OOC_SUB_COL.daysDown]:daysDown }) });
-    await fetch(MONDAY_API_URL, { method:'POST', headers:{'Content-Type':'application/json','Authorization':MONDAY_API_KEY},
+    // Bug fix 2: await and validate the monday write-back
+    const mondayWriteRes  = await fetch(MONDAY_API_URL, { method:'POST', headers:{'Content-Type':'application/json','Authorization':MONDAY_API_KEY},
       body:JSON.stringify({ query:`mutation { change_multiple_column_values(board_id:${REPAIR_TRACKER_SUBITEMS_BOARD_ID},item_id:${subitemId},column_values:${JSON.stringify(updateCv)}) { id } }` }) });
+    const mondayWriteData = await mondayWriteRes.json();
+    if (mondayWriteData.errors) {
+      console.error('❌ monday write-back failed:', JSON.stringify(mondayWriteData.errors));
+      return res.status(500).json({ error:'Flex resolved but monday write-back failed', details:mondayWriteData.errors });
+    }
 
     return res.status(200).json({ ok:true, flexOocId, resolvedDate:today, daysDown });
   } catch (err) {
