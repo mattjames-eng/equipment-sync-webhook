@@ -10,7 +10,7 @@ const CREW_DB_BOARD_ID          = '18415879010';
 const CONTACTS_BOARD_ID         = '18415573401';
 const CREW_ASSIGNMENTS_BOARD_ID = '18415879040';
 
-const CONTACTS_INDIVIDUALS_GROUP = 'group_mm49j4jx';
+const CONTACTS_INDIVIDUALS_GROUP = 'group_mm3y3xvh'; // 🤝 NEW ADDITIONS (group_mm49j4jx was deleted in June 2026 cleanup)
 
 // Crew Assignments: People column for Vibe app gating
 const CREW_LOGIN_COLUMN = 'multiple_person_mm3yfksh';
