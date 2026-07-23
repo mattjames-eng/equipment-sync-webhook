@@ -1323,14 +1323,18 @@ const REPAIR_TRACKER_BOARD_ID          = process.env.REPAIR_TRACKER_BOARD_ID || 
 const REPAIR_TRACKER_SUBITEMS_BOARD_ID = '18422082658'; // auto-created subitems board, connected to main tracker
 
 const OOC_COL = {
-  serialNumber:      'text_mm59e67m',
-  barcode:           'text_mm598skj',
-  modelName:         'text_mm59m56r',
-  currentStatus:     'color_mm59nf37',
-  currentLocation:   'text_mm596rtg',
-  totalOocIncidents: 'numeric_mm59gjpv',
-  lastSynced:        'date_mm59m0y5',
-  flexUnitId:        'text_mm59zh5f',
+  serialNumber:       'text_mm59e67m',
+  barcode:            'text_mm598skj',
+  modelName:          'text_mm59m56r',
+  currentStatus:      'color_mm59nf37',
+  currentLocation:    'text_mm596rtg',
+  totalOocIncidents:  'numeric_mm59gjpv',
+  lastSynced:         'date_mm59m0y5',
+  flexUnitId:         'text_mm59zh5f',
+  // Status tracking columns
+  decommissionedDate: 'date_mm5h1wz',
+  decommissionedBy:   'text_mm5h8qpt',
+  missingSince:       'date_mm5hc36c',
 };
 
 const OOC_SUB_COL = {
@@ -1706,8 +1710,12 @@ async function handleMarkMissingRoute(req, res) {
     }
     console.log(`✅ Flex unit ${flexUnitId} marked presumedMissing`);
 
-    // Write back to monday: set Current Status → Missing
-    const updateCv = JSON.stringify({ [OOC_COL.currentStatus]: { label: 'Missing' } });
+    // Write back to monday: set Current Status → Missing, stamp missingSince date
+    const today = new Date().toISOString().split('T')[0];
+    const updateCv = JSON.stringify({
+      [OOC_COL.currentStatus]: { label: 'Missing' },
+      [OOC_COL.missingSince]:  { date: today },
+    });
     const writeRes  = await fetch(MONDAY_API_URL, { method:'POST', headers:{'Content-Type':'application/json','Authorization':MONDAY_API_KEY},
       body: JSON.stringify({ query:`mutation { change_multiple_column_values(board_id:${REPAIR_TRACKER_BOARD_ID},item_id:${itemId},column_values:${JSON.stringify(updateCv)}) { id } }` }) });
     const writeData = await writeRes.json();
@@ -1716,7 +1724,7 @@ async function handleMarkMissingRoute(req, res) {
       return res.status(500).json({ error:'Flex updated but monday write-back failed', details:writeData.errors });
     }
 
-    return res.status(200).json({ ok:true, flexUnitId, status:'Missing' });
+    return res.status(200).json({ ok:true, flexUnitId, status:'Missing', missingSince: today });
   } catch (err) {
     console.error('❌ mark-missing error:', err);
     return res.status(500).json({ error: err.message });
@@ -1759,8 +1767,12 @@ async function handleDecommissionRoute(req, res) {
     }
     console.log(`✅ Flex unit ${flexUnitId} decommissioned`);
 
-    // Write back to monday: set Current Status → Decommissioned
-    const updateCv = JSON.stringify({ [OOC_COL.currentStatus]: { label: 'Decommissioned' } });
+    // Write back to monday: set Current Status → Decommissioned, stamp date + user
+    const updateCv = JSON.stringify({
+      [OOC_COL.currentStatus]:      { label: 'Decommissioned' },
+      [OOC_COL.decommissionedDate]: { date: decommissionedDate.split('T')[0] },
+      [OOC_COL.decommissionedBy]:   body.decommissionedBy || body.userName || '',
+    });
     const writeRes  = await fetch(MONDAY_API_URL, { method:'POST', headers:{'Content-Type':'application/json','Authorization':MONDAY_API_KEY},
       body: JSON.stringify({ query:`mutation { change_multiple_column_values(board_id:${REPAIR_TRACKER_BOARD_ID},item_id:${itemId},column_values:${JSON.stringify(updateCv)}) { id } }` }) });
     const writeData = await writeRes.json();
@@ -1769,7 +1781,7 @@ async function handleDecommissionRoute(req, res) {
       return res.status(500).json({ error:'Flex updated but monday write-back failed', details:writeData.errors });
     }
 
-    return res.status(200).json({ ok:true, flexUnitId, status:'Decommissioned', decommissionedDate });
+    return res.status(200).json({ ok:true, flexUnitId, status:'Decommissioned', decommissionedDate: decommissionedDate.split('T')[0], decommissionedBy: body.decommissionedBy || body.userName || '' });
   } catch (err) {
     console.error('❌ decommission error:', err);
     return res.status(500).json({ error: err.message });
