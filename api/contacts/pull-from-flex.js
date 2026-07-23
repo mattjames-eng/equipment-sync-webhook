@@ -1430,6 +1430,32 @@ async function buildSubitemsMap() {
   return map;
 }
 
+
+// ================================================================
+// Fetch serial unit status from Flex in parallel (decommissioned / presumedMissing)
+// Returns { [unitId]: { decommissioned: bool, presumedMissing: bool } }
+// ================================================================
+async function fetchUnitStatuses(unitIds) {
+  const results = await Promise.allSettled(
+    unitIds.map(id =>
+      fetch(`${FLEX_BASE_URL}/api/serial-unit/${encodeURIComponent(id)}`,
+        { headers: { 'X-Auth-Token': FLEX_API_KEY, 'Accept': 'application/json' } })
+        .then(r => r.ok ? r.json() : null)
+        .catch(() => null)
+    )
+  );
+  const map = {};
+  results.forEach((r, i) => {
+    if (r.status === 'fulfilled' && r.value) {
+      map[unitIds[i]] = {
+        decommissioned:  !!r.value.decommissioned,
+        presumedMissing: !!r.value.presumedMissing,
+      };
+    }
+  });
+  return map;
+}
+
 // ================================================================
 // ROUTE: sync-ooc — batched mutations, no serial unit fetches
 // ================================================================
@@ -1467,6 +1493,10 @@ async function handleSyncOocRoute(req, res) {
   const [parentMap, subMap] = await Promise.all([buildParentItemsMap(), buildSubitemsMap()]);
   console.log(`  ✅ Parents: ${Object.keys(parentMap).length} | Subitems: ${Object.keys(subMap).length}`);
 
+  // Fetch Flex unit statuses to catch Decommissioned / Missing (not in OOC records)
+  console.log('🔍 Fetching Flex unit statuses...');
+  const unitStatusMap = await fetchUnitStatuses(unitIds);
+
   const today = new Date().toISOString().split('T')[0];
 
   // 4. Build batched parent mutations
@@ -1478,7 +1508,12 @@ async function handleSyncOocRoute(req, res) {
     const sample = recs[0];
     const serial = sample.serialNumber || '';
     const hasUnresolved = recs.some(r => !r.resolved);
-    const status = hasUnresolved ? 'OOC' : 'In Service';
+    const unitStatus    = unitStatusMap[unitId] || {};
+    let status;
+    if (unitStatus.decommissioned)       status = 'Decommissioned';
+    else if (unitStatus.presumedMissing) status = 'Missing';
+    else if (hasUnresolved)              status = 'OOC';
+    else                                 status = 'In Service';
 
     const cv = JSON.stringify(JSON.stringify({
       [OOC_COL.serialNumber]:      serial,
@@ -1636,6 +1671,112 @@ async function handleResolveOocRoute(req, res) {
 
 
 
+// ================================================================
+// ROUTE: mark-missing — flag a unit as presumed missing in Flex + monday
+// Body: { itemId } (parent item ID on the Repair Tracker board)
+// ================================================================
+async function handleMarkMissingRoute(req, res) {
+  console.log('\n🔍 mark-missing triggered');
+  const body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body || {};
+  if (body.challenge) return res.status(200).json({ challenge: body.challenge });
+
+  const itemId = body.event?.pulseId || body.itemId;
+  if (!itemId) return res.status(400).json({ error: 'Missing itemId — send body.itemId or body.event.pulseId' });
+
+  try {
+    // Read flexUnitId from parent item
+    const query = `{ items(ids:[${itemId}]) { column_values(ids:["${OOC_COL.flexUnitId}","${OOC_COL.currentStatus}"]) { id text } } }`;
+    const mondayRes  = await fetch(MONDAY_API_URL, { method:'POST', headers:{'Content-Type':'application/json','Authorization':MONDAY_API_KEY}, body:JSON.stringify({query}) });
+    const mondayData = await mondayRes.json();
+    const cols       = mondayData.data?.items?.[0]?.column_values || [];
+    const flexUnitId    = cols.find(c => c.id === OOC_COL.flexUnitId)?.text?.trim();
+    const currentStatus = cols.find(c => c.id === OOC_COL.currentStatus)?.text?.trim();
+
+    if (!flexUnitId) return res.status(200).json({ ok:true, skipped:true, reason:'No Flex Unit ID' });
+    if (currentStatus === 'Missing') return res.status(200).json({ ok:true, skipped:true, reason:'Already marked Missing' });
+
+    // Call Flex to set presumedMissing
+    const flexRes = await fetch(`${FLEX_BASE_URL}/api/serial-unit/${encodeURIComponent(flexUnitId)}`,
+      { method:'PUT', headers:{'X-Auth-Token':FLEX_API_KEY,'Accept':'application/json','Content-Type':'application/json'},
+        body: JSON.stringify({ presumedMissing: true }) });
+    if (!flexRes.ok) {
+      const errText = await flexRes.text().catch(() => '');
+      console.error(`❌ Flex mark-missing failed ${flexUnitId}: ${flexRes.status} ${errText}`);
+      return res.status(502).json({ error:`Flex rejected mark-missing for unit ${flexUnitId}`, status:flexRes.status });
+    }
+    console.log(`✅ Flex unit ${flexUnitId} marked presumedMissing`);
+
+    // Write back to monday: set Current Status → Missing
+    const updateCv = JSON.stringify({ [OOC_COL.currentStatus]: { label: 'Missing' } });
+    const writeRes  = await fetch(MONDAY_API_URL, { method:'POST', headers:{'Content-Type':'application/json','Authorization':MONDAY_API_KEY},
+      body: JSON.stringify({ query:`mutation { change_multiple_column_values(board_id:${REPAIR_TRACKER_BOARD_ID},item_id:${itemId},column_values:${JSON.stringify(updateCv)}) { id } }` }) });
+    const writeData = await writeRes.json();
+    if (writeData.errors) {
+      console.error('❌ monday write-back failed:', JSON.stringify(writeData.errors));
+      return res.status(500).json({ error:'Flex updated but monday write-back failed', details:writeData.errors });
+    }
+
+    return res.status(200).json({ ok:true, flexUnitId, status:'Missing' });
+  } catch (err) {
+    console.error('❌ mark-missing error:', err);
+    return res.status(500).json({ error: err.message });
+  }
+}
+
+// ================================================================
+// ROUTE: decommission — permanently retire a unit in Flex + monday
+// Body: { itemId } (parent item ID on the Repair Tracker board)
+// ================================================================
+async function handleDecommissionRoute(req, res) {
+  console.log('\n🪦 decommission triggered');
+  const body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body || {};
+  if (body.challenge) return res.status(200).json({ challenge: body.challenge });
+
+  const itemId = body.event?.pulseId || body.itemId;
+  if (!itemId) return res.status(400).json({ error: 'Missing itemId — send body.itemId or body.event.pulseId' });
+
+  try {
+    // Read flexUnitId + current status from parent item
+    const query = `{ items(ids:[${itemId}]) { column_values(ids:["${OOC_COL.flexUnitId}","${OOC_COL.currentStatus}"]) { id text } } }`;
+    const mondayRes  = await fetch(MONDAY_API_URL, { method:'POST', headers:{'Content-Type':'application/json','Authorization':MONDAY_API_KEY}, body:JSON.stringify({query}) });
+    const mondayData = await mondayRes.json();
+    const cols       = mondayData.data?.items?.[0]?.column_values || [];
+    const flexUnitId    = cols.find(c => c.id === OOC_COL.flexUnitId)?.text?.trim();
+    const currentStatus = cols.find(c => c.id === OOC_COL.currentStatus)?.text?.trim();
+
+    if (!flexUnitId) return res.status(200).json({ ok:true, skipped:true, reason:'No Flex Unit ID' });
+    if (currentStatus === 'Decommissioned') return res.status(200).json({ ok:true, skipped:true, reason:'Already Decommissioned' });
+
+    // Call Flex to decommission
+    const decommissionedDate = new Date().toISOString().replace('Z', '').split('.')[0]; // "2026-07-23T10:00:00"
+    const flexRes = await fetch(`${FLEX_BASE_URL}/api/serial-unit/${encodeURIComponent(flexUnitId)}`,
+      { method:'PUT', headers:{'X-Auth-Token':FLEX_API_KEY,'Accept':'application/json','Content-Type':'application/json'},
+        body: JSON.stringify({ decommissioned: true, decommissionedDate }) });
+    if (!flexRes.ok) {
+      const errText = await flexRes.text().catch(() => '');
+      console.error(`❌ Flex decommission failed ${flexUnitId}: ${flexRes.status} ${errText}`);
+      return res.status(502).json({ error:`Flex rejected decommission for unit ${flexUnitId}`, status:flexRes.status });
+    }
+    console.log(`✅ Flex unit ${flexUnitId} decommissioned`);
+
+    // Write back to monday: set Current Status → Decommissioned
+    const updateCv = JSON.stringify({ [OOC_COL.currentStatus]: { label: 'Decommissioned' } });
+    const writeRes  = await fetch(MONDAY_API_URL, { method:'POST', headers:{'Content-Type':'application/json','Authorization':MONDAY_API_KEY},
+      body: JSON.stringify({ query:`mutation { change_multiple_column_values(board_id:${REPAIR_TRACKER_BOARD_ID},item_id:${itemId},column_values:${JSON.stringify(updateCv)}) { id } }` }) });
+    const writeData = await writeRes.json();
+    if (writeData.errors) {
+      console.error('❌ monday write-back failed:', JSON.stringify(writeData.errors));
+      return res.status(500).json({ error:'Flex updated but monday write-back failed', details:writeData.errors });
+    }
+
+    return res.status(200).json({ ok:true, flexUnitId, status:'Decommissioned', decommissionedDate });
+  } catch (err) {
+    console.error('❌ decommission error:', err);
+    return res.status(500).json({ error: err.message });
+  }
+}
+
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -1665,6 +1806,18 @@ export default async function handler(req, res) {
   if (req.query && req.query.route === 'resolve-ooc') {
     try { return await handleResolveOocRoute(req, res); }
     catch (err) { console.error('❌ resolve-ooc error:', err); return res.status(500).json({ error: err.message }); }
+  }
+
+  // ── MARK-MISSING ROUTE ────────────────────────────────────────
+  if (req.query && req.query.route === 'mark-missing') {
+    try { return await handleMarkMissingRoute(req, res); }
+    catch (err) { console.error('❌ mark-missing error:', err); return res.status(500).json({ error: err.message }); }
+  }
+
+  // ── DECOMMISSION ROUTE ────────────────────────────────────────
+  if (req.query && req.query.route === 'decommission') {
+    try { return await handleDecommissionRoute(req, res); }
+    catch (err) { console.error('❌ decommission error:', err); return res.status(500).json({ error: err.message }); }
   }
 
   // ── SORT-NEW ROUTE ────────────────────────────────────────────
