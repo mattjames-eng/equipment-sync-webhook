@@ -39,6 +39,14 @@
     {
       "source": "/api/travel/parse",
       "destination": "/api/sync-crew-user?route=parse-travel"
+    },
+    {
+      "source": "/api/inventory/mark-missing",
+      "destination": "/api/contacts/pull-from-flex?route=mark-missing"
+    },
+    {
+      "source": "/api/inventory/decommission",
+      "destination": "/api/contacts/pull-from-flex?route=decommission"
     }
   ],
   "functions": {
