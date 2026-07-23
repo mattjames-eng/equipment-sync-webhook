@@ -70,6 +70,9 @@ const COL = {
   flexStatus:        'text_mm5h5gqp', // Flex quote status (Confirmed, Tentative, etc.)
 };
 
+// ── Archive group ID — cancelled projects are moved here automatically ────────
+const ARCHIVE_GROUP_ID = 'topics';
+
 // ── Event Folder Registry helpers (mirrors create-project-from-quote.js) ─────
 
 async function findRegistryEntry(flexEventFolderUUID) {
@@ -931,8 +934,19 @@ async function runImport({ prefix, maxResults, includeClosed, dryRun, resolveCon
               ) { id }
             }
           `);
+
+          // ── Auto-archive cancelled projects ─────────────────────────────
+          if (statusName === 'Cancelled') {
+            await mondayRequest(`
+              mutation {
+                move_item_to_group(item_id: ${itemId}, group_id: "${ARCHIVE_GROUP_ID}") { id }
+              }
+            `);
+            console.log(`[bulk-import] 🗃️  Auto-archived cancelled project: ${flexNum} (item ${itemId})`);
+          }
+
           console.log(`[bulk-import] 🔄 Re-synced: ${flexNum} — budget=$${budget}, actual=$${actual}, status=${statusName || 'n/a'}`);
-          resyncResults.updated.push({ flexNum, itemId, budget, actual, status: statusName });
+          resyncResults.updated.push({ flexNum, itemId, budget, actual, status: statusName, archived: statusName === 'Cancelled' });
         } catch (err) {
           console.error(`[bulk-import] ❌ Re-sync error for ${flexNum}:`, err.message);
           resyncResults.errors.push({ flexNum, reason: err.message });
