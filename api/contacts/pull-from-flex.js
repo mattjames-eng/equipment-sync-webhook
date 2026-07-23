@@ -1581,8 +1581,10 @@ async function handleResolveOocRoute(req, res) {
   const body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body || {};
   if (body.challenge) return res.status(200).json({ challenge: body.challenge });
 
-  const subitemId = body.event?.pulseId;
-  if (!subitemId) return res.status(400).json({ error: 'Missing pulseId' });
+  // Accept monday automation webhook format (body.event.pulseId)
+  // OR direct Vibe app call format (body.subitemId or body.itemId)
+  const subitemId = body.event?.pulseId || body.subitemId || body.itemId;
+  if (!subitemId) return res.status(400).json({ error: 'Missing subitemId — send body.subitemId, body.itemId, or body.event.pulseId' });
 
   try {
     // Read flexOocId, reportedDate, AND resolvedDate — resolvedDate used as de-dupe guard
