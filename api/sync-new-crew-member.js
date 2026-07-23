@@ -10,39 +10,23 @@ const CREW_DB_BOARD_ID          = '18415879010';
 const CONTACTS_BOARD_ID         = '18415573401';
 const CREW_ASSIGNMENTS_BOARD_ID = '18415879040';
 
-const CREW_DEFAULT_GROUP = 'group_mm3y15k9'; // Freelance Crew — default group for new crew members
+// New contact lands in "🤝 NEW ADDITIONS" group on Contacts & Companies board
+const CONTACTS_DEFAULT_GROUP = 'group_mm3y3xvh';
 
 // Crew Assignments: People column for Vibe app gating
 const CREW_LOGIN_COLUMN = 'multiple_person_mm3yfksh';
 
-// Source → Crew Database column map (source col IDs match Crew DB col IDs — identity mapping)
+// Crew Database source column ID → Contacts & Companies destination column
 const COLUMN_MAP = {
-  email_mm3yfhmg:     { id: 'email_mm3yfhmg',     type: 'email'     }, // Email
-  phone_mm3yd44g:     { id: 'phone_mm3yd44g',     type: 'phone'     }, // Phone
-  text_mm4cmcr2:      { id: 'text_mm4cmcr2',      type: 'text'      }, // Drivers License #
-  text_mm3yy0pk:      { id: 'text_mm3yy0pk',      type: 'text'      }, // Emergency Contact
-  long_text_mm3yj0b2: { id: 'long_text_mm3yj0b2', type: 'long_text' }, // Notes
-  dropdown_mm3y41ay:  { id: 'dropdown_mm3y41ay',  type: 'dropdown'  }, // Preferred Department
-  dropdown_mm3yd2n8:  { id: 'dropdown_mm3yd2n8',  type: 'dropdown'  }, // Role/Position
-  dropdown_mm3yexty:  { id: 'dropdown_mm3yexty',  type: 'dropdown'  }, // Certifications
-  dropdown_mm3ygwvc:  { id: 'dropdown_mm3ygwvc',  type: 'dropdown'  }, // Compensation Type
-  numeric_mm3ytmkt:   { id: 'numeric_mm3ytmkt',   type: 'number'    }, // Shop Prep Rate
-  numeric_mm3ytc86:   { id: 'numeric_mm3ytc86',   type: 'number'    }, // Hourly Rate
-  boolean_mm3ywe31:   { id: 'boolean_mm3ywe31',   type: 'checkbox'  }, // OT Eligible
-  numeric_mm3yny33:   { id: 'numeric_mm3yny33',   type: 'number'    }, // PTO Balance
-  numeric_mm3y14jk:   { id: 'numeric_mm3y14jk',   type: 'number'    }, // Per-Project Rate
-  numeric_mm3y6ps9:   { id: 'numeric_mm3y6ps9',   type: 'number'    }, // Standard Day Rate
-  numeric_mm3yhyg9:   { id: 'numeric_mm3yhyg9',   type: 'number'    }, // Commission Rate
-  numeric_mm3yzv3r:   { id: 'numeric_mm3yzv3r',   type: 'number'    }, // Weekly Rate
-  numeric_mm3yhbcs:   { id: 'numeric_mm3yhbcs',   type: 'number'    }, // Current Year Hours
-  numeric_mm3ymc1r:   { id: 'numeric_mm3ymc1r',   type: 'number'    }, // Weekly Hours Target
-  numeric_mm3yb7h9:   { id: 'numeric_mm3yb7h9',   type: 'number'    }, // Annual Hour Target
-  numeric_mm49tmm2:   { id: 'numeric_mm49tmm2',   type: 'number'    }, // Hours This Week
-  numeric_mm49pf3k:   { id: 'numeric_mm49pf3k',   type: 'number'    }, // Hours Last Week
-  numeric_mm49mp0s:   { id: 'numeric_mm49mp0s',   type: 'number'    }, // Avg Hours Per Week
-  numeric_mm49vv1s:   { id: 'numeric_mm49vv1s',   type: 'number'    }, // Hours This Month
-  color_mm3yqky6:     { id: 'color_mm3yqky6',     type: 'status'    }, // Flex Status
-  color_mm3ycyqg:     { id: 'color_mm3ycyqg',     type: 'status'    }, // Availability Status
+  email_mm3yfhmg:     { id: 'email_mm3vezw3',     type: 'email'     }, // Email
+  phone_mm3yd44g:     { id: 'phone_mm3vwfvj',     type: 'phone'     }, // Phone
+  text_mm4cmcr2:      { id: 'text_mm4f57rc',      type: 'text'      }, // Drivers License #
+  long_text_mm3yj0b2: { id: 'long_text_mm3y8wh4', type: 'long_text' }, // Notes → Account Notes
+};
+
+// Fixed values stamped on every contact created from a crew member
+const FIXED_COLUMN_VALUES = {
+  dropdown_mm3vm6jh: { ids: [19] }, // Company Type = "Freelance Contractor"
 };
 
 // ================================================================
@@ -56,17 +40,15 @@ export default async function handler(req, res) {
 
   const route = req.query?.route;
 
-  // ── Route: sync crew login credential ──────────────────────
   if (route === 'sync-login') {
     return handleSyncLogin(req, res);
   }
 
-  // ── Default: sync new crew member to Crew Database ──────────
   return handleSyncNewCrewMember(req, res);
 }
 
 // ================================================================
-// HANDLER: Sync new crew member → Crew Database
+// HANDLER: New crew member → create Contact on Contacts & Companies board
 // ================================================================
 async function handleSyncNewCrewMember(req, res) {
   let body = req.body;
@@ -81,7 +63,7 @@ async function handleSyncNewCrewMember(req, res) {
     const crewItemId = event.pulseId;
     if (!crewItemId) return res.status(400).json({ error: 'Missing pulseId' });
 
-    const crewMember    = await fetchCrewMember(crewItemId);
+    const crewMember = await fetchCrewMember(crewItemId);
 
     // Guard: skip test/placeholder items
     const nameCheck = (crewMember.name || '').trim().toLowerCase();
@@ -90,16 +72,28 @@ async function handleSyncNewCrewMember(req, res) {
       return res.status(200).json({ success: true, message: 'Skipped test item' });
     }
 
-    const newItemId     = await createCrewMemberItem(crewMember.name);
-    const columnValues  = buildColumnValues(crewMember.columns);
-
-    if (Object.keys(columnValues).length > 0) {
-      await updateCrewMemberColumns(newItemId, columnValues);
+    // De-dupe: check if a contact with this name or email already exists
+    const email = crewMember.columns['email_mm3yfhmg']?.text || null;
+    const existingId = await findExistingContact(crewMember.name, email);
+    if (existingId) {
+      console.log(`[sync-new-crew-member] Contact already exists: "${crewMember.name}" (ID: ${existingId}) — skipping`);
+      return res.status(200).json({ success: true, message: 'Contact already exists', existingContactId: existingId });
     }
 
-    return res.status(200).json({ success: true, crewItemId, newItemId });
+    // Create contact on Contacts & Companies board
+    const newContactId = await createContactItem(crewMember.name);
+    const columnValues = buildColumnValues(crewMember.columns);
+    const finalValues  = { ...columnValues, ...FIXED_COLUMN_VALUES };
+
+    if (Object.keys(finalValues).length > 0) {
+      await updateContactColumns(newContactId, finalValues);
+    }
+
+    console.log(`[sync-new-crew-member] Created contact "${crewMember.name}" (ID: ${newContactId})`);
+    return res.status(200).json({ success: true, crewItemId, newContactId });
+
   } catch (error) {
-    console.error('Error syncing crew member:', error);
+    console.error('[sync-new-crew-member] Error:', error);
     return res.status(500).json({ error: error.message });
   }
 }
@@ -142,8 +136,8 @@ async function handleSyncLogin(req, res) {
     const assignment = assignmentData.items?.[0];
     if (!assignment) throw new Error(`Assignment ${assignmentItemId} not found`);
 
-    const crewRelCol   = assignment.column_values.find(c => c.id === 'board_relation_mm3y1w67');
-    const crewMemberId = crewRelCol?.linked_items?.[0]?.id;
+    const crewRelCol     = assignment.column_values.find(c => c.id === 'board_relation_mm3y1w67');
+    const crewMemberId   = crewRelCol?.linked_items?.[0]?.id;
     const crewMemberName = crewRelCol?.linked_items?.[0]?.name || 'Unknown';
 
     if (!crewMemberId) {
@@ -213,8 +207,9 @@ async function handleSyncLogin(req, res) {
 }
 
 // ================================================================
-// HELPERS — Sync New Crew Member
+// HELPERS
 // ================================================================
+
 async function fetchCrewMember(itemId) {
   const query = `query { items(ids: [${itemId}]) { id name column_values { id value text type } } }`;
   const data = await mondayRequest(query);
@@ -224,8 +219,40 @@ async function fetchCrewMember(itemId) {
   return { id: item.id, name: item.name, columns };
 }
 
-async function createCrewMemberItem(name) {
-  const mutation = `mutation { create_item(board_id: ${CREW_DB_BOARD_ID}, group_id: "${CREW_DEFAULT_GROUP}", item_name: ${JSON.stringify(name)}) { id } }`;
+async function findExistingContact(name, email) {
+  // Check by name
+  const nameData = await mondayRequest(`
+    query {
+      items_page_by_column_values(
+        board_id: ${CONTACTS_BOARD_ID},
+        limit: 5,
+        columns: [{ column_id: "name", column_values: [${JSON.stringify(name)}] }]
+      ) { items { id name } }
+    }
+  `);
+  const byName = nameData.items_page_by_column_values?.items || [];
+  if (byName.length > 0) return byName[0].id;
+
+  // Check by email if available
+  if (email) {
+    const emailData = await mondayRequest(`
+      query {
+        items_page_by_column_values(
+          board_id: ${CONTACTS_BOARD_ID},
+          limit: 5,
+          columns: [{ column_id: "email_mm3vezw3", column_values: [${JSON.stringify(email)}] }]
+        ) { items { id name } }
+      }
+    `);
+    const byEmail = emailData.items_page_by_column_values?.items || [];
+    if (byEmail.length > 0) return byEmail[0].id;
+  }
+
+  return null;
+}
+
+async function createContactItem(name) {
+  const mutation = `mutation { create_item(board_id: ${CONTACTS_BOARD_ID}, group_id: "${CONTACTS_DEFAULT_GROUP}", item_name: ${JSON.stringify(name)}) { id } }`;
   const data = await mondayRequest(mutation);
   return data.create_item.id;
 }
@@ -238,25 +265,17 @@ function buildColumnValues(sourceColumns) {
     let val = null;
     switch (mapping.type) {
       case 'email':     if (source.text) val = { email: source.text, text: source.text }; break;
-      case 'phone':     if (source.text) val = { phone: source.text.replace(/\D/g,''), countryShortName: 'US' }; break;
+      case 'phone':     if (source.text) val = { phone: source.text.replace(/\D/g, ''), countryShortName: 'US' }; break;
       case 'text':      if (source.text) val = source.text; break;
       case 'long_text': if (source.text) val = { text: source.text }; break;
-      case 'number':    if (source.text && source.text !== '0') val = source.text; break;
-      case 'checkbox':
-        try { const p = JSON.parse(source.value || '{}'); if (p.checked) val = { checked: 'true' }; } catch(e) {}
-        break;
-      case 'dropdown':
-        try { const p = JSON.parse(source.value || '{}'); if (p.ids?.length) val = { ids: p.ids }; } catch(e) {}
-        break;
-      case 'status':    if (source.text) val = { label: source.text }; break;
     }
     if (val !== null) result[mapping.id] = val;
   }
   return result;
 }
 
-async function updateCrewMemberColumns(itemId, columnValues) {
-  const mutation = `mutation { change_multiple_column_values(item_id: ${itemId}, board_id: ${CREW_DB_BOARD_ID}, column_values: ${JSON.stringify(JSON.stringify(columnValues))}) { id } }`;
+async function updateContactColumns(itemId, columnValues) {
+  const mutation = `mutation { change_multiple_column_values(item_id: ${itemId}, board_id: ${CONTACTS_BOARD_ID}, column_values: ${JSON.stringify(JSON.stringify(columnValues))}) { id } }`;
   await mondayRequest(mutation);
 }
 
