@@ -67,6 +67,7 @@ const COL = {
   venueNameText:     'text_mm43r22q',    // Venue name from Flex — written always as fallback
   pullsheetStatus:   'color_mm3y3bxj',   // "Not Synced"
   driveFolderUrl:    'link_mm5fa4b8',    // Google Drive Folder link (from Event Folder Registry)
+  flexStatus:        'text_mm5h5gqp', // Flex quote status (Confirmed, Tentative, etc.)
 };
 
 // ── Event Folder Registry helpers (mirrors create-project-from-quote.js) ─────
@@ -325,8 +326,8 @@ async function searchFlex(prefix, maxResults, includeClosed) {
 }
 
 // ── Bulk-fetch all existing projects from the Projects board ──────────────────
-// Returns a Map keyed by lowercase flex number → { id, hasBudget }
-// Used for de-dupe AND to identify existing projects with missing budget data.
+// Returns a Map keyed by lowercase flex number → { id, quoteUUID }
+// Used for de-dupe AND to identify existing projects to re-sync.
 async function fetchExistingProjects() {
   const existing = new Map();
   let cursor = null;
@@ -340,7 +341,7 @@ async function fetchExistingProjects() {
             cursor
             items {
               id
-              column_values(ids: ["${COL.flexProjectNum}", "${COL.estimatedBudget}"]) { id text }
+              column_values(ids: ["${COL.flexProjectNum}", "${COL.flexQuoteUUID}"]) { id text }
             }
           }
         }
@@ -348,13 +349,13 @@ async function fetchExistingProjects() {
     `);
     const page = data?.boards?.[0]?.items_page;
     for (const item of (page?.items || [])) {
-      const flexNumCol = item.column_values?.find(c => c.id === COL.flexProjectNum);
-      const budgetCol  = item.column_values?.find(c => c.id === COL.estimatedBudget);
-      const flexNum    = flexNumCol?.text?.trim();
+      const flexNumCol   = item.column_values?.find(c => c.id === COL.flexProjectNum);
+      const quoteUUIDCol = item.column_values?.find(c => c.id === COL.flexQuoteUUID);
+      const flexNum      = flexNumCol?.text?.trim();
       if (flexNum) {
         existing.set(flexNum.toLowerCase(), {
           id:        item.id,
-          hasBudget: !!(budgetCol?.text && parseFloat(budgetCol.text) > 0),
+          quoteUUID: quoteUUIDCol?.text?.trim() || null,
         });
       }
     }
@@ -369,6 +370,16 @@ async function fetchExistingProjects() {
 // parentElementId must be explicitly requested in codeList to be included in the header-data response
 async function fetchHeaderData(quoteUUID) {
   return flexGet(`/api/element/${quoteUUID}/header-data?codeList=elementNumber,name,typeDefinition,clientId,venueId,personResponsibleId,personResponsibleDefaultEmailAddress,eventDate,plannedStartDate,plannedEndDate,totalPrice,notes,equipmentList,parentElementId`);
+}
+
+// ── Fetch Flex quote status name (Confirmed, Tentative, Cancelled, etc.) ──────
+async function fetchFlexStatus(quoteUUID) {
+  try {
+    const data = await flexGet(`/api/financial-document/${quoteUUID}/key-info`);
+    return data?.status?.name || null;
+  } catch {
+    return null;
+  }
 }
 
 // ── Find equipment list for a quote (same fallback chain as create-project) ───
@@ -401,9 +412,6 @@ async function processQuote(quoteResult, options) {
     const hd = await fetchHeaderData(quoteUUID);
 
     // ── Guard: reject invoices and credit notes ──────────────────────────────
-    // Flex uses the same financial-document domain for quotes AND invoices. The
-    // typeDefinition field (if present) gives us the human-readable type name.
-    // Belt-and-suspenders: also check the quote name from the search result.
     const typeName     = deepExtractName(hd.typeDefinition) || '';
     const INVOICE_RE   = /\binvoice\b|\bcredit\s*note\b|\bcredit\s*memo\b/i;
     if (INVOICE_RE.test(typeName) || INVOICE_RE.test(quoteName)) {
@@ -413,8 +421,6 @@ async function processQuote(quoteResult, options) {
     }
 
     // ── Extract dates ──────────────────────────────────────────────────────
-    // header-data wraps dates in nested objects — use deepExtractName() + regex to extract.
-    //      See create-project-from-quote.js for the same pattern.
     const today = new Date().toISOString().split('T')[0];
     function extractDate(field) {
       const raw = deepExtractName(field);
@@ -433,11 +439,9 @@ async function processQuote(quoteResult, options) {
     }
 
     // ── Extract budget ─────────────────────────────────────────────────────
-    // codeList returns totalPrice for budget; budgetedRevenue is not available via this endpoint
     const budget = extractNumber(hd.totalPrice || hd.budgetedRevenue || hd.resolvedBudgetedRevenue);
 
-    // ── Skip empty shell quotes (numbered drafts with no real data) ────────
-    // These are Flex drafts with no name, client, or eventDate — not real events
+    // ── Skip empty shell quotes ────────────────────────────────────────────
     const hasRealData = hd.clientId?.data || hd.eventDate?.data || hd.name?.data;
     if (!hasRealData) {
       console.log(`[bulk-import] ⏩ Skipping empty shell quote: "${quoteName}" (no client/date/name data)`);
@@ -445,7 +449,6 @@ async function processQuote(quoteResult, options) {
     }
 
     // ── Resolve Event Folder UUID (parent) ─────────────────────────────────
-    // parentElementId is returned as a nested object — extract the UUID from within .data
     let eventFolderUUID = extractUuid(hd.parentElementId?.data) || extractUuid(hd.parentElementId);
     if (!eventFolderUUID) {
       try {
@@ -458,7 +461,6 @@ async function processQuote(quoteResult, options) {
     const equipListUUID = await findEquipmentListUUID(quoteUUID);
 
     // ── Extract contact UUIDs from header data ─────────────────────────────
-    // codeList maps client/venue to hd.clientId / hd.venueId directly, not nested under hd.data
     const clientUUID            = extractUuid(hd.clientId          || hd.data?.client);
     const venueUUID             = extractUuid(hd.venueId           || hd.data?.venue);
     const personResponsibleEmail = hd.personResponsibleDefaultEmailAddress?.data || null;
@@ -473,7 +475,6 @@ async function processQuote(quoteResult, options) {
     if (resolveContacts && venueUUID && venueName === 'Unknown Venue') {
       venueName = await resolveContactName(venueUUID, 'Unknown Venue');
     }
-
 
     // ── Find monday.com Contact item IDs + check Event Folder Registry ───────
     let clientItemId   = null;
@@ -493,7 +494,6 @@ async function processQuote(quoteResult, options) {
     }
 
     // ── Build project name ─────────────────────────────────────────────────
-    // Use Flex quote name directly — same approach as create-project-from-quote
     const projectName = quoteName;
 
     // ── Build column values ────────────────────────────────────────────────
@@ -511,15 +511,12 @@ async function processQuote(quoteResult, options) {
     if (returnDate) columnValues[COL.returnDate] = { date: returnDate };
     if (budget > 0) columnValues[COL.estimatedBudget] = String(budget);
 
-    // Always write the raw name text columns — visible fallback in the board
-    // if the relation lookup fails (e.g. contact not yet in monday)
     if (clientName && !clientName.includes('Unknown')) columnValues[COL.clientNameText] = clientName;
     if (venueName  && !venueName.includes('Unknown'))  columnValues[COL.venueNameText]  = venueName;
 
     if (clientItemId) columnValues[COL.clientRelation] = { item_ids: [parseInt(clientItemId)] };
     if (venueItemId)  columnValues[COL.venueRelation]  = { item_ids: [parseInt(venueItemId)] };
 
-    // Write Drive folder URL if registry already has one for this event folder
     if (registryEntry?.driveUrl) {
       columnValues[COL.driveFolderUrl] = { url: registryEntry.driveUrl, text: 'Google Drive Folder' };
     }
@@ -556,14 +553,7 @@ async function processQuote(quoteResult, options) {
     const itemId = data?.create_item?.id;
     console.log(`[bulk-import] ✅ Created: "${projectName}" → item ${itemId}`);
 
-    // Drive folder creation intentionally omitted here.
-    // ?action=create-folder (in create-project-from-quote.js) is the single
-    // owner of Drive folder creation — it runs once during the Vibe app
-    // project setup flow. Bulk import is a data sync tool only.
-
     // ── Seed Event Folder Registry (non-fatal, fire-and-forget) ───────────
-    // Ensures every imported event has a registry entry so the Vibe app
-    // can find it by UUID when creating the Drive folder later.
     if (eventFolderUUID) {
       writeRegistryEntry({
         itemId:              registryEntry?.itemId || null,
@@ -587,17 +577,6 @@ async function processQuote(quoteResult, options) {
 // ─────────────────────────────────────────────────────────────────────────────
 // ══════════════════════════════════════════════════════════════════════════════
 // GEOCODE-LOCATIONS ACTION
-//
-// Reads the Address (long_text) column on the Contacts & Companies board
-// and populates the Location column via Nominatim (free, no API key).
-//
-// Usage: GET /api/bulk-import-upcoming?action=geocode-locations
-//        GET /api/bulk-import-upcoming?action=geocode-locations&batch=0
-//        GET /api/bulk-import-upcoming?action=geocode-locations&batch=1
-//        GET /api/bulk-import-upcoming?action=geocode-locations&dryRun=true
-//
-// Subject to serverless timeout. Process addresses in batches to stay within time limits.
-// Repeat with batch=0, 1, 2... until response says done: true.
 // ══════════════════════════════════════════════════════════════════════════════
 const GEOCODE_ADDRESS_COL  = 'long_text_mm3vkzc6';
 const GEOCODE_LOCATION_COL = 'location_mm50h12r';
@@ -605,12 +584,9 @@ const GEOCODE_BATCH_SIZE   = 10;
 
 function cleanAddressForGeocode(raw) {
   let addr = raw.trim();
-  // Multi-line: take only the first meaningful line
   const lines = addr.split(/\n/).map(l => l.trim()).filter(Boolean);
   if (lines.length > 1) addr = lines[0];
-  // Strip parenthetical notes: "(Operated by ...)"
   addr = addr.replace(/\s*\(.*?\)\s*/g, '').trim();
-  // Strip "Label: " prefixes like "Corporate HQ: " or "Venue: "
   addr = addr.replace(/^[A-Za-z &\/]+:\s*/i, '').trim();
   return addr || raw.trim();
 }
@@ -627,7 +603,6 @@ async function geocodeAddress(rawAddress) {
   if (!data || data.length === 0) return null;
   const r    = data[0];
   const addr2 = r.address || {};
-  // Nominatim city can be in city, town, village, county, state depending on location type
   const cityName   = addr2.city || addr2.town || addr2.village || addr2.county || addr2.state || null;
   const streetName = addr2.road || addr2.pedestrian || addr2.path || null;
   const houseNum   = addr2.house_number || null;
@@ -646,7 +621,6 @@ async function geocodeAddress(rawAddress) {
 }
 
 async function writeLocationColumn(itemIds, geo) {
-  // Build the location value using monday.com's required nested schema
   const locObj = {
     address: geo.address,
     lat:     geo.lat,
@@ -666,7 +640,6 @@ async function writeLocationColumn(itemIds, geo) {
   };
   const colVal = JSON.stringify(locObj).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 
-  // Update in chunks of 20 (GraphQL complexity limit)
   for (let i = 0; i < itemIds.length; i += 20) {
     const chunk = itemIds.slice(i, i + 20);
     const mutations = chunk
@@ -702,9 +675,6 @@ async function fetchContactsWithAddresses() {
 }
 
 async function handleGeocodeLocations(req, res) {
-  // ── Mode 1: list=true → return address→itemIds map (no geocoding) ──────────
-  // Fast call — just fetches monday.com items and returns the mapping.
-  // Python driver calls this once to get all addresses, then loops geocode-one.
   if (req.query.list === 'true') {
     const allItems = await fetchContactsWithAddresses();
     const addrMap = {};
@@ -720,9 +690,6 @@ async function handleGeocodeLocations(req, res) {
     });
   }
 
-  // ── Mode 2: geocode ONE address and write to monday ────────────────────────
-  // Caller passes ?address=<raw>&itemIds=<id,id,...>
-  // Each call takes ~1-2s (one Nominatim hit + one monday mutation). No timeout risk.
   const rawAddr = req.query.address;
   const rawIds  = req.query.itemIds;
   if (!rawAddr || !rawIds) {
@@ -745,7 +712,6 @@ async function handleGeocodeLocations(req, res) {
     return res.json({ ok: false, address: rawAddr, reason: 'Monday update error: ' + err.message });
   }
 }
-// ── End geocode-locations block ───────────────────────────────────────────────
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin',  '*');
@@ -755,9 +721,7 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.body?.challenge)      return res.status(200).json({ challenge: req.body.challenge });
 
-  // ── GET = cron trigger (Vercel Cron) OR diagnostic mode ──────────────────
   if (req.method === 'GET') {
-    // ── Geocode-locations action ───────────────────────────────────────────
     if (req.query.action === 'geocode-locations') {
       if (!MONDAY_API_KEY) return res.status(500).json({ error: 'MONDAY_API_KEY not configured' });
       try {
@@ -770,9 +734,6 @@ export default async function handler(req, res) {
 
     if (!FLEX_API_KEY) return res.status(500).json({ error: 'FLEX_API_KEY not configured' });
 
-    // ── Cron mode: triggered by Vercel Cron scheduler ─────────────────────
-    // Vercel sends Authorization: Bearer <CRON_SECRET> on every cron invocation.
-    // We validate it here so random GETs can't trigger real imports.
     const cronSecret    = process.env.CRON_SECRET;
     const authHeader    = req.headers['authorization'] ?? '';
     const isCronRequest = cronSecret && authHeader === `Bearer ${cronSecret}`;
@@ -790,7 +751,7 @@ export default async function handler(req, res) {
           batchSize:       5,
           limit:           30,
         });
-        console.log(`[bulk-import] ✅ Cron complete — created: ${result.results.created}, skipped: ${result.results.skipped}, errors: ${result.results.errors}`);
+        console.log(`[bulk-import] ✅ Cron complete — created: ${result.results.created}, skipped: ${result.results.skipped}, errors: ${result.results.errors}, resynced: ${result.results.resynced}`);
         return res.status(200).json({ triggered: 'cron', ...result });
       } catch (err) {
         console.error('[bulk-import] ❌ Cron failed:', err.message);
@@ -798,7 +759,6 @@ export default async function handler(req, res) {
       }
     }
 
-    // ── Diagnostic mode: GET without cron secret = raw Flex search results ─
     const prefix        = req.query.prefix       ?? '26-';
     const maxResults    = parseInt(req.query.maxResults ?? '200', 10);
     const includeClosed = req.query.includeClosed === 'true';
@@ -838,7 +798,6 @@ export default async function handler(req, res) {
   if (!FLEX_API_KEY)    return res.status(500).json({ error: 'FLEX_API_KEY not configured' });
   if (!MONDAY_API_KEY)  return res.status(500).json({ error: 'MONDAY_API_KEY not configured' });
 
-  // ── Parse body ─────────────────────────────────────────────────────────────
   let body = req.body;
   if (typeof body === 'string') { try { body = JSON.parse(body); } catch { body = {}; } }
 
@@ -869,8 +828,6 @@ async function runImport({ prefix, maxResults, includeClosed, dryRun, resolveCon
   const hitLimit   = allResults.length >= maxResults;
 
   const allFinancial = allResults.filter(r => classifyDomain(r) === 'quote');
-  // Pre-filter: Flex invoices share the same financial-document domain as quotes.
-  // Name-based check catches most invoices before we even hit header-data.
   const INVOICE_KEYWORDS = /\binvoice\b|\binvoices\b|\bcredit\s*note\b|\bcredit\s*memo\b/i;
   const quotes = allFinancial.filter(r => {
     const displayName = r.name || r.displayString || r.displayName || '';
@@ -893,23 +850,15 @@ async function runImport({ prefix, maxResults, includeClosed, dryRun, resolveCon
     return !existingProjects.has(num.toLowerCase());
   });
 
-  // Collect existing projects that have no budget — Vibe-created projects land here
-  const budgetBackfillQueue = quotes.filter(q => {
-    const num = q.barcode || (q.name || '').match(/^\d{2}-\d+/)?.[0];
-    if (!num) return false;
-    const existing = existingProjects.get(num.toLowerCase());
-    return existing && !existing.hasBudget;
-  });
-
   const alreadyExists = quotes.length - newQuotes.length;
-  console.log(`[bulk-import] ${newQuotes.length} new quotes to import (${alreadyExists} already in monday.com, ${budgetBackfillQueue.length} need budget backfill)`);
+  console.log(`[bulk-import] ${newQuotes.length} new quotes to import (${alreadyExists} already in monday.com)`);
 
   const toProcess = newQuotes.slice(0, limit);
   const truncated = newQuotes.length > limit;
 
   if (dryRun) console.log('[bulk-import] 🔍 DRY RUN — processing without writing...');
 
-  // ── PHASE 3: Process in batches ──────────────────────────────────────────
+  // ── PHASE 3: Process new quotes in batches ───────────────────────────────
   const results = { created: [], skipped: [], errors: [], dryRun: [] };
   const options = { dryRun, resolveContacts };
 
@@ -931,51 +880,72 @@ async function runImport({ prefix, maxResults, includeClosed, dryRun, resolveCon
     }
   }
 
-  // ── PHASE 3.5: Budget backfill for existing projects missing Estimated Budget ──
-  // Catches projects created via Vibe app (create-folder flow) that never got a
-  // totalPrice written because the quote was priced after the project was created.
-  const backfillResults = { updated: [], skipped: [], errors: [] };
-  if (budgetBackfillQueue.length > 0 && !dryRun) {
-    console.log(`[bulk-import] Phase 3.5: Backfilling budget for ${budgetBackfillQueue.length} projects...`);
-
-    for (const q of budgetBackfillQueue) {
-      const num      = q.barcode || (q.name || '').match(/^\d{2}-\d+/)?.[0];
-      const existing = existingProjects.get(num?.toLowerCase());
-      const quoteId  = q.id || q.elementId || q.uuid;
-
-      if (!existing?.id || !quoteId) {
-        backfillResults.skipped.push({ flexNum: num, reason: 'missing item ID or quote UUID' });
-        continue;
+  // ── PHASE 3.5: Re-sync all existing projects from Flex ────────────────────
+  // Updates budget (totalPrice), actual spend (actualRevenue), and Flex status
+  // for every project in monday.com that has a stored Flex Quote UUID.
+  // Runs on every import — replaces the old narrow $0-budget-only backfill.
+  const resyncResults = { updated: [], skipped: [], errors: [] };
+  if (!dryRun) {
+    // Build queue from ALL existing monday projects that have a Flex Quote UUID
+    const resyncQueue = [];
+    for (const [flexNum, entry] of existingProjects) {
+      if (entry.quoteUUID) {
+        resyncQueue.push({ flexNum, itemId: entry.id, quoteUUID: entry.quoteUUID });
       }
+    }
 
-      try {
-        // Fetch just totalPrice — fast single-field call
-        const hd     = await flexGet(`/api/element/${quoteId}/header-data?codeList=totalPrice`);
-        const budget = extractNumber(hd?.totalPrice);
+    console.log(`[bulk-import] Phase 3.5: Re-syncing ${resyncQueue.length} existing projects from Flex (budget, actual spend, status)...`);
 
-        if (budget > 0) {
+    // Process in small batches to avoid hammering Flex API
+    const RESYNC_BATCH = 5;
+    for (let i = 0; i < resyncQueue.length; i += RESYNC_BATCH) {
+      const batch = resyncQueue.slice(i, i + RESYNC_BATCH);
+
+      await Promise.all(batch.map(async ({ flexNum, itemId, quoteUUID }) => {
+        try {
+          // Fetch financial data and status in parallel — one Flex call each
+          const [hd, statusName] = await Promise.all([
+            flexGet(`/api/element/${quoteUUID}/header-data?codeList=totalPrice,actualRevenue`),
+            fetchFlexStatus(quoteUUID),
+          ]);
+
+          const budget = extractNumber(hd?.totalPrice);
+          const actual = extractNumber(hd?.actualRevenue);
+
+          const colUpdates = {};
+          if (budget > 0) colUpdates[COL.estimatedBudget] = String(budget);
+          if (actual > 0) colUpdates[COL.actualSpend]     = String(actual);
+          if (statusName) colUpdates[COL.flexStatus]       = statusName;
+
+          if (Object.keys(colUpdates).length === 0) {
+            resyncResults.skipped.push({ flexNum, reason: 'no data returned from Flex' });
+            return;
+          }
+
           await mondayRequest(`
             mutation {
-              change_column_value(
-                board_id:  ${PROJECTS_BOARD_ID},
-                item_id:   ${existing.id},
-                column_id: "${COL.estimatedBudget}",
-                value:     ${JSON.stringify(String(budget))}
+              change_multiple_column_values(
+                board_id:      ${PROJECTS_BOARD_ID},
+                item_id:       ${itemId},
+                column_values: ${JSON.stringify(JSON.stringify(colUpdates))}
               ) { id }
             }
           `);
-          console.log(`[bulk-import] 💰 Budget backfilled: ${num} → $${budget} (item ${existing.id})`);
-          backfillResults.updated.push({ flexNum: num, itemId: existing.id, budget });
-        } else {
-          console.log(`[bulk-import] ⏩ Budget backfill skipped: ${num} — Flex reports $0`);
-          backfillResults.skipped.push({ flexNum: num, reason: 'Flex totalPrice is $0' });
+          console.log(`[bulk-import] 🔄 Re-synced: ${flexNum} — budget=$${budget}, actual=$${actual}, status=${statusName || 'n/a'}`);
+          resyncResults.updated.push({ flexNum, itemId, budget, actual, status: statusName });
+        } catch (err) {
+          console.error(`[bulk-import] ❌ Re-sync error for ${flexNum}:`, err.message);
+          resyncResults.errors.push({ flexNum, reason: err.message });
         }
-      } catch (err) {
-        console.error(`[bulk-import] ❌ Budget backfill error for ${num}:`, err.message);
-        backfillResults.errors.push({ flexNum: num, reason: err.message });
+      }));
+
+      // Brief pause between batches to stay polite to Flex API
+      if (i + RESYNC_BATCH < resyncQueue.length) {
+        await new Promise(r => setTimeout(r, 300));
       }
     }
-    console.log(`[bulk-import] Phase 3.5 done — Backfilled: ${backfillResults.updated.length}, Skipped: ${backfillResults.skipped.length}, Errors: ${backfillResults.errors.length}`);
+
+    console.log(`[bulk-import] Phase 3.5 done — Re-synced: ${resyncResults.updated.length}, Skipped: ${resyncResults.skipped.length}, Errors: ${resyncResults.errors.length}`);
   }
 
   // ── PHASE 4: Build summary ────────────────────────────────────────────────
@@ -995,15 +965,17 @@ async function runImport({ prefix, maxResults, includeClosed, dryRun, resolveCon
       created:         results.created.length,
       skipped:         results.skipped.length,
       errors:          results.errors.length,
-      budgetBackfilled: backfillResults.updated.length,
+      resynced:        resyncResults.updated.length,
+      resyncErrors:    resyncResults.errors.length,
       ...(dryRun && { preview: results.dryRun })
     },
-    createdProjects:       results.created,
-    skippedDetails:        results.skipped,
-    errorDetails:          results.errors,
-    budgetBackfillDetails: backfillResults.updated,
+    createdProjects:    results.created,
+    skippedDetails:     results.skipped,
+    errorDetails:       results.errors,
+    resyncDetails:      resyncResults.updated,
+    resyncErrors:       resyncResults.errors,
   };
 
-  console.log(`[bulk-import] ✅ Done — Created: ${results.created.length}, Skipped: ${results.skipped.length}, Budget Backfilled: ${backfillResults.updated.length}, Errors: ${results.errors.length}`);
+  console.log(`[bulk-import] ✅ Done — Created: ${results.created.length}, Skipped: ${results.skipped.length}, Re-synced: ${resyncResults.updated.length}, Errors: ${results.errors.length}`);
   return summary;
 }
