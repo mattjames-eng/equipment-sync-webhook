@@ -82,6 +82,14 @@ async function handleSyncNewCrewMember(req, res) {
     if (!crewItemId) return res.status(400).json({ error: 'Missing pulseId' });
 
     const crewMember    = await fetchCrewMember(crewItemId);
+
+    // Guard: skip test/placeholder items
+    const nameCheck = (crewMember.name || '').trim().toLowerCase();
+    if (!crewMember.name || nameCheck === 'test' || nameCheck.startsWith('test ') || nameCheck.startsWith('test-')) {
+      console.log('[sync-new-crew-member] Skipping test item: "' + crewMember.name + '"');
+      return res.status(200).json({ success: true, message: 'Skipped test item' });
+    }
+
     const newItemId     = await createCrewMemberItem(crewMember.name);
     const columnValues  = buildColumnValues(crewMember.columns);
 
