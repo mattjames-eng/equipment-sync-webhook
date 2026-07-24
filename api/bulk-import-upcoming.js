@@ -908,17 +908,19 @@ async function runImport({ prefix, maxResults, includeClosed, dryRun, resolveCon
         try {
           // Fetch financial data and status in parallel — one Flex call each
           const [hd, statusName] = await Promise.all([
-            flexGet(`/api/element/${quoteUUID}/header-data?codeList=totalPrice,actualRevenue`),
+            flexGet(`/api/element/${quoteUUID}/header-data?codeList=totalPrice,actualRevenue,name`),
             fetchFlexStatus(quoteUUID),
           ]);
 
-          const budget = extractNumber(hd?.totalPrice);
-          const actual = extractNumber(hd?.actualRevenue);
+          const budget    = extractNumber(hd?.totalPrice);
+          const actual    = extractNumber(hd?.actualRevenue);
+          const quoteName = deepExtractName(hd?.name);
 
           const colUpdates = {};
-          if (budget > 0) colUpdates[COL.estimatedBudget] = String(budget);
-          if (actual > 0) colUpdates[COL.actualSpend]     = String(actual);
-          if (statusName) colUpdates[COL.flexStatus]       = statusName;
+          if (budget > 0)    colUpdates[COL.estimatedBudget] = String(budget);
+          if (actual > 0)    colUpdates[COL.actualSpend]     = String(actual);
+          if (statusName)    colUpdates[COL.flexStatus]      = statusName;
+          if (quoteName)     colUpdates['name']              = quoteName;
 
           if (Object.keys(colUpdates).length === 0) {
             resyncResults.skipped.push({ flexNum, reason: 'no data returned from Flex' });
@@ -945,8 +947,8 @@ async function runImport({ prefix, maxResults, includeClosed, dryRun, resolveCon
             console.log(`[bulk-import] 🗃️  Auto-archived cancelled project: ${flexNum} (item ${itemId})`);
           }
 
-          console.log(`[bulk-import] 🔄 Re-synced: ${flexNum} — budget=$${budget}, actual=$${actual}, status=${statusName || 'n/a'}`);
-          resyncResults.updated.push({ flexNum, itemId, budget, actual, status: statusName, archived: statusName === 'Cancelled' });
+          console.log(`[bulk-import] 🔄 Re-synced: ${flexNum} — name="${quoteName || 'unchanged'}", budget=$${budget}, actual=$${actual}, status=${statusName || 'n/a'}`);
+          resyncResults.updated.push({ flexNum, itemId, name: quoteName, budget, actual, status: statusName, archived: statusName === 'Cancelled' });
         } catch (err) {
           console.error(`[bulk-import] ❌ Re-sync error for ${flexNum}:`, err.message);
           resyncResults.errors.push({ flexNum, reason: err.message });
