@@ -466,6 +466,129 @@ export default async function handler(req, res) {
     }
   }
 
+
+  // ────────────────────────────────────────────────────────────────
+  // Fabrication & Repair Projects — Cost Rollup
+  // Board: 18422080455 (parent) / 18422080481 (subitems)
+  //
+  // ROUTE: fab-sync  (via rewrite /api/fab-cost-rollup)
+  //   Triggered when Expenses, Duration, or Labor Rate changes on
+  //   any work session subitem. Sums all subitems and writes
+  //   Total Actual + Variance back to the parent project.
+  //
+  // ROUTE: fab-recalc
+  //   Manual recalc triggered from parent item button/status.
+  //
+  // Parent columns:
+  //   Materials Estimate: numeric_mm59sfsv
+  //   Labor Estimate:     numeric_mm595fdv
+  //   Total Actual:       numeric_mm5nwvwx
+  //   Variance:           numeric_mm5nzdqa
+  //
+  // Subitem columns:
+  //   Duration (hrs):     numeric_mm59ez2z
+  //   Labor Rate ($/hr):  numeric_mm5n7ms
+  //   Expenses ($):       numeric_mm5978t7
+  // ────────────────────────────────────────────────────────────────
+  if (route === 'fab-sync' || route === 'fab-recalc') {
+    const FAB_BOARD_ID           = '18422080455';
+    const MATERIALS_ESTIMATE_COL = 'numeric_mm59sfsv';
+    const LABOR_ESTIMATE_COL     = 'numeric_mm595fdv';
+    const TOTAL_ACTUAL_COL       = 'numeric_mm5nwvwx';
+    const VARIANCE_COL           = 'numeric_mm5nzdqa';
+    const DURATION_COL           = 'numeric_mm59ez2z';
+    const LABOR_RATE_COL         = 'numeric_mm5n7ms';
+    const EXPENSES_COL           = 'numeric_mm5978t7';
+    const WATCHED_COLS           = [DURATION_COL, LABOR_RATE_COL, EXPENSES_COL];
+
+    // fab-sync: skip non-cost column changes
+    if (route === 'fab-sync' && event.columnId && !WATCHED_COLS.includes(event.columnId)) {
+      console.log(`⏭️ fab-sync — skipping non-cost column: ${event.columnId}`);
+      return res.status(200).json({ success: true, skipped: true, reason: 'Non-cost column change' });
+    }
+
+    const parentItemId = route === 'fab-recalc'
+      ? (event.pulseId || event.itemId)
+      : event.parentItemId;
+
+    if (!parentItemId) {
+      console.error('❌ fab cost rollup: No parentItemId in payload:', JSON.stringify(event));
+      return res.status(400).json({ success: false, error: 'Missing parentItemId' });
+    }
+
+    console.log(`📥 Fab cost rollup triggered (${route}) — project: ${parentItemId}`);
+    try {
+      const result = await mondayQuery(
+        `query($itemId: [ID!]) {
+          items(ids: $itemId) {
+            id name
+            column_values(ids: ["${MATERIALS_ESTIMATE_COL}", "${LABOR_ESTIMATE_COL}"]) {
+              id ... on NumbersValue { number }
+            }
+            subitems {
+              id
+              column_values(ids: ["${DURATION_COL}", "${LABOR_RATE_COL}", "${EXPENSES_COL}"]) {
+                id ... on NumbersValue { number }
+              }
+            }
+          }
+        }`,
+        { itemId: [parentItemId.toString()] }
+      );
+
+      const item = result.data?.items?.[0];
+      if (!item) throw new Error(`Item ${parentItemId} not found`);
+
+      let materialsEstimate = 0, laborEstimate = 0;
+      for (const col of item.column_values || []) {
+        if (col.id === MATERIALS_ESTIMATE_COL && typeof col.number === 'number') materialsEstimate = col.number;
+        if (col.id === LABOR_ESTIMATE_COL     && typeof col.number === 'number') laborEstimate     = col.number;
+      }
+
+      let materialsActual = 0, laborActual = 0;
+      for (const subitem of item.subitems || []) {
+        let duration = 0, laborRate = 0, expenses = 0;
+        for (const col of subitem.column_values || []) {
+          if (col.id === DURATION_COL   && typeof col.number === 'number') duration  = col.number;
+          if (col.id === LABOR_RATE_COL && typeof col.number === 'number') laborRate = col.number;
+          if (col.id === EXPENSES_COL   && typeof col.number === 'number') expenses  = col.number;
+        }
+        materialsActual += expenses;
+        laborActual     += duration * laborRate;
+      }
+
+      const totalEstimate = Math.round((materialsEstimate + laborEstimate) * 100) / 100;
+      const totalActual   = Math.round((materialsActual   + laborActual)   * 100) / 100;
+      const variance      = Math.round((totalEstimate     - totalActual)   * 100) / 100;
+
+      console.log(`📊 ${item.name}: estimate $${totalEstimate} | actual $${totalActual} | variance $${variance}`);
+
+      await mondayQuery(
+        `mutation($boardId: ID!, $itemId: ID!, $values: JSON!) {
+          change_multiple_column_values(board_id: $boardId, item_id: $itemId, column_values: $values) { id }
+        }`,
+        {
+          boardId: FAB_BOARD_ID,
+          itemId:  parentItemId.toString(),
+          values:  JSON.stringify({ [TOTAL_ACTUAL_COL]: totalActual, [VARIANCE_COL]: variance })
+        }
+      );
+
+      console.log(`✅ Fab rollup written — Total Actual: $${totalActual} | Variance: $${variance}`);
+      return res.status(200).json({
+        success: true, parentItemId, name: item.name,
+        sessionCount: item.subitems?.length ?? 0,
+        materialsEstimate, laborEstimate, totalEstimate,
+        materialsActual: Math.round(materialsActual * 100) / 100,
+        laborActual:     Math.round(laborActual * 100) / 100,
+        totalActual, variance
+      });
+    } catch (err) {
+      console.error('❌ Fab cost rollup failed:', err.message);
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  }
+
   // ────────────────────────────────────────────────────────────────
   // Unknown route fallback
   // ────────────────────────────────────────────────────────────────
