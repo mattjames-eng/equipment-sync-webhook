@@ -47,6 +47,14 @@
     {
       "source": "/api/inventory/decommission",
       "destination": "/api/contacts/pull-from-flex?route=decommission"
+    },
+    {
+      "source": "/api/fab-cost-rollup",
+      "destination": "/api/expenses/sync?route=fab-sync"
+    },
+    {
+      "source": "/api/fab-cost-rollup/recalc",
+      "destination": "/api/expenses/sync?route=fab-recalc"
     }
   ],
   "functions": {
