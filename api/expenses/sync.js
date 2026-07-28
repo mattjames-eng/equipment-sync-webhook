@@ -22,8 +22,10 @@
 //   3. Endpoint sums all sessions → updates WO Actual Hours + Total Session Expenses
 //   4. Looks up linked Project → recalculates full Actual Spend for that project
 //
-// NOTE: monday.com has no delete_subitem webhook event.
-// Zero out amount/hours before deleting, or use the Recalculate Spend button.
+// NOTE: monday.com fires a delete_item event on the subitems board when a session
+// is deleted. Register a delete_item webhook on subitems board 18422080481 pointing
+// to /api/fab-cost-rollup — fab-sync handles it automatically since delete events
+// carry no columnId, so the column-filter check passes and it falls through to recalc.
 //
 // Board IDs: see constants at top of this file.
 //
@@ -501,10 +503,15 @@ export default async function handler(req, res) {
     const EXPENSES_COL           = 'numeric_mm5978t7';
     const WATCHED_COLS           = [DURATION_COL, LABOR_RATE_COL, EXPENSES_COL];
 
-    // fab-sync: skip non-cost column changes
+    // fab-sync: skip non-cost column changes (delete events have no columnId — always pass through)
     if (route === 'fab-sync' && event.columnId && !WATCHED_COLS.includes(event.columnId)) {
       console.log(`⏭️ fab-sync — skipping non-cost column: ${event.columnId}`);
       return res.status(200).json({ success: true, skipped: true, reason: 'Non-cost column change' });
+    }
+
+    // Log delete events explicitly for traceability
+    if (route === 'fab-sync' && !event.columnId) {
+      console.log(`🗑️ fab-sync — session subitem deleted (id: ${event.pulseId || event.itemId}), recalculating parent ${event.parentItemId}`);
     }
 
     const parentItemId = route === 'fab-recalc'
