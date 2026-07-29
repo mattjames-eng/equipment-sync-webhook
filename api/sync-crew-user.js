@@ -7,6 +7,10 @@
 //   ?route=contracts     →  triggers on Crew Contracts "Tech/Engineer" relation
 //   ?route=parse-travel  →  AI-parses raw booking confirmation text → structured fields
 //                           (called via rewrite: POST /api/travel/parse)
+//   ?route=new-member    →  new Crew DB item → create Contact on Contacts & Companies
+//                           (rewrite: POST /api/sync-new-crew-member)
+//   ?route=sync-login    →  Crew Assignment linked → populate Crew Log In People column
+//                           (rewrite: POST /api/sync-new-crew-member?route=sync-login)
 
 const MONDAY_API_URL = 'https://api.monday.com/v2';
 
@@ -22,6 +26,24 @@ const ROUTE_CONFIG = {
     targetBoardId:  '18415879229',
     targetColumnId: 'multiple_person_mm4me99f',  // "Crew User" (new column)
   },
+;
+
+// ── New Crew Member + Login Sync constants ──────────────────────────────────
+// Merged from api/sync-new-crew-member.js (removed to stay under Vercel 12-function limit)
+const NCM_CONTACTS_BOARD_ID      = '18415573401';
+const NCM_CONTACTS_DEFAULT_GROUP = 'group_mm3y3xvh';
+const NCM_CREW_ASSIGNMENTS_BOARD = '18415879040';
+const NCM_CREW_LOGIN_COLUMN      = 'multiple_person_mm3yfksh';
+
+const NCM_COLUMN_MAP = {
+  email_mm3yfhmg:     { id: 'email_mm3vezw3',     type: 'email'     }, // Email
+  phone_mm3yd44g:     { id: 'phone_mm3vwfvj',     type: 'phone'     }, // Phone
+  text_mm4cmcr2:      { id: 'text_mm4f57rc',      type: 'text'      }, // Drivers License #
+  long_text_mm3yj0b2: { id: 'long_text_mm3y8wh4', type: 'long_text' }, // Notes → Account Notes
+};
+
+const NCM_FIXED_VALUES = {
+  dropdown_mm3vm6jh: { ids: [19] }, // Company Type = "Freelance Contractor"
 };
 
 async function mondayQuery(apiKey, query) {
@@ -51,6 +73,12 @@ export default async function handler(req, res) {
   if (route === 'parse-travel') {
     return handleParseTravel(req, res);
   }
+
+  // ── New crew member → Contact sync ─────────────────────────────────────
+  if (route === 'new-member') return handleSyncNewCrewMember(req, res);
+
+  // ── Crew Assignment linked → populate Crew Log In ──────────────────────
+  if (route === 'sync-login') return handleSyncLoginRoute(req, res);
 
   // ── Standard crew-user sync routes ───────────────────────────────────────
   const cfg = ROUTE_CONFIG[route];
@@ -579,4 +607,232 @@ function toHourObj(timeStr) {
   const minute = parseInt(mStr || '0', 10);
   if (isNaN(hour)) return null;
   return { hour, minute };
+}
+
+// =============================================================================
+// NEW CREW MEMBER SYNC — merged from api/sync-new-crew-member.js
+// =============================================================================
+
+// Thin wrapper so NCM handlers use the same API key pattern as this file
+async function ncmRequest(query) {
+  const result = await mondayQuery(process.env.MONDAY_API_KEY, query);
+  if (result.errors) throw new Error(JSON.stringify(result.errors));
+  return result.data;
+}
+
+// ── HANDLER: new Crew DB item → create Contact on Contacts & Companies ────────
+async function handleSyncNewCrewMember(req, res) {
+  if (req.method === 'POST' && req.body?.challenge)
+    return res.status(200).json({ challenge: req.body.challenge });
+  if (req.method === 'GET') return res.status(200).json({ status: 'ok' });
+
+  let body = req.body;
+  if (typeof body === 'string') {
+    try { body = JSON.parse(body); } catch { return res.status(400).json({ error: 'Invalid JSON' }); }
+  }
+
+  try {
+    const event = body.event;
+    if (!event) return res.status(400).json({ error: 'Missing event data' });
+
+    const crewItemId = event.pulseId;
+    if (!crewItemId) return res.status(400).json({ error: 'Missing pulseId' });
+
+    const crewMember = await ncmFetchCrewMember(crewItemId);
+
+    const nameCheck = (crewMember.name || '').trim().toLowerCase();
+    if (!crewMember.name || nameCheck === 'test' || nameCheck.startsWith('test ') || nameCheck.startsWith('test-')) {
+      console.log('[new-member] Skipping test item: "' + crewMember.name + '"');
+      return res.status(200).json({ success: true, message: 'Skipped test item' });
+    }
+
+    const email = crewMember.columns['email_mm3yfhmg']?.text || null;
+    const existingId = await ncmFindExistingContact(crewMember.name, email);
+    if (existingId) {
+      console.log(`[new-member] Contact already exists: "${crewMember.name}" (${existingId}) — skipping`);
+      return res.status(200).json({ success: true, message: 'Contact already exists', existingContactId: existingId });
+    }
+
+    const newContactId = await ncmCreateContactItem(crewMember.name);
+    const columnValues = ncmBuildColumnValues(crewMember.columns);
+    const finalValues  = { ...columnValues, ...NCM_FIXED_VALUES };
+
+    if (Object.keys(finalValues).length > 0) {
+      await ncmUpdateContactColumns(newContactId, finalValues);
+    }
+
+    console.log(`[new-member] Created contact "${crewMember.name}" (ID: ${newContactId})`);
+    return res.status(200).json({ success: true, crewItemId, newContactId });
+
+  } catch (error) {
+    console.error('[new-member] Error:', error);
+    return res.status(500).json({ error: error.message });
+  }
+}
+
+// ── HANDLER: Crew Assignment linked → populate Crew Log In People column ──────
+async function handleSyncLoginRoute(req, res) {
+  if (req.method === 'POST' && req.body?.challenge)
+    return res.status(200).json({ challenge: req.body.challenge });
+  if (req.method === 'GET') return res.status(200).json({ status: 'ok' });
+
+  let body = req.body;
+  if (typeof body === 'string') {
+    try { body = JSON.parse(body); } catch { return res.status(400).json({ error: 'Invalid JSON' }); }
+  }
+
+  try {
+    const event = body.event;
+    if (!event) return res.status(400).json({ error: 'Missing event data' });
+
+    const assignmentItemId = event.pulseId;
+    if (!assignmentItemId) return res.status(400).json({ error: 'Missing pulseId' });
+
+    console.log(`[sync-login] Processing Crew Assignment: ${assignmentItemId}`);
+
+    const assignmentData = await ncmRequest(`
+      query {
+        items(ids: [${assignmentItemId}]) {
+          id name
+          column_values(ids: ["board_relation_mm3y1w67"]) {
+            id
+            ... on BoardRelationValue { linked_items { id name } }
+          }
+        }
+      }
+    `);
+
+    const assignment   = assignmentData.items?.[0];
+    if (!assignment) throw new Error(`Assignment ${assignmentItemId} not found`);
+
+    const crewRelCol     = assignment.column_values.find(c => c.id === 'board_relation_mm3y1w67');
+    const crewMemberId   = crewRelCol?.linked_items?.[0]?.id;
+    const crewMemberName = crewRelCol?.linked_items?.[0]?.name || 'Unknown';
+
+    if (!crewMemberId) {
+      console.log('[sync-login] No crew member linked yet — skipping');
+      return res.status(200).json({ success: true, message: 'No crew member linked — skipping' });
+    }
+
+    console.log(`[sync-login] Crew Member: ${crewMemberName} (ID: ${crewMemberId})`);
+
+    const crewData = await ncmRequest(`
+      query {
+        items(ids: [${crewMemberId}]) {
+          column_values(ids: ["email_mm3yfhmg"]) { id text }
+        }
+      }
+    `);
+
+    const emailText = crewData.items?.[0]?.column_values?.find(c => c.id === 'email_mm3yfhmg')?.text?.trim();
+
+    if (!emailText) {
+      console.log(`[sync-login] No email on crew member ${crewMemberId} — cannot match monday user`);
+      return res.status(200).json({ success: true, message: 'No email found — cannot match monday user' });
+    }
+
+    const usersData = await ncmRequest(`
+      query { users(emails: ["${emailText}"]) { id name email } }
+    `);
+
+    const mondayUser = usersData.users?.[0];
+
+    if (!mondayUser) {
+      console.log(`[sync-login] No monday user found for email: ${emailText}`);
+      return res.status(200).json({ success: true, message: `No monday account found for ${emailText}` });
+    }
+
+    console.log(`[sync-login] Matched: ${mondayUser.name} (ID: ${mondayUser.id})`);
+
+    await ncmRequest(`
+      mutation {
+        change_column_value(
+          item_id: ${assignmentItemId},
+          board_id: ${NCM_CREW_ASSIGNMENTS_BOARD},
+          column_id: "${NCM_CREW_LOGIN_COLUMN}",
+          value: "{\"personsAndTeams\": [{\"id\": ${mondayUser.id}, \"kind\": \"person\"}]}"
+        ) { id }
+      }
+    `);
+
+    console.log(`[sync-login] Crew Log In populated for ${crewMemberName}`);
+    return res.status(200).json({
+      success: true, assignmentItemId, crewMemberName,
+      mondayUser: { id: mondayUser.id, name: mondayUser.name, email: mondayUser.email }
+    });
+
+  } catch (error) {
+    console.error('[sync-login] Error:', error);
+    return res.status(500).json({ error: error.message });
+  }
+}
+
+// ── NCM helpers ───────────────────────────────────────────────────────────────
+
+async function ncmFetchCrewMember(itemId) {
+  const data = await ncmRequest(
+    `query { items(ids: [${itemId}]) { id name column_values { id value text type } } }`
+  );
+  const item = data.items[0];
+  const columns = {};
+  item.column_values.forEach(col => { columns[col.id] = { value: col.value, text: col.text }; });
+  return { id: item.id, name: item.name, columns };
+}
+
+async function ncmFindExistingContact(name, email) {
+  const nameData = await ncmRequest(`
+    query {
+      items_page_by_column_values(
+        board_id: ${NCM_CONTACTS_BOARD_ID}, limit: 5,
+        columns: [{ column_id: "name", column_values: [${JSON.stringify(name)}] }]
+      ) { items { id name } }
+    }
+  `);
+  const byName = nameData.items_page_by_column_values?.items || [];
+  if (byName.length > 0) return byName[0].id;
+
+  if (email) {
+    const emailData = await ncmRequest(`
+      query {
+        items_page_by_column_values(
+          board_id: ${NCM_CONTACTS_BOARD_ID}, limit: 5,
+          columns: [{ column_id: "email_mm3vezw3", column_values: [${JSON.stringify(email)}] }]
+        ) { items { id name } }
+      }
+    `);
+    const byEmail = emailData.items_page_by_column_values?.items || [];
+    if (byEmail.length > 0) return byEmail[0].id;
+  }
+
+  return null;
+}
+
+async function ncmCreateContactItem(name) {
+  const data = await ncmRequest(
+    `mutation { create_item(board_id: ${NCM_CONTACTS_BOARD_ID}, group_id: "${NCM_CONTACTS_DEFAULT_GROUP}", item_name: ${JSON.stringify(name)}) { id } }`
+  );
+  return data.create_item.id;
+}
+
+function ncmBuildColumnValues(sourceColumns) {
+  const result = {};
+  for (const [srcId, mapping] of Object.entries(NCM_COLUMN_MAP)) {
+    const source = sourceColumns[srcId];
+    if (!source || (!source.value && !source.text)) continue;
+    let val = null;
+    switch (mapping.type) {
+      case 'email':     if (source.text) val = { email: source.text, text: source.text }; break;
+      case 'phone':     if (source.text) val = { phone: source.text.replace(/\D/g, ''), countryShortName: 'US' }; break;
+      case 'text':      if (source.text) val = source.text; break;
+      case 'long_text': if (source.text) val = { text: source.text }; break;
+    }
+    if (val !== null) result[mapping.id] = val;
+  }
+  return result;
+}
+
+async function ncmUpdateContactColumns(itemId, columnValues) {
+  await ncmRequest(
+    `mutation { change_multiple_column_values(item_id: ${itemId}, board_id: ${NCM_CONTACTS_BOARD_ID}, column_values: ${JSON.stringify(JSON.stringify(columnValues))}) { id } }`
+  );
 }
