@@ -42,10 +42,12 @@ const VENUES_GROUP        = 'group_mm3v505y';  // Venues
 const COL = {
   flexContactId:   'text_mm56w1vz',
   flexContactType: 'dropdown_mm56cf0c',
+  companyType:     'dropdown_mm3vm6jh',  // used by push-to-flex route
   address:         'long_text_mm3vkzc6',
   email:           'email_mm3vezw3',
   phone:           'phone_mm3vwfvj',
   usualContact:    'text_mm3vg7e8',
+  accountNotes:    'long_text_mm4fc8h7', // used by push-to-flex route
 };
 
 // ================================================================
@@ -1845,6 +1847,11 @@ export default async function handler(req, res) {
   // Rewritten from:  POST /api/pos/pull-from-flex  (vercel.json rewrite)
   if ((req.query?.route || '') === 'pos') return handlePOSync(req, res);
 
+  // ── PUSH-TO-FLEX ROUTE ───────────────────────────────────────────────────
+  // Merged from api/contacts/push-to-flex.js
+  // Handles monday webhook events and bulk GET sync: POST (or GET?bulk=true)
+  if (req.query?.route === 'push') return handlePushToFlex(req, res);
+
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
   console.log('\n🚀 pull-from-flex starting');
@@ -1927,4 +1934,305 @@ export default async function handler(req, res) {
     console.error('❌ pull-from-flex fatal error:', err);
     return res.status(500).json({ error: err.message });
   }
+}
+
+// =============================================================================
+// PUSH-TO-FLEX — merged from api/contacts/push-to-flex.js
+// Handles monday.com → Flex contact sync (create/update direction).
+// Invoked via: POST /api/contacts/pull-from-flex?route=push
+// Rewritten from: POST /api/contacts/push-to-flex  (vercel.json rewrite)
+// =============================================================================
+
+// ── MAIN PUSH HANDLER ─────────────────────────────────────────────────────────
+async function handlePushToFlex(req, res) {
+  // BULK SYNC MODE (GET ?bulk=true)
+  if (req.method === 'GET' && req.query?.bulk === 'true') {
+    const cursor    = req.query.cursor   || null;
+    const batchSize = Math.min(parseInt(req.query.batchSize) || 10, 20);
+    console.log(`\n📦 Bulk push-to-flex | cursor: ${cursor || 'start'} | batchSize: ${batchSize}`);
+    try {
+      const { items, nextCursor } = await ptfGetMondayItemsWithoutFlexId(cursor, batchSize);
+      console.log(`📋 Found ${items.length} contacts without Flex UUID`);
+      const results = await Promise.allSettled(items.map(item => ptfSyncContactToFlex(item)));
+      const successes = [], errors = [];
+      results.forEach((r, i) => {
+        if (r.status === 'fulfilled') successes.push(r.value);
+        else { errors.push({ itemId: items[i].id, name: items[i].name, error: r.reason?.message }); }
+      });
+      const hasMore = items.length === batchSize && !!nextCursor;
+      return res.status(200).json({ processed: successes.length, errors, hasMore, nextCursor: hasMore ? nextCursor : null, batchDetail: successes });
+    } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
+  }
+
+  if (req.body?.challenge) return res.status(200).json({ challenge: req.body.challenge });
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+
+  let body = req.body;
+  if (typeof body === 'string') {
+    try { body = JSON.parse(body); } catch { return res.status(400).json({ error: 'Invalid JSON' }); }
+  }
+
+  const event = body?.event;
+  if (!event) return res.status(400).json({ error: 'Missing event data' });
+
+  const itemId  = event.pulseId || event.itemId;
+  if (!itemId)  return res.status(400).json({ error: 'Missing item ID in event' });
+
+  const boardId = String(event.boardId || '');
+  if (boardId && boardId !== CONTACTS_BOARD_ID) {
+    return res.status(200).json({ skipped: true, reason: 'wrong board' });
+  }
+
+  console.log(`\n🚀 push-to-flex | event: ${event.type} | item: ${itemId}`);
+
+  try {
+    const item = await ptfGetMondayItem(itemId);
+    if (!item) return res.status(200).json({ skipped: true, reason: 'item not found' });
+
+    const columns        = ptfParseColumnValues(item.column_values);
+    const existingFlexId = columns[COL.flexContactId]?.text?.trim();
+    const addressText    = columns[COL.address]?.text || '';
+
+    if (existingFlexId) {
+      const payload = ptfBuildFlexPayload(item, columns, itemId, false);
+      await ptfUpdateFlexContact(existingFlexId, payload);
+      await ptfSyncFlexAddress(existingFlexId, ptfParseAddress(addressText));
+      return res.status(200).json({ ok: true, action: 'updated', flexId: existingFlexId, itemId });
+    } else {
+      const result = await ptfSyncContactToFlex(item);
+      return res.status(200).json({ ok: true, ...result });
+    }
+  } catch (err) {
+    console.error('❌ push-to-flex error:', err);
+    return res.status(500).json({ error: err.message });
+  }
+}
+
+// ── Address helpers ───────────────────────────────────────────────────────────
+
+function ptfParseAddress(raw) {
+  if (!raw || !raw.trim()) return null;
+  const lines = raw.split(/\n/).map(l => l.trim()).filter(Boolean);
+  if (lines.length === 1 && lines[0].includes(',')) {
+    const parts = lines[0].split(',').map(s => s.trim());
+    lines.length = 0; lines.push(...parts);
+  }
+  const addr = { line1: '', city: '', stateOrProvince: '', postalCode: '', country: '', defaultShipping: true, defaultMailing: true };
+  addr.line1 = lines[0] || '';
+  if (lines[1]) {
+    const m = lines[1].match(/^(.+?),\s*([A-Za-z\s]+?)\s*,?\s*(\d{5}(?:-\d{4})?)?$/);
+    if (m) { addr.city = m[1].trim(); addr.stateOrProvince = m[2].trim(); addr.postalCode = (m[3] || '').trim(); }
+    else { addr.city = lines[1]; }
+  }
+  if (lines[2]) {
+    const isZip = /^\d{5}(-\d{4})?$/.test(lines[2].trim());
+    if (isZip && !addr.postalCode) addr.postalCode = lines[2].trim();
+    else if (!isZip) {
+      const c = lines[2].trim().toUpperCase();
+      addr.country = (c === 'US' || c === 'USA' || c === 'UNITED STATES') ? 'United States' : lines[2].trim();
+    }
+  }
+  return addr;
+}
+
+async function ptfFetchFlexAddresses(flexContactId) {
+  try {
+    const res = await fetch(`${FLEX_BASE_URL}/api/address/contact-addresses?contactId=${encodeURIComponent(flexContactId)}`,
+      { headers: { 'X-Auth-Token': FLEX_API_KEY, 'Accept': 'application/json' } });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return Array.isArray(data) ? data : [];
+  } catch { return []; }
+}
+
+async function ptfDeleteFlexAddresses(flexContactId, idsToDelete) {
+  if (!idsToDelete.length) return;
+  await fetch(`${FLEX_BASE_URL}/api/address/contact-addresses/${flexContactId}`, {
+    method: 'DELETE',
+    headers: { 'X-Auth-Token': FLEX_API_KEY, 'Content-Type': 'application/json', 'Accept': 'application/json' },
+    body: JSON.stringify(idsToDelete),
+  });
+}
+
+async function ptfUpdateFlexAddress(flexContactId, addressId, addrPayload) {
+  const res = await fetch(`${FLEX_BASE_URL}/api/address/contact-addresses/${flexContactId}/${addressId}`, {
+    method: 'PUT',
+    headers: { 'X-Auth-Token': FLEX_API_KEY, 'Content-Type': 'application/json', 'Accept': 'application/json' },
+    body: JSON.stringify({ ...addrPayload, id: addressId, contactId: flexContactId }),
+  });
+  if (!res.ok) console.warn(`⚠️ updateFlexAddress HTTP ${res.status}`);
+}
+
+async function ptfCreateFlexAddress(flexContactId, addrPayload) {
+  const res = await fetch(`${FLEX_BASE_URL}/api/address/contact-addresses/${flexContactId}`, {
+    method: 'POST',
+    headers: { 'X-Auth-Token': FLEX_API_KEY, 'Content-Type': 'application/json', 'Accept': 'application/json' },
+    body: JSON.stringify({ ...addrPayload, contactId: flexContactId }),
+  });
+  if (!res.ok) console.warn(`⚠️ createFlexAddress HTTP ${res.status}`);
+}
+
+async function ptfSyncFlexAddress(flexContactId, addrPayload) {
+  if (!addrPayload) return;
+  const existing = await ptfFetchFlexAddresses(flexContactId);
+  if (existing.length === 0) {
+    await ptfCreateFlexAddress(flexContactId, addrPayload);
+  } else {
+    const [keep, ...extras] = existing;
+    if (extras.length > 0) await ptfDeleteFlexAddresses(flexContactId, extras.map(a => a.id));
+    await ptfUpdateFlexAddress(flexContactId, keep.id, addrPayload);
+  }
+}
+
+// ── Monday helpers (push direction) ──────────────────────────────────────────
+
+async function ptfGetMondayItemsWithoutFlexId(cursor, limit) {
+  const paginationClause = cursor
+    ? `cursor: "${cursor}"`
+    : `query_params: { rules: [{ column_id: "${COL.flexContactId}", compare_value: [], operator: is_empty }] }`;
+  const query = `
+    query {
+      boards(ids: [${CONTACTS_BOARD_ID}]) {
+        items_page(limit: ${limit} ${paginationClause}) {
+          cursor
+          items {
+            id name
+            column_values(ids: ["${COL.flexContactId}", "${COL.flexContactType}", "${COL.address}", "${COL.email}", "${COL.phone}", "${COL.usualContact}"]) {
+              id value text
+            }
+          }
+        }
+      }
+    }
+  `;
+  const response = await fetch(MONDAY_API_URL, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_KEY },
+    body: JSON.stringify({ query }),
+  });
+  const result = await response.json();
+  const page   = result.data?.boards?.[0]?.items_page;
+  if (!page) throw new Error(`items_page query failed: ${JSON.stringify(result.errors)}`);
+  return { items: page.items || [], nextCursor: page.cursor || null };
+}
+
+async function ptfSyncContactToFlex(item) {
+  const columns        = ptfParseColumnValues(item.column_values);
+  const existingFlexId = columns[COL.flexContactId]?.text?.trim();
+  if (existingFlexId) return { action: 'skipped', itemId: item.id, flexId: existingFlexId };
+
+  const payload       = ptfBuildFlexPayload(item, columns, item.id);
+  const existingByExt = await ptfFindFlexContactByExternalNumber(item.id);
+  if (existingByExt) {
+    await ptfWriteFlexIdToMonday(item.id, existingByExt);
+    return { action: 'linked', itemId: item.id, flexId: existingByExt };
+  }
+
+  const flexId = await ptfCreateFlexContact(payload);
+  await ptfWriteFlexIdToMonday(item.id, flexId);
+  return { action: 'created', itemId: item.id, flexId };
+}
+
+async function ptfGetMondayItem(itemId) {
+  const query = `
+    query {
+      items(ids: [${itemId}]) {
+        id name
+        column_values(ids: ["${COL.flexContactId}", "${COL.flexContactType}", "${COL.address}", "${COL.email}", "${COL.phone}", "${COL.usualContact}"]) {
+          id value text
+        }
+      }
+    }
+  `;
+  const response = await fetch(MONDAY_API_URL, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_KEY },
+    body: JSON.stringify({ query }),
+  });
+  const result = await response.json();
+  return result.data?.items?.[0] || null;
+}
+
+function ptfParseColumnValues(columnValues) {
+  const map = {};
+  for (const col of (columnValues || [])) {
+    try { map[col.id] = { raw: col.value, text: col.text, parsed: col.value ? JSON.parse(col.value) : null }; }
+    catch { map[col.id] = { raw: col.value, text: col.text, parsed: null }; }
+  }
+  return map;
+}
+
+async function ptfWriteFlexIdToMonday(itemId, flexUUID) {
+  const mutation = `
+    mutation {
+      change_multiple_column_values(
+        board_id: ${CONTACTS_BOARD_ID}, item_id: ${itemId},
+        column_values: ${JSON.stringify(JSON.stringify({ [COL.flexContactId]: flexUUID }))}
+      ) { id }
+    }
+  `;
+  const response = await fetch(MONDAY_API_URL, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_KEY },
+    body: JSON.stringify({ query: mutation }),
+  });
+  const result = await response.json();
+  if (result.errors) throw new Error(`Monday write-back failed: ${JSON.stringify(result.errors)}`);
+  console.log(`✅ Flex Contact ID written to Monday item ${itemId}: ${flexUUID}`);
+}
+
+function ptfBuildFlexPayload(item, columns, mondayItemId, includeAddress = true) {
+  const flexType    = columns[COL.flexContactType]?.text || '';
+  const emailText   = columns[COL.email]?.text || '';
+  const phoneText   = columns[COL.phone]?.text || '';
+  const addressText = columns[COL.address]?.text || '';
+
+  const payload = { name: item.name, organization: true, externalNumber: String(mondayItemId) };
+  if (emailText) payload.internetAddresses = [{ url: emailText, defaultEmail: true }];
+  if (phoneText) payload.phoneNumbers = [{ dialNumber: phoneText.replace(/\s+/g, '').replace(/[()]/g, ''), defaultPhone: true }];
+  if (includeAddress && addressText) {
+    const parsed = ptfParseAddress(addressText);
+    if (parsed) payload.addresses = [parsed];
+  }
+  payload.narrativeDescription = `Synced from ShowFlow monday.com | Type: ${flexType || 'Unknown'} | Item ID: ${mondayItemId}`;
+  return payload;
+}
+
+async function ptfCreateFlexContact(payload) {
+  console.log(`📤 Creating Flex contact: "${payload.name}"`);
+  const response = await fetch(`${FLEX_BASE_URL}/api/contact`, {
+    method: 'POST',
+    headers: { 'X-Auth-Token': FLEX_API_KEY, 'Content-Type': 'application/json', 'Accept': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) throw new Error(`Flex create failed (${response.status}): ${await response.text()}`);
+  const data = await response.json();
+  const flexId = data.id || data.data?.id;
+  if (!flexId) throw new Error('Flex create returned no ID');
+  console.log(`✅ Flex contact created: ${flexId}`);
+  return flexId;
+}
+
+async function ptfUpdateFlexContact(flexUUID, payload) {
+  console.log(`📤 Updating Flex contact: ${flexUUID} ("${payload.name}")`);
+  const { addresses, ...basePayload } = payload;
+  const response = await fetch(`${FLEX_BASE_URL}/api/contact/${flexUUID}?updateBaseContactOnly=true`, {
+    method: 'PUT',
+    headers: { 'X-Auth-Token': FLEX_API_KEY, 'Content-Type': 'application/json', 'Accept': 'application/json' },
+    body: JSON.stringify({ ...basePayload, id: flexUUID }),
+  });
+  if (!response.ok) throw new Error(`Flex update failed (${response.status}): ${await response.text()}`);
+  console.log(`✅ Flex contact updated: ${flexUUID}`);
+}
+
+async function ptfFindFlexContactByExternalNumber(mondayItemId) {
+  try {
+    const response = await fetch(
+      `${FLEX_BASE_URL}/api/contact/search?searchText=${encodeURIComponent(String(mondayItemId))}&size=5`,
+      { headers: { 'X-Auth-Token': FLEX_API_KEY, 'Accept': 'application/json' } }
+    );
+    if (!response.ok) return null;
+    const data = await response.json();
+    const contacts = data.content || data.data || [];
+    return contacts.find(c => c.externalNumber === String(mondayItemId))?.id || null;
+  } catch { return null; }
 }
