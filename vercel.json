@@ -1,6 +1,25 @@
 {
   "rewrites": [
     {
+      "source": "/api/sync-new-crew-member",
+      "has": [
+        {
+          "type": "query",
+          "key": "route",
+          "value": "sync-login"
+        }
+      ],
+      "destination": "/api/sync-crew-user?route=sync-login"
+    },
+    {
+      "source": "/api/sync-new-crew-member",
+      "destination": "/api/sync-crew-user?route=new-member"
+    },
+    {
+      "source": "/api/contacts/push-to-flex",
+      "destination": "/api/contacts/pull-from-flex?route=push"
+    },
+    {
       "source": "/api/sync-crew-user-assignments",
       "destination": "/api/sync-crew-user?route=assignments"
     },
