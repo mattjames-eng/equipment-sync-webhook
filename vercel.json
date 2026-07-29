@@ -92,9 +92,6 @@
     "api/contracts/generate.js": {
       "maxDuration": 60
     },
-    "api/contacts/push-to-flex.js": {
-      "maxDuration": 60
-    },
     "api/contacts/pull-from-flex.js": {
       "maxDuration": 60
     },
