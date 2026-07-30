@@ -320,20 +320,23 @@ export default async function handler(req, res) {
 
     const contractData = await fetchContractData(itemId);
 
-    if (!process.env.GOOGLE_DRIVE_FOLDER_ID) {
-      throw new Error('CRITICAL: Missing GOOGLE_DRIVE_FOLDER_ID environment variable in configuration parameters matrix.');
+    // Resolve destination folder: prefer project-specific Drive folder, fall back to env default
+    const destinationFolderId = contractData.projectDriveFolderId || process.env.GOOGLE_DRIVE_FOLDER_ID;
+    if (!destinationFolderId) {
+      throw new Error('CRITICAL: No Google Drive folder found on linked project and GOOGLE_DRIVE_FOLDER_ID env var is not set.');
     }
+    console.log(`📁 Contract destination folder: ${contractData.projectDriveFolderId ? 'project folder' : 'default fallback'} (${destinationFolderId})`);
 
     const copyResponse = await drive.files.copy({
       fileId: process.env.CONTRACT_TEMPLATE_ID,
       supportsAllDrives: true,
       requestBody: {
         name: `Contract - ${contractData.crewMember} - ${new Date().toLocaleDateString().replace(/\//g, '-')}`,
-        parents: [process.env.GOOGLE_DRIVE_FOLDER_ID]
+        parents: [destinationFolderId]
       }
     });
     const newDocId = copyResponse.data.id;
-    console.log(`📄 Transient processing document instance safely initialized in shared folder: ${newDocId}`);
+    console.log(`📄 Contract document initialized in ${contractData.projectDriveFolderId ? 'project' : 'default'} folder: ${newDocId}`);
 
     const currentFormattedDate = new Date().toLocaleDateString('en-US', {
       year: 'numeric',
@@ -884,13 +887,15 @@ async function fetchContractData(itemId) {
   let clientName = 'TBD';
   let venueName  = 'TBD';
 
+  let projectDriveFolderId = null;
+
   if (linkedProjectId) {
     try {
       console.log(`Fetching project data for ID: ${linkedProjectId}`);
       const projResponse = await mondayApiCall(`
         query {
           items(ids: [${linkedProjectId}]) {
-            column_values { id text }
+            column_values { id text value }
           }
         }
       `);
@@ -898,6 +903,27 @@ async function fetchContractData(itemId) {
       const getProjCol = (id) => projCols.find(c => c.id === id)?.text?.trim() || 'TBD';
       clientName = getProjCol('text_mm435rt8');  // Client Name (from Flex)
       venueName  = getProjCol('text_mm43r22q');  // Venue Name (from Flex)
+
+      // Extract Google Drive folder ID from the project's link column
+      const driveLinkCol = projCols.find(c => c.id === 'link_mm5fa4b8');
+      if (driveLinkCol?.value) {
+        try {
+          const linkVal = JSON.parse(driveLinkCol.value);
+          const driveUrl = linkVal?.url || '';
+          const folderMatch = driveUrl.match(/\/folders\/([a-zA-Z0-9_-]+)/);
+          if (folderMatch) {
+            projectDriveFolderId = folderMatch[1];
+            console.log(`📁 Project Drive folder ID resolved: ${projectDriveFolderId}`);
+          } else {
+            console.warn('⚠️ Google Drive Folder URL found but could not parse folder ID:', driveUrl);
+          }
+        } catch (e) {
+          console.warn('⚠️ Could not parse Google Drive Folder link column value:', e.message);
+        }
+      } else {
+        console.warn('⚠️ No Google Drive Folder link found on project — will fall back to default folder');
+      }
+
       console.log(`Project data fetched — Client: ${clientName} | Venue: ${venueName}`);
     } catch (error) {
       console.error('Could not fetch project data:', error.message);
@@ -928,6 +954,7 @@ async function fetchContractData(itemId) {
     projectName:            linkedProjectName,
     clientName:             clientName,
     venueName:              venueName,
+    projectDriveFolderId:   projectDriveFolderId,
     startDate:              formatDate(startDate),
     endDate:                formatDate(endDate),
     contractType:           getCol('dropdown_mm3yt6p2') || 'Day Rate',
