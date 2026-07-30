@@ -804,6 +804,117 @@ async function resolveClientUUIDByName(clientName) {
 }
 
 // ================================================================
+// ACTION HANDLER: ?action=backfill-folder
+// For existing Flex event folders that never got a Drive folder.
+// Skips Flex element creation — Drive folder + Registry + Projects only.
+// ================================================================
+async function handleBackfillFolder(req, res) {
+    const { flexEventFolderUUID, projectName, prepDate, returnDate, clientName, venueName, pmEmail } = req.body || {};
+
+    if (!flexEventFolderUUID?.trim()) return res.status(400).json({ ok: false, error: 'flexEventFolderUUID is required' });
+    if (!projectName?.trim())         return res.status(400).json({ ok: false, error: 'projectName is required' });
+
+    console.log(`\n🔄 backfill-folder | "${projectName}" | uuid: ${flexEventFolderUUID}`);
+
+    // ── Resolve monday contact IDs for client + venue in parallel ─────────────
+    const [mondayClientId, mondayVenueId] = await Promise.all([
+        clientName?.trim() ? findContactByFlexUuid(null, clientName.trim()) : Promise.resolve(null),
+        venueName?.trim()  ? findContactByFlexUuid(null, venueName.trim())  : Promise.resolve(null),
+    ]);
+    if (mondayClientId) console.log(`[backfill-folder] ✅ Client: ${clientName} → ${mondayClientId}`);
+    if (mondayVenueId)  console.log(`[backfill-folder] ✅ Venue: ${venueName} → ${mondayVenueId}`);
+
+    // ── Check registry — reuse Drive link if already exists ───────────────────
+    let driveFolder    = null;
+    let registryItemId = null;
+    const existingEntry = await findRegistryEntry(flexEventFolderUUID);
+
+    if (existingEntry?.driveUrl) {
+        console.log(`[backfill-folder] 📋 Drive folder already in registry — reusing: ${existingEntry.driveUrl}`);
+        driveFolder    = { success: true, folderUrl: existingEntry.driveUrl, folderName: existingEntry.driveFolderName, existing: true };
+        registryItemId = existingEntry.itemId;
+    } else {
+        // Create Drive folder from template
+        try {
+            driveFolder = await createProjectFolder(projectName.trim(), flexEventFolderUUID, clientName || '', pmEmail || '');
+            console.log(`[backfill-folder] ✅ Drive folder created: ${driveFolder?.folderUrl}`);
+        } catch (driveErr) {
+            console.error(`[backfill-folder] ❌ Drive folder creation failed: ${driveErr.message}`);
+            return res.status(500).json({ ok: false, error: `Drive folder creation failed: ${driveErr.message}` });
+        }
+
+        // Write/update registry entry
+        try {
+            registryItemId = await writeRegistryEntry({
+                itemId:              existingEntry?.itemId || null,
+                eventName:           projectName.trim(),
+                flexEventFolderUUID,
+                driveUrl:            driveFolder?.folderUrl || null,
+                mondayClientId:      mondayClientId || null,
+                mondayVenueId:       mondayVenueId  || null,
+            });
+            console.log(`[backfill-folder] ✅ Registry updated: ${registryItemId}`);
+        } catch (regErr) {
+            console.warn(`[backfill-folder] ⚠️ Registry write failed (non-fatal): ${regErr.message}`);
+        }
+    }
+
+    // ── Propagate Drive link + dates to all matching Projects board items ──────
+    const updatedProjects = [];
+    try {
+        const colValues = {
+            text_mm466djv: flexEventFolderUUID,
+            ...(driveFolder?.folderUrl && { link_mm5fa4b8: { url: driveFolder.folderUrl, text: 'Google Drive Folder' } }),
+            ...(prepDate   && { date_mm4at0qc: { date: prepDate.trim()   } }),
+            ...(returnDate && { date_mm4a7fn6: { date: returnDate.trim() } }),
+            ...(mondayClientId && { board_relation_mm3x8evw: { item_ids: [parseInt(mondayClientId, 10)] } }),
+            ...(clientName     && { text_mm435rt8: clientName.trim() }),
+            ...(mondayVenueId  && { board_relation_mm3xrm02: { item_ids: [parseInt(mondayVenueId, 10)] } }),
+            ...(venueName      && { text_mm43r22q:  venueName.trim()  }),
+        };
+
+        const searchQ = `query {
+            items_page_by_column_values(
+                limit: 10,
+                board_id: ${PROJECTS_BOARD_ID},
+                columns: [{ column_id: "text_mm466djv", column_values: ["${flexEventFolderUUID}"] }]
+            ) { items { id name } }
+        }`;
+        const searchRes  = await fetch(MONDAY_API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_KEY }, body: JSON.stringify({ query: searchQ }) });
+        const searchData = await searchRes.json();
+        const projects   = searchData?.data?.items_page_by_column_values?.items || [];
+
+        await Promise.all(projects.map(async proj => {
+            const mut = `mutation {
+                change_multiple_column_values(
+                    board_id:      ${PROJECTS_BOARD_ID},
+                    item_id:       ${proj.id},
+                    column_values: ${JSON.stringify(JSON.stringify(colValues))}
+                ) { id }
+            }`;
+            await fetch(MONDAY_API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': MONDAY_API_KEY }, body: JSON.stringify({ query: mut }) });
+            updatedProjects.push({ id: proj.id, name: proj.name });
+            console.log(`[backfill-folder] ✅ Updated project "${proj.name}" (${proj.id})`);
+        }));
+
+        if (projects.length === 0) {
+            console.log(`[backfill-folder] ℹ️ No Projects board items found for UUID ${flexEventFolderUUID}`);
+        }
+    } catch (propErr) {
+        console.warn(`[backfill-folder] ⚠️ Project propagation failed (non-fatal): ${propErr.message}`);
+    }
+
+    return res.status(200).json({
+        ok:                true,
+        flexEventFolderUUID,
+        projectName:       projectName.trim(),
+        driveFolder:       driveFolder || null,
+        registryItemId:    registryItemId || null,
+        updatedProjects,
+    });
+}
+
+// ================================================================
 // MAIN HANDLER
 // ================================================================
 export default async function handler(req, res) {
@@ -823,6 +934,30 @@ export default async function handler(req, res) {
             return await handleCreateFolder(req, res);
         } catch (err) {
             console.error('[create-folder] ❌ Error:', err.message);
+            return res.status(500).json({ ok: false, error: err.message });
+        }
+    }
+
+    // ── Route: ?action=backfill-folder ────────────────────────────────────────
+    // For existing Flex event folders that never got a Drive folder created.
+    // Skips Flex element creation entirely — Drive folder + Registry + Project
+    // propagation only.
+    //
+    // POST /api/create-project-from-quote?action=backfill-folder
+    // Body: {
+    //   flexEventFolderUUID,  // required — existing Flex event folder UUID
+    //   projectName,           // required — used for Drive folder name
+    //   prepDate?,             // YYYY-MM-DD
+    //   returnDate?,           // YYYY-MM-DD
+    //   clientName?,
+    //   venueName?,
+    //   pmEmail?
+    // }
+    if (req.query?.action === 'backfill-folder') {
+        try {
+            return await handleBackfillFolder(req, res);
+        } catch (err) {
+            console.error('[backfill-folder] ❌ Error:', err.message);
             return res.status(500).json({ ok: false, error: err.message });
         }
     }
