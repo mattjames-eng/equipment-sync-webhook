@@ -2,6 +2,12 @@ import { google } from 'googleapis';
 
 const MONDAY_API_URL = 'https://api.monday.com/v2';
 
+// ── Contracts subfolder: the template subfolder that gets copied into every
+// new project's Drive folder. We resolve its name once, then search for the
+// matching child inside each project's root folder at contract generation time.
+const CONTRACTS_TEMPLATE_SUBFOLDER_ID = '1qNTLXdhgdOlCMDwcQx_nMQiWR5HAPVPQ';
+let _contractsSubfolderName = null; // module-level cache — populated on first use
+
 // ── Advance Package Constants ────────────────────────────────
 const ADVANCE_TEMPLATE_ID       = '1nu2TOyAuIWj9uNVXbGUkgSOwLN5VXEWrm9vnv8676LE';
 const ADVANCE_PACKAGES_BOARD_ID = '18416589368';
@@ -281,6 +287,51 @@ function fmtFullDate(dateStr) {
   return d.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
 }
 
+// ── Resolve the contracts subfolder within a project's Drive root folder ────
+// 1. Gets the name of CONTRACTS_TEMPLATE_SUBFOLDER_ID (cached after first call)
+// 2. Searches for a direct child of projectRootFolderId with that name
+// 3. Returns the child folder's ID, or null if not found (caller should fall back)
+async function resolveContractsFolderInProject(drive, projectRootFolderId) {
+  if (!projectRootFolderId) return null;
+
+  try {
+    // Step 1: resolve the template subfolder name (cached)
+    if (!_contractsSubfolderName) {
+      const meta = await drive.files.get({
+        fileId: CONTRACTS_TEMPLATE_SUBFOLDER_ID,
+        fields: 'name',
+        supportsAllDrives: true,
+      });
+      _contractsSubfolderName = meta.data.name;
+      console.log(`📁 Contracts subfolder name resolved: "${_contractsSubfolderName}"`);
+    }
+
+    // Step 2: find that child folder inside the project root
+    const safeName = _contractsSubfolderName.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    const q = `'${projectRootFolderId}' in parents and name = '${safeName}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`;
+    const listRes = await drive.files.list({
+      q,
+      fields: 'files(id, name)',
+      supportsAllDrives: true,
+      includeItemsFromAllDrives: true,
+      pageSize: 5,
+    });
+
+    const folder = listRes.data.files?.[0];
+    if (folder) {
+      console.log(`✅ Contracts subfolder found in project: "${folder.name}" (${folder.id})`);
+      return folder.id;
+    }
+
+    console.warn(`⚠️ No "${_contractsSubfolderName}" subfolder found in project folder ${projectRootFolderId} — falling back to project root`);
+    return null;
+
+  } catch (err) {
+    console.warn(`⚠️ resolveContractsFolderInProject failed (non-fatal): ${err.message}`);
+    return null;
+  }
+}
+
 // ── Main handler ─────────────────────────────────────────────
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -320,12 +371,19 @@ export default async function handler(req, res) {
 
     const contractData = await fetchContractData(itemId);
 
-    // Resolve destination folder: prefer project-specific Drive folder, fall back to env default
-    const destinationFolderId = contractData.projectDriveFolderId || process.env.GOOGLE_DRIVE_FOLDER_ID;
+    // Resolve destination folder:
+    //   1. Contracts subfolder inside the project's Drive root (copied from template)
+    //   2. Project root Drive folder (fallback if subfolder not found)
+    //   3. GOOGLE_DRIVE_FOLDER_ID env var (last resort fallback)
+    const projectContractsFolderId = await resolveContractsFolderInProject(drive, contractData.projectDriveFolderId);
+    const destinationFolderId = projectContractsFolderId || contractData.projectDriveFolderId || process.env.GOOGLE_DRIVE_FOLDER_ID;
     if (!destinationFolderId) {
       throw new Error('CRITICAL: No Google Drive folder found on linked project and GOOGLE_DRIVE_FOLDER_ID env var is not set.');
     }
-    console.log(`📁 Contract destination folder: ${contractData.projectDriveFolderId ? 'project folder' : 'default fallback'} (${destinationFolderId})`);
+    const folderDesc = projectContractsFolderId ? 'project contracts subfolder'
+                     : contractData.projectDriveFolderId ? 'project root folder (subfolder not found)'
+                     : 'default fallback folder';
+    console.log(`📁 Contract destination: ${folderDesc} (${destinationFolderId})`);
 
     const copyResponse = await drive.files.copy({
       fileId: process.env.CONTRACT_TEMPLATE_ID,
