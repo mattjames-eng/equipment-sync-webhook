@@ -416,16 +416,12 @@ export default async function handler(req, res) {
       { search: '{{end_date}}',                replace: contractData.endDate },
       { search: '{{contract_type}}',           replace: contractData.contractType },
       { search: '{{contract_amount}}',         replace: contractData.contractAmount },
-      { search: '{{agent_commission}}',        replace: contractData.agentCommission },
-      { search: '{{agent_commission_amount}}', replace: contractData.agentCommissionAmount },
-      { search: '{{final_agreed_rate}}',       replace: contractData.finalAgreedRate },
       { search: '{{payment_schedule}}',        replace: contractData.paymentSchedule },
       { search: '{{scope_of_work}}',           replace: contractData.scopeOfWork },
       { search: '{{contract_notes}}',          replace: contractData.contractNotes },
       { search: '{{per_diem}}',                replace: contractData.perDiem },
       { search: '{{company_equipment}}',       replace: contractData.companyEquipment },
       { search: '{{contractor_equipment}}',    replace: contractData.contractorEquipment },
-      { search: '{{insurance_requirement}}',   replace: contractData.insuranceRequirement },
       { search: '{{company_signatory}}',       replace: contractData.companySignatory },
       { search: '{{company_signatory_title}}', replace: contractData.companySignatoryTitle }
     ];
