@@ -387,11 +387,11 @@ export default async function handler(req, res) {
 
     const copyResponse = await drive.files.copy({
       fileId: process.env.CONTRACT_TEMPLATE_ID,
-      supportsAllDrives: true,
       requestBody: {
         name: `Contract - ${contractData.crewMember} - ${new Date().toLocaleDateString().replace(/\//g, '-')}`,
         parents: [destinationFolderId]
-      }
+      },
+      supportsAllDrives: true
     });
     const newDocId = copyResponse.data.id;
     console.log(`📄 Contract document initialized in ${contractData.projectDriveFolderId ? 'project' : 'default'} folder: ${newDocId}`);
