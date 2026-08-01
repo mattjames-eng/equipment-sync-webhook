@@ -24,7 +24,8 @@ const COMPANY_SIGNATORY       = process.env.COMPANY_SIGNATORY       || 'Matt Jam
 const COMPANY_SIGNATORY_TITLE = process.env.COMPANY_SIGNATORY_TITLE || 'Owner';
 
 // ── Helpers ───────────────────────────────────────────────────
-async function mondayApiCall(query) {
+async function mondayApiCall(query, variables) {
+  const body = variables ? { query, variables } : { query };
   const res = await fetch(MONDAY_API_URL, {
     method: 'POST',
     headers: {
@@ -32,7 +33,7 @@ async function mondayApiCall(query) {
       'Authorization': process.env.MONDAY_API_KEY,
       'API-Version':   '2024-10',
     },
-    body: JSON.stringify({ query }),
+    body: JSON.stringify(body),
   });
   const data = await res.json();
   if (data.errors) throw new Error(data.errors[0].message);
@@ -121,6 +122,7 @@ export default async function handler(req, res) {
     }
 
     // ── Copy the Google Doc template ──────────────────────────
+    console.log('📋 Copying template', process.env.MASTER_AGREEMENT_TEMPLATE_ID, '→ folder', process.env.MASTER_AGREEMENTS_FOLDER_ID);
     const copyRes = await drive.files.copy({
       fileId:      process.env.MASTER_AGREEMENT_TEMPLATE_ID,
       requestBody: {
@@ -172,7 +174,7 @@ export default async function handler(req, res) {
     const docUrl = 'https://docs.google.com/document/d/' + newDocId + '/edit';
     console.log('🔗 Doc URL:', docUrl);
 
-    // ── Update Crew Database record (single batch mutation) ──────
+    // ── Update Crew Database record via GraphQL variables ────────
     const todayYMD  = toYMD(now);
     const expiryYMD = toYMD(expiryDate);
 
@@ -183,9 +185,13 @@ export default async function handler(req, res) {
     columnValues[CREW.masterContractExpiry] = { date: expiryYMD };
     columnValues[CREW.masterContractLink]   = { url: docUrl, text: 'Master Agreement - ' + year };
 
-    const colValEscaped = JSON.stringify(JSON.stringify(columnValues));
-    const updateMutation = 'mutation { change_multiple_column_values(item_id: ' + itemId + ', board_id: ' + CREW_DB_BOARD_ID + ', column_values: ' + colValEscaped + ') { id } }';
-    await mondayApiCall(updateMutation);
+    console.log('📝 Updating crew record columns...');
+    const updateMutation = 'mutation UpdateCrewRecord($itemId: ID!, $boardId: ID!, $colVals: JSON!) { change_multiple_column_values(item_id: $itemId, board_id: $boardId, column_values: $colVals) { id } }';
+    await mondayApiCall(updateMutation, {
+      itemId:  String(itemId),
+      boardId: CREW_DB_BOARD_ID,
+      colVals: JSON.stringify(columnValues),
+    });
 
     console.log('✅ Crew record updated — status: Draft, contract ID: ' + contractId);
     console.log('🏁 Master Agreement generated for:', crew.name);
