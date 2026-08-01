@@ -305,6 +305,7 @@ async function resolveContractsFolderInProject(drive, projectRootFolderId) {
     const listRes = await drive.files.list({
       q,
       fields: 'files(id, name)',
+      corpora: 'allDrives',
       supportsAllDrives: true,
       includeItemsFromAllDrives: true,
       pageSize: 5,
