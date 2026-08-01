@@ -97,6 +97,9 @@
     },
     "api/tasks/[action].js": {
       "maxDuration": 300
+    },
+    "api/contracts/master-agreement.js": {
+      "maxDuration": 60
     }
   },
   "crons": [
