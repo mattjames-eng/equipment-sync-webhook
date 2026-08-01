@@ -332,11 +332,6 @@ export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
-  // Handle CORS preflight
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end();
-  }
-
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
@@ -941,42 +936,6 @@ async function fetchContractData(itemId) {
   const projectRelCol = columns.find(c => c.id === 'board_relation_mm3y7kar');
   const linkedProjectId = projectRelCol?.linked_items?.[0]?.id || null;
   const linkedProjectName = projectRelCol?.linked_items?.[0]?.name || item.name;
-
-  // Look up assigned role from Crew Assignments board (more specific than crew profile)
-  if (crewMemberId && linkedProjectId) {
-    try {
-      const assignmentQuery = `query {
-        items_page_by_column_values(
-          limit: 5,
-          board_id: 18415879040,
-          columns: [{ column_id: "board_relation_mm3y1w67", column_values: ["${crewMemberId}"] }]
-        ) {
-          items {
-            id name
-            column_values { id text }
-          }
-        }
-      }`;
-      const assignmentRes = await mondayApiCall(assignmentQuery);
-      const assignments = assignmentRes.data?.items_page_by_column_values?.items || [];
-      // Find the assignment that also links to the same project
-      const matchingAssignment = assignments.find(a => {
-        const projCol = a.column_values.find(c => c.id === 'board_relation_mm3ypc38');
-        return projCol?.text?.includes(linkedProjectId) || a.name?.toLowerCase().includes(linkedProjectName?.toLowerCase());
-      });
-      if (matchingAssignment) {
-        const assignedRole = matchingAssignment.column_values.find(c => c.id === 'dropdown_mm3ymhp1')?.text;
-        if (assignedRole) {
-          crewData.position = assignedRole;
-          console.log(\`🎯 Position overridden from Crew Assignment: \${assignedRole}\`);
-        }
-      } else {
-        console.warn(\`⚠️ No matching Crew Assignment found for crew \${crewMemberId} on project \${linkedProjectId} — using profile position\`);
-      }
-    } catch (e) {
-      console.warn(\`⚠️ Could not fetch Crew Assignment role: \${e.message} — using profile position\`);
-    }
-  }
 
   let clientName = 'TBD';
   let venueName  = 'TBD';
