@@ -128,19 +128,5 @@
       "path": "/api/inventory/sync-ooc",
       "schedule": "0 6 * * *"
     }
-  ],
-  "routes": [
-    {
-      "src": "/api/(.*)",
-      "methods": [
-        "OPTIONS"
-      ],
-      "headers": {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type, Authorization"
-      },
-      "status": 200
-    }
   ]
 }
