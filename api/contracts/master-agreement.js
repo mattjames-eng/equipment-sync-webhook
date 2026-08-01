@@ -21,7 +21,7 @@ const CREW = {
 
 // ── Static company info (override via env vars if needed) ─────
 const COMPANY_SIGNATORY       = process.env.COMPANY_SIGNATORY       || 'Matt James';
-const COMPANY_SIGNATORY_TITLE = process.env.COMPANY_SIGNATORY_TITLE || 'Owner';
+const COMPANY_SIGNATORY_TITLE = process.env.COMPANY_SIGNATORY_TITLE || 'General Manager';
 
 // ── Helpers ───────────────────────────────────────────────────
 async function mondayApiCall(query, variables) {
