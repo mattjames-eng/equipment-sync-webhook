@@ -286,6 +286,7 @@ async function getGoogleAccessToken() {
 // ================================================================
 async function _copyDriveFolderContents(sourceFolderId, destFolderId, authHeaders) {
     const BASE = 'https://www.googleapis.com/drive/v3';
+    const subfolderMap = {}; // name → new folder ID for top-level subfolders
 
     // List all direct children of source (files + subfolders)
     const q   = encodeURIComponent(`'${sourceFolderId}' in parents and trashed = false`);
@@ -309,7 +310,8 @@ async function _copyDriveFolderContents(sourceFolderId, destFolderId, authHeader
             });
             const sub = await subRes.json();
             if (sub.id) {
-                console.log(`  📁 Created subfolder: ${child.name}`);
+                subfolderMap[child.name] = sub.id; // capture top-level subfolder
+                console.log(`  📁 Created subfolder: ${child.name} (${sub.id})`);
                 await _copyDriveFolderContents(child.id, sub.id, authHeaders);
             }
         } else {
@@ -322,6 +324,8 @@ async function _copyDriveFolderContents(sourceFolderId, destFolderId, authHeader
             console.log(`  📄 Copied file: ${child.name}`);
         }
     }));
+
+    return subfolderMap;
 }
 
 // ================================================================
@@ -498,8 +502,13 @@ async function createProjectFolder(projectName, projectId, clientName, pmEmail) 
             if (!rootFolder.id) throw new Error(`Drive create root folder failed: ${JSON.stringify(rootFolder)}`);
             console.log(`  📂 Created root folder: ${projectName}`);
 
-            // Recursively copy template tree into new root folder
-            await _copyDriveFolderContents(TEMPLATE_FOLDER_ID, rootFolder.id, headers);
+            // Recursively copy template tree into new root folder and capture subfolder IDs
+            const subfolderMap = await _copyDriveFolderContents(TEMPLATE_FOLDER_ID, rootFolder.id, headers);
+            // Find the Contracts subfolder (starts with [CREW CONTRACTS])
+            const contractsSubfolderName = Object.keys(subfolderMap).find(n => n.startsWith('[CREW CONTRACTS]'));
+            const contractsFolderId  = contractsSubfolderName ? subfolderMap[contractsSubfolderName] : null;
+            const contractsFolderUrl = contractsFolderId ? `https://drive.google.com/drive/folders/${contractsFolderId}` : null;
+            if (contractsFolderId) console.log(`  📄 Contracts subfolder captured: ${contractsSubfolderName} (${contractsFolderId})`);
 
             // Share with PM (writer access), same as GAS shareWithUser
             if (pmEmail) {
@@ -513,7 +522,7 @@ async function createProjectFolder(projectName, projectId, clientName, pmEmail) 
 
             const folderUrl = rootFolder.webViewLink || `https://drive.google.com/drive/folders/${rootFolder.id}`;
             console.log(`✅ Google Drive folder created: ${folderUrl}`);
-            return { success: true, folderId: rootFolder.id, folderUrl, folderName: projectName };
+            return { success: true, folderId: rootFolder.id, folderUrl, folderName: projectName, contractsFolderId, contractsFolderUrl };
 
         } catch (e) {
             console.error(`❌ Drive API error: ${e.message}`);
@@ -719,6 +728,7 @@ async function handleCreateFolder(req, res) {
             ...(prepDate   && { date_mm4at0qc: { date: prepDate.trim()   } }),
             ...(returnDate && { date_mm4a7fn6: { date: returnDate.trim() } }),
             ...(driveFolder?.folderUrl && { link_mm5fa4b8: { url: driveFolder.folderUrl, text: 'Google Drive Folder' } }),
+            ...(driveFolder?.contractsFolderUrl && { link_mm5tav3c: { url: driveFolder.contractsFolderUrl, text: 'Contracts Drive Folder' } }),
             ...(mondayClientId && { board_relation_mm3x8evw: { item_ids: [parseInt(mondayClientId, 10)] } }),
             ...(clientName     && { text_mm435rt8:          clientName.trim() }),
             ...(mondayVenueId  && { board_relation_mm3xrm02: { item_ids: [parseInt(mondayVenueId, 10)] } }),
@@ -865,6 +875,7 @@ async function handleBackfillFolder(req, res) {
         const colValues = {
             text_mm466djv: flexEventFolderUUID,
             ...(driveFolder?.folderUrl && { link_mm5fa4b8: { url: driveFolder.folderUrl, text: 'Google Drive Folder' } }),
+            ...(driveFolder?.contractsFolderUrl && { link_mm5tav3c: { url: driveFolder.contractsFolderUrl, text: 'Contracts Drive Folder' } }),
             ...(prepDate   && { date_mm4at0qc: { date: prepDate.trim()   } }),
             ...(returnDate && { date_mm4a7fn6: { date: returnDate.trim() } }),
             ...(mondayClientId && { board_relation_mm3x8evw: { item_ids: [parseInt(mondayClientId, 10)] } }),
