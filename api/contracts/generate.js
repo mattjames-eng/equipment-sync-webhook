@@ -368,14 +368,19 @@ export default async function handler(req, res) {
     //   1. Contracts subfolder inside the project's Drive root (copied from template)
     //   2. Project root Drive folder (fallback if subfolder not found)
     //   3. GOOGLE_DRIVE_FOLDER_ID env var (last resort fallback)
-    const projectContractsFolderId = await resolveContractsFolderInProject(drive, contractData.projectDriveFolderId);
-    const destinationFolderId = projectContractsFolderId || contractData.projectDriveFolderId || process.env.GOOGLE_DRIVE_FOLDER_ID;
+    // Priority: 1. Stored Contracts subfolder ID, 2. Search by name (fallback), 3. Project root, 4. Env var
+    let destinationFolderId = contractData.contractsDriveFolderId || null;
+    let folderDesc = 'stored contracts subfolder';
+    if (!destinationFolderId) {
+      const projectContractsFolderId = await resolveContractsFolderInProject(drive, contractData.projectDriveFolderId);
+      destinationFolderId = projectContractsFolderId || contractData.projectDriveFolderId || process.env.GOOGLE_DRIVE_FOLDER_ID;
+      folderDesc = projectContractsFolderId ? 'project contracts subfolder (name search)'
+                 : contractData.projectDriveFolderId ? 'project root folder (subfolder not found)'
+                 : 'default fallback folder';
+    }
     if (!destinationFolderId) {
       throw new Error('CRITICAL: No Google Drive folder found on linked project and GOOGLE_DRIVE_FOLDER_ID env var is not set.');
     }
-    const folderDesc = projectContractsFolderId ? 'project contracts subfolder'
-                     : contractData.projectDriveFolderId ? 'project root folder (subfolder not found)'
-                     : 'default fallback folder';
     console.log(`📁 Contract destination: ${folderDesc} (${destinationFolderId})`);
 
     const copyResponse = await drive.files.copy({
@@ -935,6 +940,7 @@ async function fetchContractData(itemId) {
   let venueName  = 'TBD';
 
   let projectDriveFolderId = null;
+  let contractsDriveFolderId = null;
 
   if (linkedProjectId) {
     try {
@@ -971,6 +977,22 @@ async function fetchContractData(itemId) {
         console.warn('⚠️ No Google Drive Folder link found on project — will fall back to default folder');
       }
 
+      // Extract Contracts subfolder ID directly (link_mm5tav3c)
+      const contractsLinkCol = projCols.find(c => c.id === 'link_mm5tav3c');
+      if (contractsLinkCol?.value) {
+        try {
+          const contractsLinkVal = JSON.parse(contractsLinkCol.value);
+          const contractsUrl = contractsLinkVal?.url || '';
+          const contractsMatch = contractsUrl.match(/\/folders\/([a-zA-Z0-9_-]+)/);
+          if (contractsMatch) {
+            contractsDriveFolderId = contractsMatch[1];
+            console.log(`📄 Contracts Drive folder ID resolved: ${contractsDriveFolderId}`);
+          }
+        } catch (e) {
+          console.warn('⚠️ Could not parse Contracts Drive Folder link column value:', e.message);
+        }
+      }
+
       console.log(`Project data fetched — Client: ${clientName} | Venue: ${venueName}`);
     } catch (error) {
       console.error('Could not fetch project data:', error.message);
@@ -1002,6 +1024,7 @@ async function fetchContractData(itemId) {
     clientName:             clientName,
     venueName:              venueName,
     projectDriveFolderId:   projectDriveFolderId,
+    contractsDriveFolderId: contractsDriveFolderId,
     startDate:              formatDate(startDate),
     endDate:                formatDate(endDate),
     contractType:           getCol('dropdown_mm3yt6p2') || 'Day Rate',
