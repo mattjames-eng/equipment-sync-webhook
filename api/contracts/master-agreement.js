@@ -172,26 +172,20 @@ export default async function handler(req, res) {
     const docUrl = 'https://docs.google.com/document/d/' + newDocId + '/edit';
     console.log('🔗 Doc URL:', docUrl);
 
-    // ── Update Crew Database record ───────────────────────────
+    // ── Update Crew Database record (single batch mutation) ──────
     const todayYMD  = toYMD(now);
     const expiryYMD = toYMD(expiryDate);
 
-    const contractIdMutation = 'mutation { change_column_value(item_id: ' + itemId + ', board_id: ' + CREW_DB_BOARD_ID + ', column_id: "' + CREW.masterContractId + '", value: "' + contractId + '") { id } }';
-    await mondayApiCall(contractIdMutation);
+    const columnValues = {};
+    columnValues[CREW.masterContractId]     = contractId;
+    columnValues[CREW.masterContractStatus] = { label: 'Draft' };
+    columnValues[CREW.masterContractDate]   = { date: todayYMD };
+    columnValues[CREW.masterContractExpiry] = { date: expiryYMD };
+    columnValues[CREW.masterContractLink]   = { url: docUrl, text: 'Master Agreement - ' + year };
 
-    const statusMutation = 'mutation { change_column_value(item_id: ' + itemId + ', board_id: ' + CREW_DB_BOARD_ID + ', column_id: "' + CREW.masterContractStatus + '", value: "{\\"label\\":\\"Draft\\"}") { id } }';
-    await mondayApiCall(statusMutation);
-
-    const dateMutation = 'mutation { change_column_value(item_id: ' + itemId + ', board_id: ' + CREW_DB_BOARD_ID + ', column_id: "' + CREW.masterContractDate + '", value: "{\\"date\\":\\"' + todayYMD + '\\"}") { id } }';
-    await mondayApiCall(dateMutation);
-
-    const expiryMutation = 'mutation { change_column_value(item_id: ' + itemId + ', board_id: ' + CREW_DB_BOARD_ID + ', column_id: "' + CREW.masterContractExpiry + '", value: "{\\"date\\":\\"' + expiryYMD + '\\"}") { id } }';
-    await mondayApiCall(expiryMutation);
-
-    const linkValue = JSON.stringify({ url: docUrl, text: 'Master Agreement - ' + year });
-    const escapedLink = linkValue.replace(/"/g, '\\"');
-    const linkMutation = 'mutation { change_column_value(item_id: ' + itemId + ', board_id: ' + CREW_DB_BOARD_ID + ', column_id: "' + CREW.masterContractLink + '", value: "' + escapedLink + '") { id } }';
-    await mondayApiCall(linkMutation);
+    const colValEscaped = JSON.stringify(JSON.stringify(columnValues));
+    const updateMutation = 'mutation { change_multiple_column_values(item_id: ' + itemId + ', board_id: ' + CREW_DB_BOARD_ID + ', column_values: ' + colValEscaped + ') { id } }';
+    await mondayApiCall(updateMutation);
 
     console.log('✅ Crew record updated — status: Draft, contract ID: ' + contractId);
     console.log('🏁 Master Agreement generated for:', crew.name);
