@@ -295,19 +295,12 @@ async function resolveContractsFolderInProject(drive, projectRootFolderId) {
   if (!projectRootFolderId) return null;
 
   try {
-    // Step 1: resolve the template subfolder name (cached)
-    if (!_contractsSubfolderName) {
-      const meta = await drive.files.get({
-        fileId: CONTRACTS_TEMPLATE_SUBFOLDER_ID,
-        fields: 'name',
-        supportsAllDrives: true,
-      });
-      _contractsSubfolderName = meta.data.name;
-      console.log(`📁 Contracts subfolder name resolved: "${_contractsSubfolderName}"`);
-    }
+    // Subfolder name hardcoded to avoid requiring service account access to template folder
+    const CONTRACTS_SUBFOLDER_NAME = '[CREW CONTRACTS] MM.DD.YY_ARTIST_VENUE_CITY, STATE';
+    console.log(`📁 Using hardcoded contracts subfolder name: "${CONTRACTS_SUBFOLDER_NAME}"`);
 
-    // Step 2: find that child folder inside the project root
-    const safeName = _contractsSubfolderName.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    // Find that child folder inside the project root
+    const safeName = CONTRACTS_SUBFOLDER_NAME.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
     const q = `'${projectRootFolderId}' in parents and name = '${safeName}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`;
     const listRes = await drive.files.list({
       q,
@@ -323,7 +316,7 @@ async function resolveContractsFolderInProject(drive, projectRootFolderId) {
       return folder.id;
     }
 
-    console.warn(`⚠️ No "${_contractsSubfolderName}" subfolder found in project folder ${projectRootFolderId} — falling back to project root`);
+    console.warn(`⚠️ No "${CONTRACTS_SUBFOLDER_NAME}" subfolder found in project folder ${projectRootFolderId} — falling back to project root`);
     return null;
 
   } catch (err) {
