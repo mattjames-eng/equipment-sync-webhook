@@ -1084,7 +1084,7 @@ if (crewMemberId && linkedProjectId) {
     scopeOfWork:            getCol('long_text_mm3ypebd') || 'Production services as assigned',
     contractNotes:          getCol('long_text_mm3y3094') || 'None',
     perDiem:                getCol('long_text_mm3yc7q7') || '$50/day (if applicable)',
-    companyEquipment:       'All production equipment as specified in production rider',
+    companyEquipment:       'All necessary production equipment required to fulfill the contracted scope of work.',
     contractorEquipment:    getCol('long_text_mm3yrfaa') || 'Personal tools and safety equipment',
     insuranceRequirement:   'General liability insurance recommended but not required for day rates under $5,000',
     companySignatory:       'Matt James',
