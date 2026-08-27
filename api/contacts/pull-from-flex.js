@@ -538,8 +538,8 @@ async function _findProjectByParentUUID(parentId) {
 // ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ Fallback: match by parsed name when UUID lookup finds nothing ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ
 // Name convention: "{Vendor abbrev} - {Project Name}"
 // e.g. "Legacy - Nocturnal Valley 2026" ÃÂ¢ÃÂÃÂ search for "Nocturnal Valley 2026"
-async function _findProjectByNameFallback(poName) {
-  const parsedName = _extractProjectName(poName);
+async function _findProjectByNameFallback(poName, useFullName = false) {
+  const parsedName = useFullName ? poName : _extractProjectName(poName);
   if (!parsedName) return null;
   const key = parsedName.toLowerCase().trim();
   if (_poProjectNameCache[key] !== undefined) return _poProjectNameCache[key];
