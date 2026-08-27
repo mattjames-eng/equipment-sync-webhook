@@ -1,5 +1,5 @@
 /**
- * Flex Ã¢ÂÂ Monday Contact Sync (Pull Direction)
+ * Flex ÃÂ¢ÃÂÃÂ Monday Contact Sync (Pull Direction)
  *
  * Polls Flex Rental Solutions for contacts created or modified since the
  * last sync run, then creates or updates matching items in the
@@ -17,15 +17,15 @@
  *   - Default: 24 hours (suitable for a daily cron run)
  *   - Override via ?hours=N query param or body { hours: N }
  *   - Pass ?full=true to re-sync ALL Flex contacts regardless of lastEditDate
- *     (use sparingly Ã¢ÂÂ will touch every contact)
+ *     (use sparingly ÃÂ¢ÃÂÃÂ will touch every contact)
  *
  * Invocation options:
- *   POST /api/contacts/pull-from-flex               Ã¢ÂÂ 24h lookback
- *   POST /api/contacts/pull-from-flex?hours=1       Ã¢ÂÂ 1h lookback (15-min cron)
- *   POST /api/contacts/pull-from-flex?full=true     Ã¢ÂÂ full resync
- *   GET  /api/contacts/pull-from-flex               Ã¢ÂÂ health check
+ *   POST /api/contacts/pull-from-flex               ÃÂ¢ÃÂÃÂ 24h lookback
+ *   POST /api/contacts/pull-from-flex?hours=1       ÃÂ¢ÃÂÃÂ 1h lookback (15-min cron)
+ *   POST /api/contacts/pull-from-flex?full=true     ÃÂ¢ÃÂÃÂ full resync
+ *   GET  /api/contacts/pull-from-flex               ÃÂ¢ÃÂÃÂ health check
  *
- * Author: Antic Studios Ã¢ÂÂ ShowFlow
+ * Author: Antic Studios ÃÂ¢ÃÂÃÂ ShowFlow
  */
 
 const MONDAY_API_URL  = 'https://api.monday.com/v2';
@@ -35,7 +35,7 @@ const FLEX_BASE_URL   = process.env.FLEX_BASE_URL || 'https://anticstudios.flexr
 const FLEX_API_KEY    = process.env.FLEX_API_KEY_QUOTES || process.env.FLEX_API_KEY;
 
 const CONTACTS_BOARD_ID   = '18415573401';
-const NEW_ADDITIONS_GROUP = 'group_mm3y3xvh';  // Ã°ÂÂ¤Â NEW ADDITIONS Ã¢ÂÂ top group
+const NEW_ADDITIONS_GROUP = 'group_mm3y3xvh';  // ÃÂ°ÃÂÃÂ¤ÃÂ NEW ADDITIONS ÃÂ¢ÃÂÃÂ top group
 const VENUES_GROUP        = 'group_mm3v505y';  // Venues
 
 // Column IDs on Contacts & Companies board
@@ -56,7 +56,7 @@ const COL = {
 // ================================================================
 async function fetchFlexContacts(sinceISO, page = 0, size = 100) {
   let url = `${FLEX_BASE_URL}/api/contact?page=${page}&size=${size}&sort=lastEditDate,desc`;
-  console.log(`Ã°ÂÂÂ¥ Fetching Flex contacts page ${page} since ${sinceISO || 'beginning of time'}`);
+  console.log(`ÃÂ°ÃÂÃÂÃÂ¥ Fetching Flex contacts page ${page} since ${sinceISO || 'beginning of time'}`);
 
   const response = await fetch(url, {
     headers: { 'X-Auth-Token': FLEX_API_KEY, 'Accept': 'application/json' },
@@ -152,14 +152,14 @@ function buildMondayColumnValues(flexContact) {
   // Always stamp the Flex UUID
   cols[COL.flexContactId] = flexContact.id;
 
-  // Email Ã¢ÂÂ grab the defaultEmail or first entry
+  // Email ÃÂ¢ÃÂÃÂ grab the defaultEmail or first entry
   const emailObj = flexContact.internetAddresses?.find(e => e.defaultEmail) ||
                    flexContact.internetAddresses?.[0];
   if (emailObj?.url && emailObj.url.includes('@')) {
     cols[COL.email] = JSON.stringify({ email: emailObj.url, text: emailObj.url });
   }
 
-  // Phone Ã¢ÂÂ grab the defaultPhone or first entry
+  // Phone ÃÂ¢ÃÂÃÂ grab the defaultPhone or first entry
   const phoneObj = flexContact.phoneNumbers?.find(p => p.defaultPhone) ||
                    flexContact.phoneNumbers?.[0];
   if (phoneObj?.dialNumber) {
@@ -167,7 +167,7 @@ function buildMondayColumnValues(flexContact) {
     cols[COL.phone] = JSON.stringify({ phone, countryShortName: 'US' });
   }
 
-  // Address Ã¢ÂÂ build from first shipping address or first available
+  // Address ÃÂ¢ÃÂÃÂ build from first shipping address or first available
   const addrObj = flexContact.addresses?.find(a => a.defaultShipping) ||
                   flexContact.addresses?.[0];
   if (addrObj) {
@@ -226,7 +226,7 @@ async function createMondayContact(flexContact) {
 
   if (result.errors) throw new Error(`Monday create failed: ${JSON.stringify(result.errors)}`);
   const created = result.data?.create_item;
-  console.log(`Ã¢ÂÂ Created Monday item: "${created?.name}" (ID: ${created?.id})`);
+  console.log(`ÃÂ¢ÃÂÃÂ Created Monday item: "${created?.name}" (ID: ${created?.id})`);
 
   // Write monday item ID back to Flex externalNumber for future dedup
   if (created?.id) {
@@ -265,9 +265,9 @@ async function updateMondayContact(mondayItemId, flexContact) {
   });
   const result = await response.json();
   if (result.errors) {
-    console.error(`Ã¢ÂÂ Monday update failed for item ${mondayItemId}:`, result.errors);
+    console.error(`ÃÂ¢ÃÂÃÂ Monday update failed for item ${mondayItemId}:`, result.errors);
   } else {
-    console.log(`Ã°ÂÂÂ Updated Monday item ${mondayItemId} from Flex ${flexContact.id}`);
+    console.log(`ÃÂ°ÃÂÃÂÃÂ Updated Monday item ${mondayItemId} from Flex ${flexContact.id}`);
   }
 }
 
@@ -287,64 +287,64 @@ async function writeExternalNumberToFlex(flexId, mondayItemId) {
       body: JSON.stringify({ externalNumber: String(mondayItemId) }),
     });
     if (response.ok) {
-      console.log(`Ã°ÂÂÂ Flex externalNumber set for ${flexId} Ã¢ÂÂ monday item ${mondayItemId}`);
+      console.log(`ÃÂ°ÃÂÃÂÃÂ Flex externalNumber set for ${flexId} ÃÂ¢ÃÂÃÂ monday item ${mondayItemId}`);
     } else {
-      console.log(`Ã¢ÂÂ Ã¯Â¸Â Could not set Flex externalNumber for ${flexId}: ${response.status}`);
+      console.log(`ÃÂ¢ÃÂÃÂ ÃÂ¯ÃÂ¸ÃÂ Could not set Flex externalNumber for ${flexId}: ${response.status}`);
     }
   } catch (e) {
-    console.log(`Ã¢ÂÂ Ã¯Â¸Â Flex externalNumber write failed: ${e.message}`);
+    console.log(`ÃÂ¢ÃÂÃÂ ÃÂ¯ÃÂ¸ÃÂ Flex externalNumber write failed: ${e.message}`);
   }
 }
 
 // ================================================================
-// HELPER: Process a single Flex contact Ã¢ÂÂ create or update in Monday
+// HELPER: Process a single Flex contact ÃÂ¢ÃÂÃÂ create or update in Monday
 // ================================================================
 async function processFlexContact(flexContact, seenFlexIds) {
   const flexId = flexContact.id;
   const name   = flexContact.name || flexContact.preferredDisplayString || null;
 
   if (!flexId) {
-    console.log('Ã¢ÂÂ Ã¯Â¸Â Skipping Flex contact with no ID');
+    console.log('ÃÂ¢ÃÂÃÂ ÃÂ¯ÃÂ¸ÃÂ Skipping Flex contact with no ID');
     return { action: 'skipped', reason: 'no id' };
   }
 
   // Skip soft-deleted contacts
   if (flexContact.deleted) {
-    console.log(`Ã°ÂÂÂÃ¯Â¸Â Skipping deleted Flex contact: ${flexId}`);
+    console.log(`ÃÂ°ÃÂÃÂÃÂÃÂ¯ÃÂ¸ÃÂ Skipping deleted Flex contact: ${flexId}`);
     return { action: 'skipped', reason: 'deleted' };
   }
 
-  // Ã¢ÂÂÃ¢ÂÂ Pagination dedup guard Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂ
+  // ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ Pagination dedup guard ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ
   // Flex sorts contacts by lastEditDate desc. After we create a Monday item we
   // write the Monday item ID back into Flex externalNumber, which updates the
   // contact's lastEditDate. That causes the same contact to bubble up and
-  // reappear on a later page in the same run Ã¢ÂÂ exactly how duplicates are born.
+  // reappear on a later page in the same run ÃÂ¢ÃÂÃÂ exactly how duplicates are born.
   // The seenFlexIds Set prevents processing the same UUID twice per run.
   if (seenFlexIds && seenFlexIds.has(flexId)) {
-    console.log(`Ã¢ÂÂ­Ã¯Â¸Â  Already processed ${flexId} this run Ã¢ÂÂ skipping (pagination dedup)`);
+    console.log(`ÃÂ¢ÃÂÃÂ­ÃÂ¯ÃÂ¸ÃÂ  Already processed ${flexId} this run ÃÂ¢ÃÂÃÂ skipping (pagination dedup)`);
     return { action: 'skipped', reason: 'pagination-dedup' };
   }
   if (seenFlexIds) seenFlexIds.add(flexId);
 
-  console.log(`\nÃ¢ÂÂ¶ Processing: "${name}" (Flex: ${flexId})`);
+  console.log(`\nÃÂ¢ÃÂÃÂ¶ Processing: "${name}" (Flex: ${flexId})`);
 
   // 1. Check if we have a Monday item already linked to this Flex UUID
   let mondayItem = await findMondayItemByFlexId(flexId);
 
   if (mondayItem) {
-    // Known contact Ã¢ÂÂ update
-    console.log(`  Ã¢ÂÂ Existing Monday item found: ${mondayItem.id} ("${mondayItem.name}")`);
+    // Known contact ÃÂ¢ÃÂÃÂ update
+    console.log(`  ÃÂ¢ÃÂÃÂ Existing Monday item found: ${mondayItem.id} ("${mondayItem.name}")`);
     await updateMondayContact(mondayItem.id, flexContact);
     return { action: 'updated', flexId, mondayId: mondayItem.id, name };
   }
 
   // 2. Check if externalNumber holds a Monday item ID written during a previous create.
   //    This is a fallback for contacts where the UUID column index hadn't propagated
-  //    yet when step 1 ran Ã¢ÂÂ the monday item ID was already stored in Flex.
-  //    (Previous version incorrectly called findMondayItemByFlexId again Ã¢ÂÂ same as step 1.)
+  //    yet when step 1 ran ÃÂ¢ÃÂÃÂ the monday item ID was already stored in Flex.
+  //    (Previous version incorrectly called findMondayItemByFlexId again ÃÂ¢ÃÂÃÂ same as step 1.)
   if (flexContact.externalNumber && /^\d{6,}$/.test(String(flexContact.externalNumber).trim())) {
     const mondayItemId = String(flexContact.externalNumber).trim();
-    console.log(`  Ã¢ÂÂ Matched via Flex externalNumber (monday ID: ${mondayItemId})`);
+    console.log(`  ÃÂ¢ÃÂÃÂ Matched via Flex externalNumber (monday ID: ${mondayItemId})`);
     const fullContact = await fetchFlexContactFull(flexId) || flexContact;
     await updateMondayContact(mondayItemId, fullContact);
     return { action: 'updated', flexId, mondayId: mondayItemId, name };
@@ -354,7 +354,7 @@ async function processFlexContact(flexContact, seenFlexIds) {
   if (name) {
     const byName = await findMondayItemByName(name);
     if (byName) {
-      console.log(`  Ã¢ÂÂ Matched by name: ${byName.id} ("${byName.name}") Ã¢ÂÂ linking and updating`);
+      console.log(`  ÃÂ¢ÃÂÃÂ Matched by name: ${byName.id} ("${byName.name}") ÃÂ¢ÃÂÃÂ linking and updating`);
       // Fetch full contact details for column population
       const fullContact = await fetchFlexContactFull(flexId) || flexContact;
       await updateMondayContact(byName.id, fullContact);
@@ -364,8 +364,8 @@ async function processFlexContact(flexContact, seenFlexIds) {
     }
   }
 
-  // 4. Genuinely new Ã¢ÂÂ fetch full details and create in Monday
-  console.log(`  Ã¢ÂÂ No match found Ã¢ÂÂ creating new Monday contact`);
+  // 4. Genuinely new ÃÂ¢ÃÂÃÂ fetch full details and create in Monday
+  console.log(`  ÃÂ¢ÃÂÃÂ No match found ÃÂ¢ÃÂÃÂ creating new Monday contact`);
   const fullContact = await fetchFlexContactFull(flexId) || flexContact;
   const created = await createMondayContact(fullContact);
   return { action: 'created', flexId, mondayId: created?.id, name };
@@ -375,12 +375,12 @@ async function processFlexContact(flexContact, seenFlexIds) {
 // MAIN HANDLER
 // ================================================================
 // ============================================================================
-// PO SYNC Ã¢ÂÂ Flex Rental POs (RPO-) and Purchase POs (PPO-) Ã¢ÂÂ monday.com
+// PO SYNC ÃÂ¢ÃÂÃÂ Flex Rental POs (RPO-) and Purchase POs (PPO-) ÃÂ¢ÃÂÃÂ monday.com
 // Route: POST /api/contacts/pull-from-flex?route=pos
 // URL alias: POST /api/pos/pull-from-flex  (via vercel.json rewrite)
 // ============================================================================
 
-// Ã¢ÂÂÃ¢ÂÂ Board / Group IDs Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂ
+// ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ Board / Group IDs ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ
 const RENTAL_PO_BOARD_ID      = '18421660479';
 const RENTAL_PO_ACTIVE_GROUP  = 'group_mm57c3y5';  // Active
 const RENTAL_PO_DONE_GROUP    = 'group_mm578khs';  // Completed
@@ -391,7 +391,7 @@ const PURCHASE_PO_ACTIVE_GROUP = 'group_mm57nqk9'; // Active
 const PURCHASE_PO_DONE_GROUP   = 'group_mm57vjj2'; // Received
 const PURCHASE_PO_HOLD_GROUP   = 'group_mm57hrnr'; // On Hold
 
-// Ã¢ÂÂÃ¢ÂÂ Rental PO Column IDs Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂ
+// ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ Rental PO Column IDs ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ
 const RPO_COL = {
   docNumber:    'text_mm5797r7',
   status:       'color_mm57je6p',
@@ -406,7 +406,7 @@ const RPO_COL = {
   total:        'numeric_mm573mez',
 };
 
-// Ã¢ÂÂÃ¢ÂÂ Purchase PO Column IDs Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂ
+// ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ Purchase PO Column IDs ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ
 const PPO_COL = {
   docNumber:        'text_mm579qkq',
   status:           'color_mm57m944',
@@ -422,7 +422,7 @@ const PPO_COL = {
 const PROJECTS_BOARD_ID = '18415679761';
 // CONTACTS_BOARD_ID already defined at top of file
 
-// Ã¢ÂÂÃ¢ÂÂ Projects board UUID columns (used for parentId-based project lookup) Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂ
+// ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ Projects board UUID columns (used for parentId-based project lookup) ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ
 // Flex POs have a parentId pointing to either the Quote or the Pullsheet.
 // We try to match that UUID against these two columns before falling back to name.
 const PROJ_QUOTE_UUID_COL = 'text_mm4cwasc';  // Quote UUID
@@ -436,7 +436,7 @@ const FLEX_PO_FIELD_TYPES = [
   'plannedStartDate', 'plannedEndDate',
 ].join(',');
 
-// Ã¢ÂÂÃ¢ÂÂ Flex status name Ã¢ÂÂ monday status label Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂ
+// ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ Flex status name ÃÂ¢ÃÂÃÂ monday status label ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ
 function _mapRPOStatus(s) {
   s = (s || '').toLowerCase();
   if (s.includes('tentative'))                              return 'Tentative';
@@ -483,7 +483,7 @@ function _formatDate(iso) {
 }
 
 // Fetch the total dollar amount for a Flex document.
-// GET /api/financial-document/{documentId}/document-total Ã¢ÂÂ plain number
+// GET /api/financial-document/{documentId}/document-total ÃÂ¢ÃÂÃÂ plain number
 async function _fetchFlexPOTotal(documentId) {
   try {
     const url = `${FLEX_BASE_URL}/api/financial-document/${documentId}/document-total`;
@@ -491,23 +491,23 @@ async function _fetchFlexPOTotal(documentId) {
       headers: { 'X-Auth-Token': FLEX_API_KEY, 'Accept': 'application/json' },
     });
     if (!res.ok) {
-      console.warn(`  Ã¢ÂÂ Ã¯Â¸Â  Could not fetch total for ${documentId}: HTTP ${res.status}`);
+      console.warn(`  ÃÂ¢ÃÂÃÂ ÃÂ¯ÃÂ¸ÃÂ  Could not fetch total for ${documentId}: HTTP ${res.status}`);
       return null;
     }
     const val = await res.json();
     return typeof val === 'number' ? val : null;
   } catch (e) {
-    console.warn(`  Ã¢ÂÂ Ã¯Â¸Â  Total fetch error for ${documentId}:`, e.message);
+    console.warn(`  ÃÂ¢ÃÂÃÂ ÃÂ¯ÃÂ¸ÃÂ  Total fetch error for ${documentId}:`, e.message);
     return null;
   }
 }
 
 // Caches to avoid repeated monday lookups within a single sync run
-const _poProjectUUIDCache = {};  // parentId (UUID) Ã¢ÂÂ monday item id
-const _poProjectNameCache = {};  // parsed project name Ã¢ÂÂ monday item id
+const _poProjectUUIDCache = {};  // parentId (UUID) ÃÂ¢ÃÂÃÂ monday item id
+const _poProjectNameCache = {};  // parsed project name ÃÂ¢ÃÂÃÂ monday item id
 const _poVendorCache      = {};
 
-// Ã¢ÂÂÃ¢ÂÂ Primary: match by parentId UUID against Projects board UUID columns Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂ
+// ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ Primary: match by parentId UUID against Projects board UUID columns ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ
 // Flex POs have parentId = UUID of either the parent Quote or parent Pullsheet.
 // We try Quote UUID column first, then Equipment List UUID column.
 async function _findProjectByParentUUID(parentId) {
@@ -525,7 +525,7 @@ async function _findProjectByParentUUID(parentId) {
     `);
     const match = result.data?.items_page_by_column_values?.items?.[0] || null;
     if (match) {
-      console.log(`  Ã°ÂÂÂ Project via UUID (${colId === PROJ_QUOTE_UUID_COL ? 'Quote' : 'Pullsheet'}): "${match.name}"`);
+      console.log(`  ÃÂ°ÃÂÃÂÃÂ Project via UUID (${colId === PROJ_QUOTE_UUID_COL ? 'Quote' : 'Pullsheet'}): "${match.name}"`);
       _poProjectUUIDCache[parentId] = parseInt(match.id);
       return _poProjectUUIDCache[parentId];
     }
@@ -535,9 +535,9 @@ async function _findProjectByParentUUID(parentId) {
   return null;
 }
 
-// Ã¢ÂÂÃ¢ÂÂ Fallback: match by parsed name when UUID lookup finds nothing Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂ
+// ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ Fallback: match by parsed name when UUID lookup finds nothing ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ
 // Name convention: "{Vendor abbrev} - {Project Name}"
-// e.g. "Legacy - Nocturnal Valley 2026" Ã¢ÂÂ search for "Nocturnal Valley 2026"
+// e.g. "Legacy - Nocturnal Valley 2026" ÃÂ¢ÃÂÃÂ search for "Nocturnal Valley 2026"
 async function _findProjectByNameFallback(poName) {
   const parsedName = _extractProjectName(poName);
   if (!parsedName) return null;
@@ -558,8 +558,8 @@ async function _findProjectByNameFallback(poName) {
     i.name.toLowerCase().includes(key) || key.includes(i.name.toLowerCase().trim())
   );
   _poProjectNameCache[key] = match ? parseInt(match.id) : null;
-  if (match) console.log(`  Ã°ÂÂÂ Project via name: "${parsedName}" Ã¢ÂÂ "${match.name}"`);
-  else       console.log(`  Ã¢ÂÂ Ã¯Â¸Â  Project not found: parentId has no UUID match, name parse failed for "${parsedName}"`);
+  if (match) console.log(`  ÃÂ°ÃÂÃÂÃÂ Project via name: "${parsedName}" ÃÂ¢ÃÂÃÂ "${match.name}"`);
+  else       console.log(`  ÃÂ¢ÃÂÃÂ ÃÂ¯ÃÂ¸ÃÂ  Project not found: parentId has no UUID match, name parse failed for "${parsedName}"`);
   return _poProjectNameCache[key];
 }
 
@@ -582,8 +582,8 @@ async function _findVendorByName(vendorName) {
   const partial = items.find(i => i.name.toLowerCase().includes(key) || key.includes(i.name.toLowerCase()));
   const match   = exact || partial || null;
   _poVendorCache[key] = match ? parseInt(match.id) : null;
-  if (match) console.log(`  Ã°ÂÂÂ Vendor: "${vendorName}" Ã¢ÂÂ "${match.name}"`);
-  else       console.log(`  Ã¢ÂÂ Ã¯Â¸Â  Vendor not found: "${vendorName}"`);
+  if (match) console.log(`  ÃÂ°ÃÂÃÂÃÂ Vendor: "${vendorName}" ÃÂ¢ÃÂÃÂ "${match.name}"`);
+  else       console.log(`  ÃÂ¢ÃÂÃÂ ÃÂ¯ÃÂ¸ÃÂ  Vendor not found: "${vendorName}"`);
   return _poVendorCache[key];
 }
 
@@ -626,7 +626,7 @@ async function _fetchAllFlexPOs() {
     const data = await res.json();
     const content = data.content || [];
     all.push(...content);
-    console.log(`  Ã°ÂÂÂ Flex POs page ${page}: ${content.length} records (total pages: ${data.totalPages ?? '?'})`);
+    console.log(`  ÃÂ°ÃÂÃÂÃÂ Flex POs page ${page}: ${content.length} records (total pages: ${data.totalPages ?? '?'})`);
     if (content.length < 100 || page + 1 >= (data.totalPages || 1)) break;
     page++;
   }
@@ -638,7 +638,7 @@ async function _buildRPOCols(po, today) {
   const statusName = typeof po.statusId === 'object' ? po.statusId?.name : (po.statusId || '');
   const label      = _mapRPOStatus(statusName);
 
-  // Project: UUID-first (parentId Ã¢ÂÂ Quote or Pullsheet UUID in Projects board),
+  // Project: UUID-first (parentId ÃÂ¢ÃÂÃÂ Quote or Pullsheet UUID in Projects board),
   // fallback to name parsing if UUID lookup returns nothing.
   const projId = po.parentId
     ? (await _findProjectByParentUUID(po.parentId) ?? await _findProjectByNameFallback(po.name))
@@ -699,7 +699,7 @@ async function _processPO(po, today, dryRun, stats) {
   const boardId  = isRPO ? RENTAL_PO_BOARD_ID    : PURCHASE_PO_BOARD_ID;
   const uuidCol  = isRPO ? RPO_COL.flexUUID       : PPO_COL.flexUUID;
 
-  console.log(`\nÃ°ÂÂÂ ${docNum} Ã¢ÂÂ "${po.name}"`);
+  console.log(`\nÃÂ°ÃÂÃÂÃÂ ${docNum} ÃÂ¢ÃÂÃÂ "${po.name}"`);
 
   const { colsJSON, group } = isRPO
     ? await _buildRPOCols(po, today)
@@ -717,7 +717,7 @@ async function _processPO(po, today, dryRun, stats) {
         ) { id }
       }
     `);
-    console.log(`  Ã°ÂÂÂ Updated ${existing.id}`);
+    console.log(`  ÃÂ°ÃÂÃÂÃÂ Updated ${existing.id}`);
     stats.updated++;
   } else {
     if (!dryRun) await mondayQueryPO(`
@@ -728,7 +728,7 @@ async function _processPO(po, today, dryRun, stats) {
         ) { id }
       }
     `);
-    console.log(`  Ã¢ÂÂ Created in ${group}`);
+    console.log(`  ÃÂ¢ÃÂÃÂ Created in ${group}`);
     stats.created++;
   }
 }
@@ -738,7 +738,7 @@ async function handlePOSync(req, res) {
 
   const dryRun = req.query?.dryRun === 'true' || req.body?.dryRun === true;
   const today  = new Date().toISOString().substring(0, 10);
-  console.log(`\nÃ°ÂÂÂ PO sync started${dryRun ? ' (DRY RUN)' : ''} Ã¢ÂÂ ${today}`);
+  console.log(`\nÃÂ°ÃÂÃÂÃÂ PO sync started${dryRun ? ' (DRY RUN)' : ''} ÃÂ¢ÃÂÃÂ ${today}`);
 
   const stats  = { created: 0, updated: 0, skipped: 0, errors: 0, total: 0 };
   const errors = [];
@@ -748,13 +748,13 @@ async function handlePOSync(req, res) {
     stats.total  = allPOs.length;
     const rpos   = allPOs.filter(p => (p.documentNumber || '').startsWith('RPO-'));
     const ppos   = allPOs.filter(p => (p.documentNumber || '').startsWith('PPO-'));
-    console.log(`Ã°ÂÂÂ ${allPOs.length} POs: ${rpos.length} RPOs, ${ppos.length} PPOs`);
+    console.log(`ÃÂ°ÃÂÃÂÃÂ ${allPOs.length} POs: ${rpos.length} RPOs, ${ppos.length} PPOs`);
 
     for (let i = 0; i < allPOs.length; i += 5) {
       await Promise.all(
         allPOs.slice(i, i + 5).map(po =>
           _processPO(po, today, dryRun, stats).catch(err => {
-            console.error(`Ã¢ÂÂ ${po.documentNumber}:`, err.message);
+            console.error(`ÃÂ¢ÃÂÃÂ ${po.documentNumber}:`, err.message);
             errors.push({ doc: po.documentNumber, error: err.message });
             stats.errors++;
           })
@@ -762,14 +762,14 @@ async function handlePOSync(req, res) {
       );
     }
 
-    console.log(`Ã¢ÂÂ PO sync done Ã¢ÂÂ created: ${stats.created}, updated: ${stats.updated}, errors: ${stats.errors}`);
+    console.log(`ÃÂ¢ÃÂÃÂ PO sync done ÃÂ¢ÃÂÃÂ created: ${stats.created}, updated: ${stats.updated}, errors: ${stats.errors}`);
     return res.status(200).json({
       ok: true, dryRun, today, stats,
       summary: { rpos: rpos.length, ppos: ppos.length },
       ...(errors.length > 0 && { errors }),
     });
   } catch (err) {
-    console.error('Ã¢ÂÂ PO sync fatal:', err);
+    console.error('ÃÂ¢ÃÂÃÂ PO sync fatal:', err);
     return res.status(500).json({ ok: false, error: err.message });
   }
 }
@@ -781,13 +781,13 @@ async function handlePOSync(req, res) {
 
 // ================================================================
 // GEOCODE ROUTE: enrich New Additions group with location data
-// GET  ?route=geocode  Ã¢ÂÂ dry run (shows what would be geocoded)
-// POST ?route=geocode  Ã¢ÂÂ live run (writes to Monday location column)
+// GET  ?route=geocode  ÃÂ¢ÃÂÃÂ dry run (shows what would be geocoded)
+// POST ?route=geocode  ÃÂ¢ÃÂÃÂ live run (writes to Monday location column)
 // Skips contacts that already have a location value.
 // ================================================================
 const GOOGLE_MAPS_KEY   = process.env.GEOCODING_API_KEY;
 const LOCATION_COL      = 'location_mm50h12r';
-const GEOCODE_CONCURRENCY = 5; // keep low Ã¢ÂÂ parallel geocode requests share a single API key quota
+const GEOCODE_CONCURRENCY = 5; // keep low ÃÂ¢ÃÂÃÂ parallel geocode requests share a single API key quota
 
 async function geocodeAddress(rawAddress) {
   const url = 'https://maps.googleapis.com/maps/api/geocode/json?address='
@@ -796,7 +796,7 @@ async function geocodeAddress(rawAddress) {
   if (!res.ok) throw new Error('Geocode HTTP ' + res.status);
   const data = await res.json();
   if (data.status !== 'OK' || !data.results?.length) {
-    throw new Error('Geocode status: ' + data.status + (data.error_message ? ' Ã¢ÂÂ ' + data.error_message : ''));
+    throw new Error('Geocode status: ' + data.status + (data.error_message ? ' ÃÂ¢ÃÂÃÂ ' + data.error_message : ''));
   }
   const r = data.results[0];
   const countryComp = (r.address_components || []).find(c => c.types.includes('country'));
@@ -862,7 +862,7 @@ async function getAllNewAdditionsItems() {
 
 async function handleGeocodeRoute(req, res) {
   const dryRun = req.method === 'GET';
-  console.log('\nÃ°ÂÂÂ geocode-new | mode: ' + (dryRun ? 'DRY RUN' : 'LIVE'));
+  console.log('\nÃÂ°ÃÂÃÂÃÂ geocode-new | mode: ' + (dryRun ? 'DRY RUN' : 'LIVE'));
 
   const allItems = await getAllNewAdditionsItems();
 
@@ -874,7 +874,7 @@ async function handleGeocodeRoute(req, res) {
   });
 
   const alreadyDone = allItems.length - toGeocode.length;
-  console.log(`Ã°ÂÂÂ ${allItems.length} in group | ${toGeocode.length} to geocode | ${alreadyDone} already have location`);
+  console.log(`ÃÂ°ÃÂÃÂÃÂ ${allItems.length} in group | ${toGeocode.length} to geocode | ${alreadyDone} already have location`);
 
   const results = [];
   for (let i = 0; i < toGeocode.length; i += GEOCODE_CONCURRENCY) {
@@ -887,11 +887,11 @@ async function handleGeocodeRoute(req, res) {
       try {
         const loc = await geocodeAddress(rawAddr);
         await writeLocationToMonday(item.id, loc);
-        console.log(`  Ã¢ÂÂ "${item.name}" Ã¢ÂÂ ${loc.lat},${loc.lng} (${loc.address})`);
+        console.log(`  ÃÂ¢ÃÂÃÂ "${item.name}" ÃÂ¢ÃÂÃÂ ${loc.lat},${loc.lng} (${loc.address})`);
         return { name: item.name, itemId: item.id, status: 'geocoded',
           location: { lat: loc.lat, lng: loc.lng, address: loc.address } };
       } catch (err) {
-        console.warn(`  Ã¢ÂÂ Ã¯Â¸Â  "${item.name}": ${err.message}`);
+        console.warn(`  ÃÂ¢ÃÂÃÂ ÃÂ¯ÃÂ¸ÃÂ  "${item.name}": ${err.message}`);
         return { name: item.name, itemId: item.id, status: 'error', error: err.message, address: rawAddr };
       }
     }));
@@ -918,8 +918,8 @@ async function handleGeocodeRoute(req, res) {
 
 // ================================================================
 // DEDUP ROUTE: remove duplicate items in New Additions group
-// GET  ?route=dedup-group Ã¢ÂÂ dry run (shows what would be deleted)
-// POST ?route=dedup-group Ã¢ÂÂ live run (deletes duplicates)
+// GET  ?route=dedup-group ÃÂ¢ÃÂÃÂ dry run (shows what would be deleted)
+// POST ?route=dedup-group ÃÂ¢ÃÂÃÂ live run (deletes duplicates)
 //
 // Groups items by normalized name. For each group with >1 item:
 //   - Scores each by number of non-empty column values
@@ -963,13 +963,13 @@ async function deleteMondayItem(itemId) {
 
 async function handleDedupGroupRoute(req, res) {
   const dryRun = req.method === 'GET';
-  console.log('\nÃ°ÂÂÂ dedup-group | mode: ' + (dryRun ? 'DRY RUN' : 'LIVE'));
+  console.log('\nÃÂ°ÃÂÃÂÃÂ dedup-group | mode: ' + (dryRun ? 'DRY RUN' : 'LIVE'));
 
   // Fetch all items in group with all column values
   const allItems = await getAllNewAdditionsItems();
   console.log('Total items in group:', allItems.length);
 
-  // Group by normalized name Ã¢ÂÂ skip generic names
+  // Group by normalized name ÃÂ¢ÃÂÃÂ skip generic names
   const groups = {};
   const skipped = [];
   for (const item of allItems) {
@@ -1014,13 +1014,13 @@ async function handleDedupGroupRoute(req, res) {
     });
   }
 
-  // Live Ã¢ÂÂ delete in batches of 10
+  // Live ÃÂ¢ÃÂÃÂ delete in batches of 10
   const results = [];
   for (let i = 0; i < toDelete.length; i += 10) {
     const chunk = toDelete.slice(i, i + 10);
     const settled = await Promise.allSettled(chunk.map(async item => {
       await deleteMondayItem(item.itemId);
-      console.log('  Ã°ÂÂÂÃ¯Â¸Â  deleted', item.name, item.itemId);
+      console.log('  ÃÂ°ÃÂÃÂÃÂÃÂ¯ÃÂ¸ÃÂ  deleted', item.name, item.itemId);
       return { ...item, status: 'deleted' };
     }));
     settled.forEach(r => results.push(r.status === 'fulfilled' ? r.value : { status: 'error', error: r.reason?.message }));
@@ -1043,14 +1043,14 @@ async function handleDedupGroupRoute(req, res) {
 
 // ================================================================
 // SORT-NEW ROUTE: classify + move New Additions into proper groups
-// GET  ?route=sort-new Ã¢ÂÂ dry run (shows proposed classification)
-// POST ?route=sort-new Ã¢ÂÂ live (sets Company Type + moves to group)
+// GET  ?route=sort-new ÃÂ¢ÃÂÃÂ dry run (shows proposed classification)
+// POST ?route=sort-new ÃÂ¢ÃÂÃÂ live (sets Company Type + moves to group)
 //
 // Skips items that already have Company Type set (idempotent).
 // Classification priority:
 //   1. Keyword patterns in name
-//   2. Flex Contact Type (Client Ã¢ÂÂ Artist, Venue Ã¢ÂÂ Venue)
-//   3. Fallback Ã¢ÂÂ Other Services & Vendors
+//   2. Flex Contact Type (Client ÃÂ¢ÃÂÃÂ Artist, Venue ÃÂ¢ÃÂÃÂ Venue)
+//   3. Fallback ÃÂ¢ÃÂÃÂ Other Services & Vendors
 // ================================================================
 
 // Company Type dropdown IDs
@@ -1077,7 +1077,7 @@ const COMPANY_TYPE = {
   INTERNAL:    20,   // Internal Only
 };
 
-// Company Type Ã¢ÂÂ Group mapping
+// Company Type ÃÂ¢ÃÂÃÂ Group mapping
 const TYPE_TO_GROUP = {
   [COMPANY_TYPE.ARTIST]:     'group_mm3vsdmn',  // Artists & Performers
   [COMPANY_TYPE.VENUE]:      'group_mm3v505y',  // Venues
@@ -1182,7 +1182,7 @@ function classifyContact(name, flexContactType) {
   if (/grill|restaurant|cafe|catering|hotel|bar(?!celona)/.test(n))
     return COMPANY_TYPE.LOCAL;
 
-  // If Flex says Client Ã¢ÂÂ likely artist / performer
+  // If Flex says Client ÃÂ¢ÃÂÃÂ likely artist / performer
   if (flexContactType === 'Client')
     return COMPANY_TYPE.ARTIST;
 
@@ -1254,7 +1254,7 @@ async function setCompanyType(itemId, typeId) {
 
 async function handleSortNewRoute(req, res) {
   const dryRun = req.method === 'GET';
-  console.log('\nÃ°ÂÂÂ¦ sort-new | mode: ' + (dryRun ? 'DRY RUN' : 'LIVE'));
+  console.log('\nÃÂ°ÃÂÃÂÃÂ¦ sort-new | mode: ' + (dryRun ? 'DRY RUN' : 'LIVE'));
 
   const allItems = await getNewAdditionsForSort();
   console.log('Total in New Additions:', allItems.length);
@@ -1282,14 +1282,14 @@ async function handleSortNewRoute(req, res) {
     });
   }
 
-  // Live Ã¢ÂÂ process in batches of 5
+  // Live ÃÂ¢ÃÂÃÂ process in batches of 5
   const results = [];
   for (let i = 0; i < plan.length; i += 5) {
     const chunk = plan.slice(i, i + 5);
     const settled = await Promise.allSettled(chunk.map(async p => {
       await setCompanyType(p.itemId, p.typeId);
       await moveItemToGroup(p.itemId, p.groupId);
-      console.log(`  Ã¢ÂÂ "${p.name}" Ã¢ÂÂ ${p.typeName} / ${p.groupName}`);
+      console.log(`  ÃÂ¢ÃÂÃÂ "${p.name}" ÃÂ¢ÃÂÃÂ ${p.typeName} / ${p.groupName}`);
       return { ...p, status: 'sorted' };
     }));
     settled.forEach(r => results.push(r.status === 'fulfilled' ? r.value : { status: 'error', error: r.reason?.message }));
@@ -1351,7 +1351,7 @@ const OOC_SUB_COL = {
 };
 
 // ================================================================
-// BATCH HELPER Ã¢ÂÂ fires chunks in parallel via Promise.all
+// BATCH HELPER ÃÂ¢ÃÂÃÂ fires chunks in parallel via Promise.all
 // mutations: array of GQL mutation strings (without 'mutation {}' wrapper)
 // chunkSize: how many to pack into each GQL request (see default in signature)
 // Returns array of { id } results in same order
@@ -1391,7 +1391,7 @@ async function runBatchedMutations(mutations, chunkSize = 25) {
 }
 
 // ================================================================
-// Pre-fetch ALL existing parent items Ã¢ÂÂ { flexUnitId: mondayItemId }
+// Pre-fetch ALL existing parent items ÃÂ¢ÃÂÃÂ { flexUnitId: mondayItemId }
 // ================================================================
 async function buildParentItemsMap() {
   const map = {};
@@ -1411,7 +1411,7 @@ async function buildParentItemsMap() {
 }
 
 // ================================================================
-// Pre-fetch ALL existing subitems Ã¢ÂÂ { flexOocId: mondaySubitemId }
+// Pre-fetch ALL existing subitems ÃÂ¢ÃÂÃÂ { flexOocId: mondaySubitemId }
 // ================================================================
 async function buildSubitemsMap() {
   const map = {};
@@ -1457,11 +1457,11 @@ async function fetchUnitStatuses(unitIds) {
 }
 
 // ================================================================
-// ROUTE: sync-ooc Ã¢ÂÂ batched mutations, no serial unit fetches
+// ROUTE: sync-ooc ÃÂ¢ÃÂÃÂ batched mutations, no serial unit fetches
 // ================================================================
 async function handleSyncOocRoute(req, res) {
   const startedAt = Date.now();
-  console.log('\nÃ°ÂÂÂ§ sync-ooc starting (batched)');
+  console.log('\nÃÂ°ÃÂÃÂÃÂ§ sync-ooc starting (batched)');
 
   // 1. Fetch all OOC records from Flex
   const allOocRecords = [];
@@ -1473,28 +1473,28 @@ async function handleSyncOocRoute(req, res) {
     const data = await resp.json();
     const recs = data.content || [];
     allOocRecords.push(...recs);
-    console.log(`  Ã°ÂÂÂ Flex OOC page ${page}: ${recs.length} records`);
+    console.log(`  ÃÂ°ÃÂÃÂÃÂ Flex OOC page ${page}: ${recs.length} records`);
     if (data.last || recs.length < 100) keepGoing = false;
     else if (++page >= 50) keepGoing = false;
   }
-  console.log(`Ã°ÂÂÂ Total OOC records: ${allOocRecords.length}`);
+  console.log(`ÃÂ°ÃÂÃÂÃÂ Total OOC records: ${allOocRecords.length}`);
 
-  // 2. Group by serialUnitId Ã¢ÂÂ skip non-serialized items
+  // 2. Group by serialUnitId ÃÂ¢ÃÂÃÂ skip non-serialized items
   const byUnit = {};
   for (const rec of allOocRecords) {
     if (!rec.serialUnitId) continue;
     (byUnit[rec.serialUnitId] = byUnit[rec.serialUnitId] || []).push(rec);
   }
   const unitIds = Object.keys(byUnit);
-  console.log(`Ã°ÂÂÂ© Unique serialized units: ${unitIds.length}`);
+  console.log(`ÃÂ°ÃÂÃÂÃÂ© Unique serialized units: ${unitIds.length}`);
 
   // 3. Bulk pre-fetch existing monday items & subitems in parallel
-  console.log('Ã°ÂÂÂ¦ Pre-fetching existing monday data...');
+  console.log('ÃÂ°ÃÂÃÂÃÂ¦ Pre-fetching existing monday data...');
   const [parentMap, subMap] = await Promise.all([buildParentItemsMap(), buildSubitemsMap()]);
-  console.log(`  Ã¢ÂÂ Parents: ${Object.keys(parentMap).length} | Subitems: ${Object.keys(subMap).length}`);
+  console.log(`  ÃÂ¢ÃÂÃÂ Parents: ${Object.keys(parentMap).length} | Subitems: ${Object.keys(subMap).length}`);
 
   // Fetch Flex unit statuses to catch Decommissioned / Missing (not in OOC records)
-  console.log('Ã°ÂÂÂ Fetching Flex unit statuses...');
+  console.log('ÃÂ°ÃÂÃÂÃÂ Fetching Flex unit statuses...');
   const unitStatusMap = await fetchUnitStatuses(unitIds);
 
   const today = new Date().toISOString().split('T')[0];
@@ -1526,7 +1526,7 @@ async function handleSyncOocRoute(req, res) {
       [OOC_COL.flexUnitId]:        unitId,
     }));
 
-    const itemName = JSON.stringify(`${sample.modelName || ''} Ã¢ÂÂ SN:${serial}`);
+    const itemName = JSON.stringify(`${sample.modelName || ''} ÃÂ¢ÃÂÃÂ SN:${serial}`);
 
     if (parentMap[unitId]) {
       parentUpdates.push(`change_multiple_column_values(board_id:${REPAIR_TRACKER_BOARD_ID},item_id:${parentMap[unitId]},column_values:${cv}) { id }`);
@@ -1536,7 +1536,7 @@ async function handleSyncOocRoute(req, res) {
     }
   }
 
-  console.log(`Ã°ÂÂÂ¨ Parent creates: ${parentCreates.length} | updates: ${parentUpdates.length}`);
+  console.log(`ÃÂ°ÃÂÃÂÃÂ¨ Parent creates: ${parentCreates.length} | updates: ${parentUpdates.length}`);
 
   // 5. Run parent batches
   const [createResults, updateResults] = await Promise.all([
@@ -1549,7 +1549,7 @@ async function handleSyncOocRoute(req, res) {
     if (r?.id) parentMap[unitIdOrder[idx]] = r.id;
   });
 
-  console.log(`Ã¢ÂÂ Parents done. Created: ${createResults.filter(r=>r?.id).length} | Updated: ${updateResults.length}`);
+  console.log(`ÃÂ¢ÃÂÃÂ Parents done. Created: ${createResults.filter(r=>r?.id).length} | Updated: ${updateResults.length}`);
 
   // 6. Build batched subitem mutations
   const subCreates = [], subUpdates = [];
@@ -1586,7 +1586,7 @@ async function handleSyncOocRoute(req, res) {
     }
   }
 
-  console.log(`Ã°ÂÂÂ¨ Subitem creates: ${subCreates.length} | updates: ${subUpdates.length}`);
+  console.log(`ÃÂ°ÃÂÃÂÃÂ¨ Subitem creates: ${subCreates.length} | updates: ${subUpdates.length}`);
 
   // 7. Run subitem batches
   const [subCreateResults, subUpdateResults] = await Promise.all([
@@ -1604,25 +1604,25 @@ async function handleSyncOocRoute(req, res) {
     subitemsCreated:  subCreateResults.filter(r=>r?.id).length,
     subitemsUpdated:  subUpdates.length,
   };
-  console.log('\nÃ°ÂÂÂ sync-ooc complete:', summary);
+  console.log('\nÃÂ°ÃÂÃÂÃÂ sync-ooc complete:', summary);
   return res.status(200).json(summary);
 }
 
 // ================================================================
-// ROUTE: resolve-ooc Ã¢ÂÂ push resolution from monday back to Flex
+// ROUTE: resolve-ooc ÃÂ¢ÃÂÃÂ push resolution from monday back to Flex
 // ================================================================
 async function handleResolveOocRoute(req, res) {
-  console.log('\nÃ¢ÂÂ resolve-ooc triggered');
+  console.log('\nÃÂ¢ÃÂÃÂ resolve-ooc triggered');
   const body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body || {};
   if (body.challenge) return res.status(200).json({ challenge: body.challenge });
 
   // Accept monday automation webhook format (body.event.pulseId)
   // OR direct Vibe app call format (body.subitemId or body.itemId)
   const subitemId = body.event?.pulseId || body.subitemId || body.itemId;
-  if (!subitemId) return res.status(400).json({ error: 'Missing subitemId Ã¢ÂÂ send body.subitemId, body.itemId, or body.event.pulseId' });
+  if (!subitemId) return res.status(400).json({ error: 'Missing subitemId ÃÂ¢ÃÂÃÂ send body.subitemId, body.itemId, or body.event.pulseId' });
 
   try {
-    // Read flexOocId, reportedDate, AND resolvedDate Ã¢ÂÂ resolvedDate used as de-dupe guard
+    // Read flexOocId, reportedDate, AND resolvedDate ÃÂ¢ÃÂÃÂ resolvedDate used as de-dupe guard
     const query = `{ items(ids:[${subitemId}]) { column_values(ids:["${OOC_SUB_COL.flexOocId}","${OOC_SUB_COL.reportedDate}","${OOC_SUB_COL.resolvedDate}"]) { id text } } }`;
     const mondayRes  = await fetch(MONDAY_API_URL, { method:'POST', headers:{'Content-Type':'application/json','Authorization':MONDAY_API_KEY}, body:JSON.stringify({query}) });
     const mondayData = await mondayRes.json();
@@ -1631,7 +1631,7 @@ async function handleResolveOocRoute(req, res) {
     const reportedDate = cols.find(c => c.id === OOC_SUB_COL.reportedDate)?.text?.trim();
     const resolvedDate = cols.find(c => c.id === OOC_SUB_COL.resolvedDate)?.text?.trim();
 
-    // De-dupe: if already resolved (resolvedDate stamped), skip Ã¢ÂÂ prevents automation loop
+    // De-dupe: if already resolved (resolvedDate stamped), skip ÃÂ¢ÃÂÃÂ prevents automation loop
     if (resolvedDate) return res.status(200).json({ ok:true, skipped:true, reason:'Already resolved', resolvedDate });
     if (!flexOocId)   return res.status(200).json({ ok:true, skipped:true, reason:'No Flex OOC ID' });
 
@@ -1640,12 +1640,12 @@ async function handleResolveOocRoute(req, res) {
       { method:'PUT', headers:{'X-Auth-Token':FLEX_API_KEY,'Accept':'application/json'} });
     if (!flexRes.ok) {
       const errText = await flexRes.text().catch(() => '');
-      console.error(`Ã¢ÂÂ Flex resolve failed ${flexOocId}: ${flexRes.status} ${errText}`);
+      console.error(`ÃÂ¢ÃÂÃÂ Flex resolve failed ${flexOocId}: ${flexRes.status} ${errText}`);
       return res.status(502).json({ error: `Flex rejected resolve for OOC ID ${flexOocId}`, status: flexRes.status });
     }
-    console.log(`Ã¢ÂÂ Flex OOC ${flexOocId} resolved`);
+    console.log(`ÃÂ¢ÃÂÃÂ Flex OOC ${flexOocId} resolved`);
 
-    // Write back to monday: set Repair Status Ã¢ÂÂ Resolved, stamp resolvedDate and daysDown
+    // Write back to monday: set Repair Status ÃÂ¢ÃÂÃÂ Resolved, stamp resolvedDate and daysDown
     const today    = new Date().toISOString().split('T')[0];
     const rawDays  = reportedDate ? Math.round((new Date(today) - new Date(reportedDate)) / 86400000) : null;
     const daysDown = (rawDays !== null && !isNaN(rawDays)) ? rawDays : null;
@@ -1658,13 +1658,13 @@ async function handleResolveOocRoute(req, res) {
       body:JSON.stringify({ query:`mutation { change_multiple_column_values(board_id:${REPAIR_TRACKER_SUBITEMS_BOARD_ID},item_id:${subitemId},column_values:${JSON.stringify(updateCv)}) { id } }` }) });
     const mondayWriteData = await mondayWriteRes.json();
     if (mondayWriteData.errors) {
-      console.error('Ã¢ÂÂ monday write-back failed:', JSON.stringify(mondayWriteData.errors));
+      console.error('ÃÂ¢ÃÂÃÂ monday write-back failed:', JSON.stringify(mondayWriteData.errors));
       return res.status(500).json({ error:'Flex resolved but monday write-back failed', details:mondayWriteData.errors });
     }
 
     return res.status(200).json({ ok:true, flexOocId, resolvedDate:today, daysDown });
   } catch (err) {
-    console.error('Ã¢ÂÂ resolve-ooc error:', err);
+    console.error('ÃÂ¢ÃÂÃÂ resolve-ooc error:', err);
     return res.status(500).json({ error: err.message });
   }
 }
@@ -1672,16 +1672,16 @@ async function handleResolveOocRoute(req, res) {
 
 
 // ================================================================
-// ROUTE: mark-missing Ã¢ÂÂ flag a unit as presumed missing in Flex + monday
+// ROUTE: mark-missing ÃÂ¢ÃÂÃÂ flag a unit as presumed missing in Flex + monday
 // Body: { itemId } (parent item ID on the Repair Tracker board)
 // ================================================================
 async function handleMarkMissingRoute(req, res) {
-  console.log('\nÃ°ÂÂÂ mark-missing triggered');
+  console.log('\nÃÂ°ÃÂÃÂÃÂ mark-missing triggered');
   const body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body || {};
   if (body.challenge) return res.status(200).json({ challenge: body.challenge });
 
   const itemId = body.event?.pulseId || body.itemId;
-  if (!itemId) return res.status(400).json({ error: 'Missing itemId Ã¢ÂÂ send body.itemId or body.event.pulseId' });
+  if (!itemId) return res.status(400).json({ error: 'Missing itemId ÃÂ¢ÃÂÃÂ send body.itemId or body.event.pulseId' });
 
   try {
     // Read flexUnitId from parent item
@@ -1701,12 +1701,12 @@ async function handleMarkMissingRoute(req, res) {
         body: JSON.stringify({ presumedMissing: true }) });
     if (!flexRes.ok) {
       const errText = await flexRes.text().catch(() => '');
-      console.error(`Ã¢ÂÂ Flex mark-missing failed ${flexUnitId}: ${flexRes.status} ${errText}`);
+      console.error(`ÃÂ¢ÃÂÃÂ Flex mark-missing failed ${flexUnitId}: ${flexRes.status} ${errText}`);
       return res.status(502).json({ error:`Flex rejected mark-missing for unit ${flexUnitId}`, status:flexRes.status });
     }
-    console.log(`Ã¢ÂÂ Flex unit ${flexUnitId} marked presumedMissing`);
+    console.log(`ÃÂ¢ÃÂÃÂ Flex unit ${flexUnitId} marked presumedMissing`);
 
-    // Write back to monday: set Current Status Ã¢ÂÂ Missing, stamp missingSince date
+    // Write back to monday: set Current Status ÃÂ¢ÃÂÃÂ Missing, stamp missingSince date
     const today = new Date().toISOString().split('T')[0];
     const updateCv = JSON.stringify({
       [OOC_COL.currentStatus]: { label: 'Missing' },
@@ -1716,28 +1716,28 @@ async function handleMarkMissingRoute(req, res) {
       body: JSON.stringify({ query:`mutation { change_multiple_column_values(board_id:${REPAIR_TRACKER_BOARD_ID},item_id:${itemId},column_values:${JSON.stringify(updateCv)}) { id } }` }) });
     const writeData = await writeRes.json();
     if (writeData.errors) {
-      console.error('Ã¢ÂÂ monday write-back failed:', JSON.stringify(writeData.errors));
+      console.error('ÃÂ¢ÃÂÃÂ monday write-back failed:', JSON.stringify(writeData.errors));
       return res.status(500).json({ error:'Flex updated but monday write-back failed', details:writeData.errors });
     }
 
     return res.status(200).json({ ok:true, flexUnitId, status:'Missing', missingSince: today });
   } catch (err) {
-    console.error('Ã¢ÂÂ mark-missing error:', err);
+    console.error('ÃÂ¢ÃÂÃÂ mark-missing error:', err);
     return res.status(500).json({ error: err.message });
   }
 }
 
 // ================================================================
-// ROUTE: decommission Ã¢ÂÂ permanently retire a unit in Flex + monday
+// ROUTE: decommission ÃÂ¢ÃÂÃÂ permanently retire a unit in Flex + monday
 // Body: { itemId } (parent item ID on the Repair Tracker board)
 // ================================================================
 async function handleDecommissionRoute(req, res) {
-  console.log('\nÃ°ÂÂªÂ¦ decommission triggered');
+  console.log('\nÃÂ°ÃÂÃÂªÃÂ¦ decommission triggered');
   const body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body || {};
   if (body.challenge) return res.status(200).json({ challenge: body.challenge });
 
   const itemId = body.event?.pulseId || body.itemId;
-  if (!itemId) return res.status(400).json({ error: 'Missing itemId Ã¢ÂÂ send body.itemId or body.event.pulseId' });
+  if (!itemId) return res.status(400).json({ error: 'Missing itemId ÃÂ¢ÃÂÃÂ send body.itemId or body.event.pulseId' });
 
   try {
     // Read flexUnitId + current status from parent item
@@ -1758,12 +1758,12 @@ async function handleDecommissionRoute(req, res) {
         body: JSON.stringify({ decommissioned: true, decommissionedDate }) });
     if (!flexRes.ok) {
       const errText = await flexRes.text().catch(() => '');
-      console.error(`Ã¢ÂÂ Flex decommission failed ${flexUnitId}: ${flexRes.status} ${errText}`);
+      console.error(`ÃÂ¢ÃÂÃÂ Flex decommission failed ${flexUnitId}: ${flexRes.status} ${errText}`);
       return res.status(502).json({ error:`Flex rejected decommission for unit ${flexUnitId}`, status:flexRes.status });
     }
-    console.log(`Ã¢ÂÂ Flex unit ${flexUnitId} decommissioned`);
+    console.log(`ÃÂ¢ÃÂÃÂ Flex unit ${flexUnitId} decommissioned`);
 
-    // Write back to monday: set Current Status Ã¢ÂÂ Decommissioned, stamp date + user
+    // Write back to monday: set Current Status ÃÂ¢ÃÂÃÂ Decommissioned, stamp date + user
     const updateCv = JSON.stringify({
       [OOC_COL.currentStatus]:      { label: 'Decommissioned' },
       [OOC_COL.decommissionedDate]: { date: decommissionedDate.split('T')[0] },
@@ -1773,13 +1773,13 @@ async function handleDecommissionRoute(req, res) {
       body: JSON.stringify({ query:`mutation { change_multiple_column_values(board_id:${REPAIR_TRACKER_BOARD_ID},item_id:${itemId},column_values:${JSON.stringify(updateCv)}) { id } }` }) });
     const writeData = await writeRes.json();
     if (writeData.errors) {
-      console.error('Ã¢ÂÂ monday write-back failed:', JSON.stringify(writeData.errors));
+      console.error('ÃÂ¢ÃÂÃÂ monday write-back failed:', JSON.stringify(writeData.errors));
       return res.status(500).json({ error:'Flex updated but monday write-back failed', details:writeData.errors });
     }
 
     return res.status(200).json({ ok:true, flexUnitId, status:'Decommissioned', decommissionedDate: decommissionedDate.split('T')[0], decommissionedBy: body.decommissionedBy || body.userName || '' });
   } catch (err) {
-    console.error('Ã¢ÂÂ decommission error:', err);
+    console.error('ÃÂ¢ÃÂÃÂ decommission error:', err);
     return res.status(500).json({ error: err.message });
   }
 }
@@ -1792,71 +1792,71 @@ export default async function handler(req, res) {
 
   if (req.method === 'OPTIONS') return res.status(200).end();
 
-  // Ã¢ÂÂÃ¢ÂÂ GEOCODE ROUTE Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂ
+  // ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ GEOCODE ROUTE ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ
   if (req.query && req.query.route === 'geocode') {
     try { return await handleGeocodeRoute(req, res); }
-    catch (err) { console.error('Ã¢ÂÂ geocode error:', err); return res.status(500).json({ error: err.message }); }
+    catch (err) { console.error('ÃÂ¢ÃÂÃÂ geocode error:', err); return res.status(500).json({ error: err.message }); }
   }
 
-  // Ã¢ÂÂÃ¢ÂÂ DEDUP GROUP ROUTE Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂ
+  // ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ DEDUP GROUP ROUTE ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ
   if (req.query && req.query.route === 'dedup-group') {
     try { return await handleDedupGroupRoute(req, res); }
-    catch (err) { console.error('Ã¢ÂÂ dedup-group error:', err); return res.status(500).json({ error: err.message }); }
+    catch (err) { console.error('ÃÂ¢ÃÂÃÂ dedup-group error:', err); return res.status(500).json({ error: err.message }); }
   }
 
-  // Ã¢ÂÂÃ¢ÂÂ SYNC-OOC ROUTE Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂ
+  // ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ SYNC-OOC ROUTE ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ
   if (req.query && req.query.route === 'sync-ooc') {
     try { return await handleSyncOocRoute(req, res); }
-    catch (err) { console.error('Ã¢ÂÂ sync-ooc error:', err); return res.status(500).json({ error: err.message }); }
+    catch (err) { console.error('ÃÂ¢ÃÂÃÂ sync-ooc error:', err); return res.status(500).json({ error: err.message }); }
   }
 
-  // Ã¢ÂÂÃ¢ÂÂ RESOLVE-OOC ROUTE Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂ
+  // ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ RESOLVE-OOC ROUTE ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ
   if (req.query && req.query.route === 'resolve-ooc') {
     try { return await handleResolveOocRoute(req, res); }
-    catch (err) { console.error('Ã¢ÂÂ resolve-ooc error:', err); return res.status(500).json({ error: err.message }); }
+    catch (err) { console.error('ÃÂ¢ÃÂÃÂ resolve-ooc error:', err); return res.status(500).json({ error: err.message }); }
   }
 
-  // Ã¢ÂÂÃ¢ÂÂ MARK-MISSING ROUTE Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂ
+  // ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ MARK-MISSING ROUTE ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ
   if (req.query && req.query.route === 'mark-missing') {
     try { return await handleMarkMissingRoute(req, res); }
-    catch (err) { console.error('Ã¢ÂÂ mark-missing error:', err); return res.status(500).json({ error: err.message }); }
+    catch (err) { console.error('ÃÂ¢ÃÂÃÂ mark-missing error:', err); return res.status(500).json({ error: err.message }); }
   }
 
-  // Ã¢ÂÂÃ¢ÂÂ DECOMMISSION ROUTE Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂ
+  // ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ DECOMMISSION ROUTE ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ
   if (req.query && req.query.route === 'decommission') {
     try { return await handleDecommissionRoute(req, res); }
-    catch (err) { console.error('Ã¢ÂÂ decommission error:', err); return res.status(500).json({ error: err.message }); }
+    catch (err) { console.error('ÃÂ¢ÃÂÃÂ decommission error:', err); return res.status(500).json({ error: err.message }); }
   }
 
-  // Ã¢ÂÂÃ¢ÂÂ SORT-NEW ROUTE Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂ
+  // ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ SORT-NEW ROUTE ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ
   if (req.query && req.query.route === 'sort-new') {
     try { return await handleSortNewRoute(req, res); }
-    catch (err) { console.error('Ã¢ÂÂ sort-new error:', err); return res.status(500).json({ error: err.message }); }
+    catch (err) { console.error('ÃÂ¢ÃÂÃÂ sort-new error:', err); return res.status(500).json({ error: err.message }); }
   }
 
 
-  // Ã¢ÂÂÃ¢ÂÂ PO sync sub-route Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂ
+  // ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ PO sync sub-route ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ
   // Reached via: POST /api/contacts/pull-from-flex?route=pos
   // Rewritten from:  POST /api/pos/pull-from-flex  (vercel.json rewrite)
   if ((req.query?.route || '') === 'pos') return handlePOSync(req, res);
 
   if (req.method === 'GET')     return res.status(200).json({ status: 'ok', endpoint: 'pull-from-flex' });
 
-  // Ã¢ÂÂÃ¢ÂÂ PUSH-TO-FLEX ROUTE Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂ
+  // ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ PUSH-TO-FLEX ROUTE ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ
   // Merged from api/contacts/push-to-flex.js
   // Handles monday webhook events and bulk GET sync: POST (or GET?bulk=true)
   if (req.query?.route === 'push') return handlePushToFlex(req, res);
 
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  console.log('\nÃ°ÂÂÂ pull-from-flex starting');
+  console.log('\nÃÂ°ÃÂÃÂÃÂ pull-from-flex starting');
   const startedAt = Date.now();
 
   try {
     const body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body || {};
     const query = req.query || {};
 
-    // Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂ Determine lookback window Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂ
+    // ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ Determine lookback window ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ
     const fullSync = query.full === 'true' || body.full === true;
     const hoursBack = parseInt(query.hours || body.hours || '24', 10);
     const sinceISO = fullSync
@@ -1864,20 +1864,20 @@ export default async function handler(req, res) {
       : new Date(Date.now() - hoursBack * 60 * 60 * 1000).toISOString();
 
     console.log(fullSync
-      ? `Ã°ÂÂÂ Full sync mode Ã¢ÂÂ all Flex contacts`
-      : `Ã¢ÂÂ±Ã¯Â¸Â Lookback: ${hoursBack}h (since ${sinceISO})`
+      ? `ÃÂ°ÃÂÃÂÃÂ Full sync mode ÃÂ¢ÃÂÃÂ all Flex contacts`
+      : `ÃÂ¢ÃÂÃÂ±ÃÂ¯ÃÂ¸ÃÂ Lookback: ${hoursBack}h (since ${sinceISO})`
     );
 
-    // Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂ Paginate through Flex contacts Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂ
+    // ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ Paginate through Flex contacts ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ
     const results = { created: 0, updated: 0, linked: 0, skipped: 0, errors: 0, details: [] };
-    const seenFlexIds = new Set(); // Track processed UUIDs Ã¢ÂÂ prevents pagination-driven duplicates
+    const seenFlexIds = new Set(); // Track processed UUIDs ÃÂ¢ÃÂÃÂ prevents pagination-driven duplicates
     let page = 0;
     let keepGoing = true;
 
     while (keepGoing) {
       const { contacts, rawCount } = await fetchFlexContacts(sinceISO, page, 100);
 
-      console.log(`  Ã°ÂÂÂ Page ${page}: ${rawCount} raw, ${contacts.length} in window`);
+      console.log(`  ÃÂ°ÃÂÃÂÃÂ Page ${page}: ${rawCount} raw, ${contacts.length} in window`);
 
       // If not in full sync and we got fewer results than requested, we've passed the date window
       if (!fullSync && contacts.length === 0) {
@@ -1891,7 +1891,7 @@ export default async function handler(req, res) {
           results[outcome.action] = (results[outcome.action] || 0) + 1;
           results.details.push(outcome);
         } catch (e) {
-          console.error(`Ã¢ÂÂ Error processing Flex contact ${contact.id}:`, e.message);
+          console.error(`ÃÂ¢ÃÂÃÂ Error processing Flex contact ${contact.id}:`, e.message);
           results.errors++;
           results.details.push({ action: 'error', flexId: contact.id, name: contact.name, error: e.message });
         }
@@ -1904,7 +1904,7 @@ export default async function handler(req, res) {
         page++;
         // Safety cap: limits pages per run to avoid runaway cron
         if (page >= 20) {
-          console.log('Ã¢ÂÂ Ã¯Â¸Â Page cap reached Ã¢ÂÂ stopping. Run again or use ?full=true for more.');
+          console.log('ÃÂ¢ÃÂÃÂ ÃÂ¯ÃÂ¸ÃÂ Page cap reached ÃÂ¢ÃÂÃÂ stopping. Run again or use ?full=true for more.');
           keepGoing = false;
         }
       }
@@ -1922,32 +1922,32 @@ export default async function handler(req, res) {
       errors:   results.errors,
     };
 
-    console.log('\nÃ°ÂÂÂ pull-from-flex complete:', summary);
+    console.log('\nÃÂ°ÃÂÃÂÃÂ pull-from-flex complete:', summary);
     return res.status(200).json(summary);
 
   } catch (err) {
-    console.error('Ã¢ÂÂ pull-from-flex fatal error:', err);
+    console.error('ÃÂ¢ÃÂÃÂ pull-from-flex fatal error:', err);
     return res.status(500).json({ error: err.message });
   }
 }
 
 // =============================================================================
-// PUSH-TO-FLEX Ã¢ÂÂ merged from api/contacts/push-to-flex.js
-// Handles monday.com Ã¢ÂÂ Flex contact sync (create/update direction).
+// PUSH-TO-FLEX ÃÂ¢ÃÂÃÂ merged from api/contacts/push-to-flex.js
+// Handles monday.com ÃÂ¢ÃÂÃÂ Flex contact sync (create/update direction).
 // Invoked via: POST /api/contacts/pull-from-flex?route=push
 // Rewritten from: POST /api/contacts/push-to-flex  (vercel.json rewrite)
 // =============================================================================
 
-// Ã¢ÂÂÃ¢ÂÂ MAIN PUSH HANDLER Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂ
+// ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ MAIN PUSH HANDLER ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ
 async function handlePushToFlex(req, res) {
   // BULK SYNC MODE (GET ?bulk=true)
   if (req.method === 'GET' && req.query?.bulk === 'true') {
     const cursor    = req.query.cursor   || null;
     const batchSize = Math.min(parseInt(req.query.batchSize) || 10, 20);
-    console.log(`\nÃ°ÂÂÂ¦ Bulk push-to-flex | cursor: ${cursor || 'start'} | batchSize: ${batchSize}`);
+    console.log(`\nÃÂ°ÃÂÃÂÃÂ¦ Bulk push-to-flex | cursor: ${cursor || 'start'} | batchSize: ${batchSize}`);
     try {
       const { items, nextCursor } = await ptfGetMondayItemsWithoutFlexId(cursor, batchSize);
-      console.log(`Ã°ÂÂÂ Found ${items.length} contacts without Flex UUID`);
+      console.log(`ÃÂ°ÃÂÃÂÃÂ Found ${items.length} contacts without Flex UUID`);
       const results = await Promise.allSettled(items.map(item => ptfSyncContactToFlex(item)));
       const successes = [], errors = [];
       results.forEach((r, i) => {
@@ -1980,7 +1980,7 @@ async function handlePushToFlex(req, res) {
     return res.status(200).json({ skipped: true, reason: 'wrong board' });
   }
 
-  console.log(`\nÃ°ÂÂÂ push-to-flex | event: ${event.type} | item: ${itemId}`);
+  console.log(`\nÃÂ°ÃÂÃÂÃÂ push-to-flex | event: ${event.type} | item: ${itemId}`);
 
   try {
     const item = await ptfGetMondayItem(itemId);
@@ -2000,12 +2000,12 @@ async function handlePushToFlex(req, res) {
       return res.status(200).json({ ok: true, ...result });
     }
   } catch (err) {
-    console.error('Ã¢ÂÂ push-to-flex error:', err);
+    console.error('ÃÂ¢ÃÂÃÂ push-to-flex error:', err);
     return res.status(500).json({ error: err.message });
   }
 }
 
-// Ã¢ÂÂÃ¢ÂÂ Address helpers Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂ
+// ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ Address helpers ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ
 
 function ptfParseAddress(raw) {
   if (!raw || !raw.trim()) return null;
@@ -2057,7 +2057,7 @@ async function ptfUpdateFlexAddress(flexContactId, addressId, addrPayload) {
     headers: { 'X-Auth-Token': FLEX_API_KEY, 'Content-Type': 'application/json', 'Accept': 'application/json' },
     body: JSON.stringify({ ...addrPayload, id: addressId, contactId: flexContactId }),
   });
-  if (!res.ok) console.warn(`Ã¢ÂÂ Ã¯Â¸Â updateFlexAddress HTTP ${res.status}`);
+  if (!res.ok) console.warn(`ÃÂ¢ÃÂÃÂ ÃÂ¯ÃÂ¸ÃÂ updateFlexAddress HTTP ${res.status}`);
 }
 
 async function ptfCreateFlexAddress(flexContactId, addrPayload) {
@@ -2066,7 +2066,7 @@ async function ptfCreateFlexAddress(flexContactId, addrPayload) {
     headers: { 'X-Auth-Token': FLEX_API_KEY, 'Content-Type': 'application/json', 'Accept': 'application/json' },
     body: JSON.stringify({ ...addrPayload, contactId: flexContactId }),
   });
-  if (!res.ok) console.warn(`Ã¢ÂÂ Ã¯Â¸Â createFlexAddress HTTP ${res.status}`);
+  if (!res.ok) console.warn(`ÃÂ¢ÃÂÃÂ ÃÂ¯ÃÂ¸ÃÂ createFlexAddress HTTP ${res.status}`);
 }
 
 async function ptfSyncFlexAddress(flexContactId, addrPayload) {
@@ -2081,7 +2081,7 @@ async function ptfSyncFlexAddress(flexContactId, addrPayload) {
   }
 }
 
-// Ã¢ÂÂÃ¢ÂÂ Monday helpers (push direction) Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂ
+// ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ Monday helpers (push direction) ÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂÃÂ¢ÃÂÃÂ
 
 async function ptfGetMondayItemsWithoutFlexId(cursor, limit) {
   const paginationClause = cursor
@@ -2172,7 +2172,7 @@ async function ptfWriteFlexIdToMonday(itemId, flexUUID) {
   });
   const result = await response.json();
   if (result.errors) throw new Error(`Monday write-back failed: ${JSON.stringify(result.errors)}`);
-  console.log(`Ã¢ÂÂ Flex Contact ID written to Monday item ${itemId}: ${flexUUID}`);
+  console.log(`ÃÂ¢ÃÂÃÂ Flex Contact ID written to Monday item ${itemId}: ${flexUUID}`);
 }
 
 function ptfBuildFlexPayload(item, columns, mondayItemId, includeAddress = true) {
@@ -2193,7 +2193,7 @@ function ptfBuildFlexPayload(item, columns, mondayItemId, includeAddress = true)
 }
 
 async function ptfCreateFlexContact(payload) {
-  console.log(`Ã°ÂÂÂ¤ Creating Flex contact: "${payload.name}"`);
+  console.log(`ÃÂ°ÃÂÃÂÃÂ¤ Creating Flex contact: "${payload.name}"`);
   const response = await fetch(`${FLEX_BASE_URL}/api/contact`, {
     method: 'POST',
     headers: { 'X-Auth-Token': FLEX_API_KEY, 'Content-Type': 'application/json', 'Accept': 'application/json' },
@@ -2203,12 +2203,12 @@ async function ptfCreateFlexContact(payload) {
   const data = await response.json();
   const flexId = data.id || data.data?.id;
   if (!flexId) throw new Error('Flex create returned no ID');
-  console.log(`Ã¢ÂÂ Flex contact created: ${flexId}`);
+  console.log(`ÃÂ¢ÃÂÃÂ Flex contact created: ${flexId}`);
   return flexId;
 }
 
 async function ptfUpdateFlexContact(flexUUID, payload) {
-  console.log(`Ã°ÂÂÂ¤ Updating Flex contact: ${flexUUID} ("${payload.name}")`);
+  console.log(`ÃÂ°ÃÂÃÂÃÂ¤ Updating Flex contact: ${flexUUID} ("${payload.name}")`);
   const { addresses, ...basePayload } = payload;
   const response = await fetch(`${FLEX_BASE_URL}/api/contact/${flexUUID}?updateBaseContactOnly=true`, {
     method: 'PUT',
@@ -2216,7 +2216,7 @@ async function ptfUpdateFlexContact(flexUUID, payload) {
     body: JSON.stringify({ ...basePayload, id: flexUUID }),
   });
   if (!response.ok) throw new Error(`Flex update failed (${response.status}): ${await response.text()}`);
-  console.log(`Ã¢ÂÂ Flex contact updated: ${flexUUID}`);
+  console.log(`ÃÂ¢ÃÂÃÂ Flex contact updated: ${flexUUID}`);
 }
 
 async function ptfFindFlexContactByExternalNumber(mondayItemId) {
