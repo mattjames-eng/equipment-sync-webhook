@@ -640,9 +640,10 @@ async function _buildRPOCols(po, today) {
 
   // Project: UUID-first (parentId ÃÂ¢ÃÂÃÂ Quote or Pullsheet UUID in Projects board),
   // fallback to name parsing if UUID lookup returns nothing.
-  const projId = po.parentId
-    ? (await _findProjectByParentUUID(po.parentId) ?? await _findProjectByNameFallback(po.name))
-    : await _findProjectByNameFallback(po.name);
+  // parentId="root" means no parent in Flex â skip UUID lookup entirely
+  const projId = (po.parentId && po.parentId !== 'root')
+    ? (await _findProjectByParentUUID(po.parentId) ?? await _findProjectByNameFallback(po.name) ?? await _findProjectByNameFallback(po.name, true))
+    : (await _findProjectByNameFallback(po.name) ?? await _findProjectByNameFallback(po.name, true));
 
   const vendorId = await _findVendorByName(po.vendorCompany);
   const total    = await _fetchFlexPOTotal(po.id);
@@ -669,9 +670,10 @@ async function _buildPPOCols(po, today) {
   const label      = _mapPPOStatus(statusName);
 
   // Same UUID-first, name-fallback pattern
-  const projId = po.parentId
-    ? (await _findProjectByParentUUID(po.parentId) ?? await _findProjectByNameFallback(po.name))
-    : await _findProjectByNameFallback(po.name);
+  // parentId="root" means no parent in Flex â skip UUID lookup entirely
+  const projId = (po.parentId && po.parentId !== 'root')
+    ? (await _findProjectByParentUUID(po.parentId) ?? await _findProjectByNameFallback(po.name) ?? await _findProjectByNameFallback(po.name, true))
+    : (await _findProjectByNameFallback(po.name) ?? await _findProjectByNameFallback(po.name, true));
 
   const vendorId = await _findVendorByName(po.vendorCompany);
   const total    = await _fetchFlexPOTotal(po.id);
