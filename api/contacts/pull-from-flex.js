@@ -125,10 +125,12 @@ async function findMondayItemByName(name) {
   const safe = name.trim().replace(/"/g, '\\"');
   const query = `
     query {
-      boards(ids: [${CONTACTS_BOARD_ID}]) {
-        items_page(limit: 20, query_params: { term: "${safe}" }) {
-          items { id name }
-        }
+      items_page_by_column_values(
+        limit: 20,
+        board_id: ${CONTACTS_BOARD_ID},
+        columns: [{ column_id: "name", column_values: ["${safe}"] }]
+      ) {
+        items { id name }
       }
     }
   `;
@@ -138,7 +140,7 @@ async function findMondayItemByName(name) {
     body: JSON.stringify({ query }),
   });
   const result = await response.json();
-  const items = result.data?.boards?.[0]?.items_page?.items || [];
+  const items = result.data?.items_page_by_column_values?.items || [];
   const exact = items.find(i => i.name.trim().toLowerCase() === name.trim().toLowerCase());
   return exact || null;
 }
